@@ -7,9 +7,9 @@ Falls back to PyNaCl if WASM runtime fails.
 This provides Ed25519 signing and verification without reimplementing crypto in Python.
 """
 
+import ctypes
 import hashlib
 import json
-import ctypes
 from base64 import b64encode
 from pathlib import Path
 from typing import Any, Optional
@@ -30,8 +30,8 @@ class PyNaClRuntime:
 
     def __init__(self) -> None:
         try:
-            import nacl.signing
             import nacl.encoding
+            import nacl.signing
             self._nacl_signing = nacl.signing
             self._nacl_encoding = nacl.encoding
         except ImportError:
@@ -434,7 +434,8 @@ class WasmRuntime:
         # Allocate generous output buffer (input + base64 sig + JSON wrapper)
         out_cap = len(json_bytes) + 200
         out_ptr = self._alloc(self._store, out_cap)
-        out_len_ptr = self._alloc(self._store, 8)  # size_t on wasm32 is 4 bytes, but use 8 for safety
+        # size_t on wasm32 is 4 bytes, but use 8 for safety
+        out_len_ptr = self._alloc(self._store, 8)
 
         if out_ptr == 0 or out_len_ptr == 0:
             self._free(seed_ptr, 32)

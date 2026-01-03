@@ -26,8 +26,8 @@ Context Manager:
 
 import asyncio
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, TypedDict
+from dataclasses import dataclass
+from typing import Any, Optional, TypedDict
 
 import httpx
 
@@ -73,8 +73,6 @@ class StreamingSession:
         api_key: str,
         session_token: str,
     ):
-        from glacis import AsyncGlacis
-
         self._glacis = glacis
         self._session_id = session_id
         self._session_do_url = session_do_url.rstrip("/")

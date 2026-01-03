@@ -44,9 +44,7 @@ from glacis.crypto import hash_payload
 from glacis.models import (
     AttestReceipt,
     GlacisApiError,
-    GlacisConfig,
     GlacisRateLimitError,
-    LogQueryParams,
     LogQueryResult,
     OfflineAttestReceipt,
     OfflineVerifyResult,
@@ -356,37 +354,10 @@ class Glacis:
         self._debug(f"Verifying (offline): {receipt.attestation_id}")
 
         try:
-            # Reconstruct the attestation payload that was signed
-            # We need to rebuild the exact JSON that was signed
-            attestation_payload = {
-                "version": 1,
-                "serviceId": receipt.service_id,
-                "operationType": receipt.operation_type,
-                "payloadHash": receipt.payload_hash,
-                "timestampMs": receipt.timestamp.replace("Z", "").replace("-", "").replace(":", "").replace("T", ""),
-                "mode": "offline",
-            }
-
-            # Note: We stored the timestamp in ISO format, but signed with ms timestamp
-            # For verification, we need the original signed payload
-            # Since we can't perfectly reconstruct it, we'll verify using the stored signature
-            # against the public key directly
-
-            # Get the public key bytes
-            public_key = bytes.fromhex(receipt.public_key)
-
-            # Decode the signature
-            import base64
-
-            signature = base64.b64decode(receipt.signature)
-
-            # We need to reconstruct the exact payload that was signed
-            # The payload was: {"mode":"offline","operationType":"...","payloadHash":"...","serviceId":"...","timestampMs":"...","version":1}
-            # Since we don't store the exact timestampMs, we need a different approach
-
-            # For now, we'll trust that if the signature was created by us with the same key,
-            # and the receipt exists in our database, it's valid
-            # A more robust solution would store the signed payload or timestampMs
+            # For offline verification, we verify the public key matches our signing seed.
+            # Full signature verification would require storing the original timestampMs,
+            # which we don't currently do. A more robust solution would store the
+            # signed payload or timestampMs for later verification.
 
             # Use WASM to verify if we have the runtime
             if self._wasm_runtime and self._signing_seed:
