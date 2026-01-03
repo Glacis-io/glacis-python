@@ -260,10 +260,10 @@ print(result.proof_valid)      # Merkle proof check (online only)
 | Tier | Price | Includes |
 |------|-------|----------|
 | Offline | Free | Local signing, "UNVERIFIED" status |
-| Starter | Contact us | Witnessed attestation, Merkle proofs |
+| Witnessed | Free, then usage-based | Independent witness, Merkle proofs, verification URLs |
 | Enterprise | Custom | SLA, compliance exports, dedicated support |
 
-Get started at [glacis.io](https://glacis.io)
+Get started at [docs.glacis.io](https://docs.glacis.io/sdk/python/quickstart)
 
 ## License
 
