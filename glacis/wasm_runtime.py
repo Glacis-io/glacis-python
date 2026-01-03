@@ -520,3 +520,14 @@ def sign_offline_attestation(
 
     result: dict[str, Any] = json.loads(signed_json)
     return result
+
+
+def get_runtime() -> str:
+    """
+    Get the current runtime type name.
+
+    Returns:
+        String identifying the runtime: "WasmRuntime" or "PyNaClRuntime"
+    """
+    runtime = WasmRuntime.get_instance()
+    return type(runtime).__name__
