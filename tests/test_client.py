@@ -48,8 +48,10 @@ class TestGlacisSync:
             url="https://api.glacis.io/v1/attest",
             json={
                 "attestationId": "att_test123",
+                "attestation_hash": "abc123def456",
                 "timestamp": "2024-01-01T00:00:00Z",
                 "leafIndex": 42,
+                "treeSize": 100,
                 "leafHash": "abc123",
                 "merkleProof": {"leafIndex": 42, "treeSize": 100, "hashes": ["def456"]},
                 "signedTreeHead": {
@@ -226,8 +228,10 @@ class TestGlacisAsync:
             url="https://api.glacis.io/v1/attest",
             json={
                 "attestationId": "att_async",
+                "attestation_hash": "hash123",
                 "timestamp": "2024-01-01T00:00:00Z",
                 "leafIndex": 1,
+                "treeSize": 1,
                 "leafHash": "hash",
                 "merkleProof": {"leafIndex": 1, "treeSize": 1, "hashes": []},
                 "signedTreeHead": {
