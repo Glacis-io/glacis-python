@@ -45,8 +45,11 @@ anthropic = [
 wasm = [
     "wasmtime>=18.0.0",
 ]
+azure = [
+    "azure-ai-inference>=1.0.0b1",
+]
 all = [
-    "glacis[dev,openai,anthropic,wasm]",
+    "glacis[dev,openai,anthropic,azure,wasm]",
 ]
 
 [project.urls]
@@ -96,6 +99,8 @@ module = [
     "openai.*",
     "anthropic",
     "anthropic.*",
+    "azure",
+    "azure.*",
 ]
 ignore_missing_imports = true
 

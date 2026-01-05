@@ -83,3 +83,4 @@ dmypy.json
 *.pem
 .env.local
 .env.*.local
+examples/.env
