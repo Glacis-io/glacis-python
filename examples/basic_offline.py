@@ -8,11 +8,11 @@ when you need third-party verifiability.
 """
 
 from glacis import Glacis
-
+import os
 
 def main():
     # Create client in offline mode
-    glacis = Glacis(mode="offline")
+    glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
 
     # Simulate an AI interaction
     prompt = "What is the capital of France?"
