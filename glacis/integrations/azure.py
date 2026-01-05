@@ -174,7 +174,7 @@ def attested_azure_inference(
         # Attest the response
         try:
             # Convert messages to serializable format
-            serializable_messages = []
+            serializable_messages: list[Any] = []
             for m in messages:
                 if hasattr(m, "role") and hasattr(m, "content"):
                     serializable_messages.append({"role": m.role, "content": m.content})
@@ -195,10 +195,10 @@ def attested_azure_inference(
                     "choices": [
                         {
                             "message": {
-                                "role": c.message.role if hasattr(c.message, "role") else "assistant",
-                                "content": c.message.content if hasattr(c.message, "content") else "",
+                                "role": getattr(c.message, "role", "assistant"),
+                                "content": getattr(c.message, "content", ""),
                             },
-                            "finish_reason": c.finish_reason if hasattr(c, "finish_reason") else None,
+                            "finish_reason": getattr(c, "finish_reason", None),
                         }
                         for c in response.choices
                     ]
