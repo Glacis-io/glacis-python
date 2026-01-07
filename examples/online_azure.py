@@ -73,7 +73,9 @@ def main():
         print("Attestation:")
         print(f"  Receipt ID: {receipt.attestation_id}")
         print(f"  Leaf index: {receipt.leaf_index}")
-        print(f"  Merkle root: {receipt.signed_tree_head.root_hash[:16]}...")
+        if receipt.receipt and receipt.receipt.transparency_proofs:
+            root_hash = receipt.receipt.transparency_proofs.sth_curr.root_hash
+        print(f"  Merkle root: {root_hash[:16]}...")
         print(f"  Badge URL: {receipt.badge_url}")
         print()
         print("Share the badge URL for third-party verification!")
