@@ -119,3 +119,75 @@ def hash_bytes(data: bytes) -> str:
         Hex-encoded SHA-256 hash (64 characters)
     """
     return hashlib.sha256(data).hexdigest()
+
+
+# =============================================================================
+# Ed25519 Signing (for offline attestations)
+# =============================================================================
+
+from base64 import b64encode
+from typing import Optional
+
+
+class CryptoError(Exception):
+    """Error from cryptographic operations."""
+    pass
+
+
+class Ed25519Runtime:
+    """
+    Ed25519 cryptographic runtime using PyNaCl (libsodium bindings).
+
+    Provides signing and verification for offline attestations.
+    """
+
+    def __init__(self) -> None:
+        try:
+            import nacl.signing
+            self._nacl_signing = nacl.signing
+        except ImportError:
+            raise CryptoError(
+                "PyNaCl not installed. Install with: pip install pynacl"
+            )
+
+    def get_public_key_hex(self, seed: bytes) -> str:
+        """Get hex-encoded public key from a 32-byte seed."""
+        if len(seed) != 32:
+            raise ValueError("Seed must be exactly 32 bytes")
+        signing_key = self._nacl_signing.SigningKey(seed)
+        return bytes(signing_key.verify_key).hex()
+
+    def sign(self, seed: bytes, message: bytes) -> bytes:
+        """Sign a message with Ed25519, returning 64-byte signature."""
+        if len(seed) != 32:
+            raise ValueError("Seed must be exactly 32 bytes")
+        signing_key = self._nacl_signing.SigningKey(seed)
+        signed = signing_key.sign(message)
+        return signed.signature
+
+    def sign_attestation_json(self, seed: bytes, attestation_json: str) -> str:
+        """Sign an attestation JSON and return SignedAttestation JSON."""
+        if len(seed) != 32:
+            raise ValueError("Seed must be exactly 32 bytes")
+
+        json_bytes = attestation_json.encode("utf-8")
+        signature = self.sign(seed, json_bytes)
+        signature_b64 = b64encode(signature).decode("ascii")
+
+        payload = json.loads(attestation_json)
+        return json.dumps({
+            "payload": payload,
+            "signature": signature_b64,
+        }, separators=(",", ":"))
+
+
+# Singleton instance
+_ed25519_runtime: Optional[Ed25519Runtime] = None
+
+
+def get_ed25519_runtime() -> Ed25519Runtime:
+    """Get the singleton Ed25519 runtime instance."""
+    global _ed25519_runtime
+    if _ed25519_runtime is None:
+        _ed25519_runtime = Ed25519Runtime()
+    return _ed25519_runtime

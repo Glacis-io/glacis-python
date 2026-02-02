@@ -133,6 +133,9 @@ class AttestReceipt(BaseModel):
     epoch_id: Optional[str] = Field(alias="epochId", default=None)
     receipt: Optional[FullReceipt] = Field(default=None, description="Full receipt with proofs")
     verify_url: str = Field(alias="verifyUrl", description="Verification endpoint URL")
+    control_plane_results: Optional["ControlPlaneAttestation"] = Field(
+        alias="controlPlaneResults", default=None, description="Control plane results from executed controls"
+    )
 
     # Computed properties for convenience
     @property
@@ -182,9 +185,9 @@ class OrgInfo(BaseModel):
 class Verification(BaseModel):
     """Verification details."""
 
-    signature_valid: bool = Field(alias="signatureValid")
-    proof_valid: bool = Field(alias="proofValid")
-    verified_at: str = Field(alias="verifiedAt")
+    signature_valid: bool = Field(alias="signatureValid", default=False)
+    proof_valid: bool = Field(alias="proofValid", default=False)
+    verified_at: Optional[str] = Field(alias="verifiedAt", default=None)
 
     class Config:
         populate_by_name = True
@@ -198,9 +201,9 @@ class VerifyResult(BaseModel):
         default=None, description="The attestation entry (if valid)"
     )
     org: Optional[OrgInfo] = Field(default=None, description="Organization info")
-    verification: Verification = Field(description="Verification details")
-    proof: MerkleInclusionProof = Field(description="Merkle proof")
-    tree_head: SignedTreeHead = Field(alias="treeHead", description="Current tree head")
+    verification: Optional[Verification] = Field(default=None, description="Verification details")
+    proof: Optional[MerkleInclusionProof] = Field(default=None, description="Merkle proof")
+    tree_head: Optional[SignedTreeHead] = Field(alias="treeHead", default=None, description="Current tree head")
     error: Optional[str] = Field(
         default=None, description="Error message if validation failed"
     )
@@ -226,16 +229,18 @@ class LogQueryParams(BaseModel):
 class LogEntry(BaseModel):
     """Log entry in query results."""
 
-    entry_id: str = Field(alias="entryId")
-    timestamp: str
-    org_id: str = Field(alias="orgId")
+    # Server returns attestationId as the primary identifier
+    attestation_id: str = Field(alias="attestationId")
+    entry_id: Optional[str] = Field(alias="entryId", default=None)
+    timestamp: Optional[str] = None
+    org_id: Optional[str] = Field(alias="orgId", default=None)
     org_name: Optional[str] = Field(alias="orgName", default=None)
-    service_id: str = Field(alias="serviceId")
-    operation_type: str = Field(alias="operationType")
-    payload_hash: str = Field(alias="payloadHash")
-    signature: str
-    leaf_index: int = Field(alias="leafIndex")
-    leaf_hash: str = Field(alias="leafHash")
+    service_id: Optional[str] = Field(alias="serviceId", default=None)
+    operation_type: Optional[str] = Field(alias="operationType", default=None)
+    payload_hash: Optional[str] = Field(alias="payloadHash", default=None)
+    signature: Optional[str] = None
+    leaf_index: Optional[int] = Field(alias="leafIndex", default=None)
+    leaf_hash: Optional[str] = Field(alias="leafHash", default=None)
 
     class Config:
         populate_by_name = True
@@ -250,7 +255,7 @@ class LogQueryResult(BaseModel):
         alias="nextCursor", default=None, description="Cursor for next page"
     )
     count: int = Field(description="Number of entries returned")
-    tree_head: SignedTreeHead = Field(alias="treeHead", description="Current tree head")
+    tree_head: Optional[SignedTreeHead] = Field(alias="treeHead", default=None, description="Current tree head")
 
     class Config:
         populate_by_name = True
@@ -292,6 +297,179 @@ class GlacisRateLimitError(GlacisApiError):
         self.retry_after_ms = retry_after_ms
 
 
+# ==============================================================================
+# Control Plane Attestation Models
+# ==============================================================================
+
+ControlType = Literal[
+    "content_safety",
+    "pii",
+    "jailbreak",
+    "topic",
+    "prompt_security",
+    "grounding",
+    "word_filter",
+    "custom",
+]
+
+ControlStatus = Literal["pass", "flag", "block", "error"]
+
+
+class ModelInfo(BaseModel):
+    """Model information for policy context."""
+
+    model_id: str = Field(alias="modelId")
+    provider: str
+    system_prompt_hash: Optional[str] = Field(alias="systemPromptHash", default=None)
+
+    class Config:
+        populate_by_name = True
+
+
+class PolicyScope(BaseModel):
+    """Scope for policy application."""
+
+    tenant_id: str = Field(alias="tenantId")
+    endpoint: str
+    user_class: Optional[str] = Field(alias="userClass", default=None)
+
+    class Config:
+        populate_by_name = True
+
+
+class PolicyContext(BaseModel):
+    """Policy context for attestation."""
+
+    id: str
+    version: str
+    model: Optional[ModelInfo] = None
+    scope: PolicyScope
+
+    class Config:
+        populate_by_name = True
+
+
+class Determination(BaseModel):
+    """Final determination for the request."""
+
+    action: Literal["forwarded", "redacted", "blocked"]
+    trigger: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    class Config:
+        populate_by_name = True
+
+
+class ControlExecution(BaseModel):
+    """Record of a control execution."""
+
+    id: str
+    type: ControlType
+    version: str
+    provider: str  # "aws", "azure", "glacis", "custom", etc.
+    latency_ms: int = Field(alias="latencyMs")
+    status: ControlStatus
+    result_hash: Optional[str] = Field(alias="resultHash", default=None)
+
+    class Config:
+        populate_by_name = True
+
+
+class SafetyScores(BaseModel):
+    """Aggregated safety scores."""
+
+    overall_risk: float = Field(alias="overallRisk", ge=0.0, le=1.0)
+    scores: dict[str, float] = Field(default_factory=dict)
+
+    class Config:
+        populate_by_name = True
+
+
+class PiiPhiSummary(BaseModel):
+    """Summary of PII/PHI detection and handling.
+
+    This model captures metadata about PII/PHI detection for attestation.
+    The actual redacted text is stored in evidence, not in the attestation schema.
+    """
+
+    detected: bool = False
+    action: Literal["none", "redacted", "blocked"] = "none"
+    categories: list[str] = Field(default_factory=list)
+    count: int = 0
+
+    class Config:
+        populate_by_name = True
+
+
+class JailbreakSummary(BaseModel):
+    """Summary of jailbreak/prompt injection detection for attestation.
+
+    This model captures metadata about jailbreak detection results.
+    The raw model outputs and detailed scores are stored in evidence.
+    """
+
+    detected: bool = False
+    score: float = Field(default=0.0, ge=0.0, le=1.0, description="Model confidence score")
+    action: Literal["pass", "flag", "block", "log"] = "pass"
+    categories: list[str] = Field(default_factory=list, description="Detection categories (e.g., ['jailbreak'])")
+    backend: str = Field(default="", description="Backend model used for detection")
+
+    class Config:
+        populate_by_name = True
+
+
+class DeepInspection(BaseModel):
+    """Deep inspection results from L2 verification."""
+
+    judge_ids: list[str] = Field(alias="judgeIds", default_factory=list)
+    nonconformity_score: float = Field(alias="nonconformityScore", ge=0.0, le=1.0)
+    recommendation: Literal["uphold", "borderline", "escalate"]
+    evaluation_rationale: str = Field(alias="evaluationRationale")
+
+    class Config:
+        populate_by_name = True
+
+
+class SamplingDecision(BaseModel):
+    """Sampling decision details."""
+
+    sampled: bool
+    reason: Literal["prf", "policy_trigger", "forced"]
+    prf_tag: Optional[str] = Field(alias="prfTag", default=None)
+    rate: float = Field(ge=0.0, le=1.0)
+
+    class Config:
+        populate_by_name = True
+
+
+class SamplingMetadata(BaseModel):
+    """Sampling metadata for attestation level."""
+
+    level: Literal["L0", "L2"]
+    decision: SamplingDecision
+
+    class Config:
+        populate_by_name = True
+
+
+class ControlPlaneAttestation(BaseModel):
+    """Control plane attestation capturing policy, controls, and safety metadata."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    policy: PolicyContext
+    determination: Determination
+    controls: list[ControlExecution] = Field(default_factory=list)
+    safety: SafetyScores
+    pii_phi: Optional[PiiPhiSummary] = Field(alias="piiPhi", default=None)
+    jailbreak: Optional[JailbreakSummary] = Field(default=None, description="Jailbreak detection results")
+    evidence_commitment: Optional[str] = Field(alias="evidenceCommitment", default=None)
+    deep_inspection: Optional[DeepInspection] = Field(alias="deepInspection", default=None)
+    sampling: SamplingMetadata
+
+    class Config:
+        populate_by_name = True
+
+
 # Offline Mode Models
 
 
@@ -323,6 +501,9 @@ class OfflineAttestReceipt(BaseModel):
         default="UNVERIFIED",
         alias="witnessStatus",
         description="Always UNVERIFIED for offline receipts",
+    )
+    control_plane_results: Optional[ControlPlaneAttestation] = Field(
+        alias="controlPlaneResults", default=None, description="Control plane results from executed controls"
     )
 
     class Config:

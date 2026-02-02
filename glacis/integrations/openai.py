@@ -1,52 +1,43 @@
 """
 GLACIS integration for OpenAI.
 
-Provides an attested OpenAI client wrapper that automatically logs all
-completions to the GLACIS transparency log. Supports both online (server-witnessed)
-and offline (locally-signed) modes.
+Provides an attested OpenAI client wrapper that automatically:
+1. Runs enabled controls (PII/PHI redaction, jailbreak detection, etc.)
+2. Logs all completions to the GLACIS transparency log
+3. Creates control plane attestations
 
-Example (online):
-    >>> from glacis.integrations.openai import attested_openai
-    >>> client = attested_openai(glacis_api_key="glsk_live_xxx", openai_api_key="sk-xxx")
-    >>> response = client.chat.completions.create(
-    ...     model="gpt-4",
-    ...     messages=[{"role": "user", "content": "Hello!"}]
+Example:
+    >>> from glacis.integrations.openai import attested_openai, get_last_receipt
+    >>> client = attested_openai(
+    ...     openai_api_key="sk-xxx",
+    ...     offline=True,
+    ...     signing_seed=os.urandom(32),
     ... )
-    # Response is automatically attested to GLACIS
-
-Example (offline):
-    >>> client = attested_openai(openai_api_key="sk-xxx", offline=True, signing_seed=seed)
     >>> response = client.chat.completions.create(
     ...     model="gpt-4o",
-    ...     messages=[{"role": "user", "content": "Hello!"}],
+    ...     messages=[{"role": "user", "content": "Hello!"}]
     ... )
     >>> receipt = get_last_receipt()
 """
 
 from __future__ import annotations
 
-import threading
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
+
+from glacis.integrations.base import (
+    GlacisBlockedError,
+    create_controls_runner,
+    create_glacis_client,
+    get_evidence,
+    get_last_receipt,
+    initialize_config,
+    set_last_receipt,
+    store_evidence,
+    suppress_noisy_loggers,
+)
 
 if TYPE_CHECKING:
     from openai import OpenAI
-
-    from glacis.models import AttestReceipt, OfflineAttestReceipt
-
-
-# Thread-local storage for the last receipt
-_thread_local = threading.local()
-
-
-def get_last_receipt() -> Optional[Union["AttestReceipt", "OfflineAttestReceipt"]]:
-    """
-    Get the last attestation receipt from the current thread.
-
-    Returns:
-        The last AttestReceipt or OfflineAttestReceipt, or None if no attestation
-        has been made in this thread.
-    """
-    return getattr(_thread_local, "last_receipt", None)
 
 
 def attested_openai(
@@ -55,15 +46,14 @@ def attested_openai(
     glacis_base_url: str = "https://api.glacis.io",
     service_id: str = "openai",
     debug: bool = False,
-    offline: bool = False,
+    offline: Optional[bool] = None,
     signing_seed: Optional[bytes] = None,
+    redaction: Union[bool, Literal["fast", "full"], None] = None,
+    config: Optional[str] = None,
     **openai_kwargs: Any,
 ) -> "OpenAI":
     """
-    Create an attested OpenAI client.
-
-    All chat completions are automatically attested. Supports both online and offline modes.
-    Note: Streaming is not currently supported.
+    Create an attested OpenAI client with controls (PII redaction, jailbreak detection).
 
     Args:
         glacis_api_key: GLACIS API key (required for online mode)
@@ -73,36 +63,19 @@ def attested_openai(
         debug: Enable debug logging
         offline: Enable offline mode (local signing, no server)
         signing_seed: 32-byte Ed25519 signing seed (required for offline mode)
+        redaction: PII/PHI redaction mode - "fast", "full", True, False, or None
+        config: Path to glacis.yaml config file
         **openai_kwargs: Additional arguments passed to OpenAI client
 
     Returns:
         Wrapped OpenAI client
 
-    Example (online):
-        >>> client = attested_openai(
-        ...     glacis_api_key="glsk_live_xxx",
-        ...     openai_api_key="sk-xxx"
-        ... )
-        >>> response = client.chat.completions.create(
-        ...     model="gpt-4",
-        ...     messages=[{"role": "user", "content": "Hello!"}]
-        ... )
-
-    Example (offline):
-        >>> import os
-        >>> seed = os.urandom(32)
-        >>> client = attested_openai(
-        ...     openai_api_key="sk-xxx",
-        ...     offline=True,
-        ...     signing_seed=seed,
-        ... )
-        >>> response = client.chat.completions.create(
-        ...     model="gpt-4o",
-        ...     messages=[{"role": "user", "content": "Hello!"}],
-        ... )
-        >>> receipt = get_last_receipt()
-        >>> assert receipt.witness_status == "UNVERIFIED"
+    Raises:
+        GlacisBlockedError: If a control blocks the request
     """
+    # Suppress noisy loggers
+    suppress_noisy_loggers(["openai", "openai._base_client"])
+
     try:
         from openai import OpenAI
     except ImportError:
@@ -111,25 +84,39 @@ def attested_openai(
             "Install it with: pip install glacis[openai]"
         )
 
-    from glacis import Glacis
+    from glacis.models import (
+        ControlExecution,
+        ControlPlaneAttestation,
+        Determination,
+        JailbreakSummary,
+        ModelInfo,
+        PiiPhiSummary,
+        PolicyContext,
+        PolicyScope,
+        SafetyScores,
+        SamplingDecision,
+        SamplingMetadata,
+    )
 
-    # Create Glacis client (online or offline)
-    if offline:
-        if not signing_seed:
-            raise ValueError("signing_seed is required for offline mode")
-        glacis = Glacis(
-            mode="offline",
-            signing_seed=signing_seed,
-            debug=debug,
-        )
-    else:
-        if not glacis_api_key:
-            raise ValueError("glacis_api_key is required for online mode")
-        glacis = Glacis(
-            api_key=glacis_api_key,
-            base_url=glacis_base_url,
-            debug=debug,
-        )
+    # Initialize config and determine modes
+    cfg, effective_offline, effective_service_id = initialize_config(
+        config_path=config,
+        redaction=redaction,
+        offline=offline,
+        glacis_api_key=glacis_api_key,
+        default_service_id="openai",
+        service_id=service_id,
+    )
+
+    # Create controls runner and Glacis client
+    controls_runner = create_controls_runner(cfg, debug)
+    glacis = create_glacis_client(
+        offline=effective_offline,
+        signing_seed=signing_seed,
+        glacis_api_key=glacis_api_key,
+        glacis_base_url=glacis_base_url,
+        debug=debug,
+    )
 
     # Create the OpenAI client
     client_kwargs: dict[str, Any] = {**openai_kwargs}
@@ -142,67 +129,170 @@ def attested_openai(
     original_create = client.chat.completions.create
 
     def attested_create(*args: Any, **kwargs: Any) -> Any:
-        # Check for streaming - not supported
         if kwargs.get("stream", False):
             raise NotImplementedError(
                 "Streaming is not currently supported with attested_openai. "
                 "Use stream=False for now."
             )
 
-        # Extract input
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", "unknown")
+
+        # Run controls if enabled
+        pii_summary: Optional[PiiPhiSummary] = None
+        jailbreak_summary: Optional[JailbreakSummary] = None
+        control_executions: list[ControlExecution] = []
+
+        if controls_runner:
+            processed_messages = []
+
+            for msg in messages:
+                role = msg.get("role", "") if isinstance(msg, dict) else ""
+                if isinstance(msg, dict) and isinstance(msg.get("content"), str) and role == "user":
+                    content = msg["content"]
+                    results = controls_runner.run(content)
+
+                    for result in results:
+                        if result.control_type == "pii":
+                            if result.detected:
+                                pii_summary = PiiPhiSummary(
+                                    detected=True,
+                                    action="redacted",
+                                    categories=result.categories,
+                                    count=len(result.categories),
+                                )
+                            control_executions.append(
+                                ControlExecution(
+                                    id="glacis-pii-redactor",
+                                    type="pii",
+                                    version="0.3.0",
+                                    provider="glacis",
+                                    latency_ms=result.latency_ms,
+                                    status="flag" if result.detected else "pass",
+                                )
+                            )
+
+                        elif result.control_type == "jailbreak":
+                            jailbreak_summary = JailbreakSummary(
+                                detected=result.detected,
+                                score=result.score or 0.0,
+                                action=result.action,
+                                categories=result.categories,
+                                backend=result.metadata.get("backend", ""),
+                            )
+                            control_executions.append(
+                                ControlExecution(
+                                    id="glacis-jailbreak-detector",
+                                    type="jailbreak",
+                                    version="0.3.0",
+                                    provider="glacis",
+                                    latency_ms=result.latency_ms,
+                                    status=result.action if result.detected else "pass",
+                                )
+                            )
+
+                            if result.action == "block":
+                                raise GlacisBlockedError(
+                                    f"Jailbreak detected (score={result.score:.2f})",
+                                    control_type="jailbreak",
+                                    score=jailbreak_summary.score,
+                                )
+
+                    final_text = controls_runner.get_final_text(results) or content
+                    processed_messages.append({**msg, "content": final_text})
+                else:
+                    processed_messages.append(msg)
+
+            kwargs["messages"] = processed_messages
+            messages = processed_messages
 
         # Make the API call
         response = original_create(*args, **kwargs)
 
-        # Attest the response
+        # Build control plane attestation
+        control_plane_results: Optional[ControlPlaneAttestation] = None
+        if controls_runner:
+            if pii_summary:
+                action, trigger = "redacted", "pii"
+            elif jailbreak_summary and jailbreak_summary.detected:
+                action = "blocked" if jailbreak_summary.action == "block" else "forwarded"
+                trigger = "jailbreak"
+            else:
+                action, trigger = "forwarded", None
+
+            control_plane_results = ControlPlaneAttestation(
+                policy=PolicyContext(
+                    id=cfg.policy.id,
+                    version=cfg.policy.version,
+                    model=ModelInfo(model_id=model, provider="openai"),
+                    scope=PolicyScope(
+                        tenant_id=cfg.policy.tenant_id,
+                        endpoint="chat.completions",
+                    ),
+                ),
+                determination=Determination(action=action, trigger=trigger, confidence=1.0),
+                controls=control_executions,
+                safety=SafetyScores(overall_risk=jailbreak_summary.score if jailbreak_summary else 0.0),
+                pii_phi=pii_summary,
+                jailbreak=jailbreak_summary,
+                sampling=SamplingMetadata(
+                    level="L0",
+                    decision=SamplingDecision(sampled=True, reason="forced", rate=1.0),
+                ),
+            )
+
+        # Build input/output data
+        input_data = {"model": model, "messages": messages}
+        output_data = {
+            "model": response.model,
+            "choices": [
+                {
+                    "message": {"role": c.message.role, "content": c.message.content},
+                    "finish_reason": c.finish_reason,
+                }
+                for c in response.choices
+            ],
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            } if response.usage else None,
+        }
+
+        # Attest and store
         try:
             receipt = glacis.attest(
-                service_id=service_id,
+                service_id=effective_service_id,
                 operation_type="completion",
-                input={
-                    "model": model,
-                    "messages": messages,
-                },
-                output={
-                    "model": response.model,
-                    "choices": [
-                        {
-                            "message": {
-                                "role": c.message.role,
-                                "content": c.message.content,
-                            },
-                            "finish_reason": c.finish_reason,
-                        }
-                        for c in response.choices
-                    ],
-                    "usage": {
-                        "prompt_tokens": (
-                            response.usage.prompt_tokens if response.usage else 0
-                        ),
-                        "completion_tokens": (
-                            response.usage.completion_tokens if response.usage else 0
-                        ),
-                        "total_tokens": (
-                            response.usage.total_tokens if response.usage else 0
-                        ),
-                    }
-                    if response.usage
-                    else None,
-                },
+                input=input_data,
+                output=output_data,
                 metadata={"provider": "openai", "model": model},
+                control_plane_results=control_plane_results,
             )
-            _thread_local.last_receipt = receipt
-            if debug:
-                print(f"[glacis] Attestation created: {receipt.attestation_id}")
+            set_last_receipt(receipt)
+            store_evidence(
+                receipt=receipt,
+                service_id=effective_service_id,
+                operation_type="completion",
+                input_data=input_data,
+                output_data=output_data,
+                control_plane_results=control_plane_results,
+                metadata={"provider": "openai", "model": model},
+                debug=debug,
+            )
         except Exception as e:
             if debug:
                 print(f"[glacis] Attestation failed: {e}")
 
         return response
 
-    # Replace the create method
     client.chat.completions.create = attested_create  # type: ignore
-
     return client
+
+
+__all__ = [
+    "attested_openai",
+    "get_last_receipt",
+    "get_evidence",
+    "GlacisBlockedError",
+]

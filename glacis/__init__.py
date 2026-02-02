@@ -37,6 +37,13 @@ Streaming Example:
     ... })
     >>> await session.attest_chunk(input=audio_chunk, output=transcript)
     >>> receipt = await session.end(metadata={"duration": "00:05:23"})
+
+Controls Example:
+    >>> from glacis.controls import ControlsRunner, PIIControl, JailbreakControl
+    >>> from glacis.config import load_config
+    >>> cfg = load_config()  # Loads glacis.yaml
+    >>> runner = ControlsRunner(cfg.controls)
+    >>> results = runner.run("Patient SSN: 123-45-6789")
 """
 
 from glacis.client import AsyncGlacis, Glacis, GlacisMode
@@ -44,26 +51,56 @@ from glacis.crypto import canonical_json, hash_payload
 from glacis.models import (
     AttestInput,
     AttestReceipt,
+    ControlExecution,
+    ControlPlaneAttestation,
+    ControlStatus,
+    ControlType,
+    Determination,
+    GlacisApiError,
     GlacisConfig,
+    JailbreakSummary,
     LogEntry,
     LogQueryParams,
     LogQueryResult,
     MerkleInclusionProof,
+    ModelInfo,
     OfflineAttestReceipt,
     OfflineVerifyResult,
+    PiiPhiSummary,
+    PolicyContext,
+    PolicyScope,
+    SafetyScores,
+    SamplingDecision,
+    SamplingMetadata,
     SignedTreeHead,
     VerifyResult,
 )
 from glacis.storage import ReceiptStorage
 from glacis.streaming import SessionContext, SessionReceipt, StreamingSession
 
-__version__ = "0.2.0"
+# Controls module (optional dependencies for individual controls)
+try:
+    from glacis.controls import (
+        BaseControl,
+        ControlResult,
+        ControlsRunner,
+        JailbreakControl,
+        PIIControl,
+    )
+
+    _CONTROLS_AVAILABLE = True
+except ImportError:
+    _CONTROLS_AVAILABLE = False
+
+__version__ = "0.3.0"
 
 __all__ = [
     # Main classes
     "Glacis",
     "AsyncGlacis",
     "GlacisMode",
+    # Exceptions
+    "GlacisApiError",
     # Streaming
     "StreamingSession",
     "SessionContext",
@@ -82,7 +119,31 @@ __all__ = [
     "LogEntry",
     "MerkleInclusionProof",
     "SignedTreeHead",
+    # Control Plane
+    "ControlPlaneAttestation",
+    "PolicyContext",
+    "PolicyScope",
+    "ModelInfo",
+    "Determination",
+    "ControlExecution",
+    "ControlType",
+    "ControlStatus",
+    "SafetyScores",
+    "PiiPhiSummary",
+    "JailbreakSummary",
+    "SamplingMetadata",
+    "SamplingDecision",
     # Crypto utilities
     "canonical_json",
     "hash_payload",
 ]
+
+# Add controls exports if available
+if _CONTROLS_AVAILABLE:
+    __all__.extend([
+        "BaseControl",
+        "ControlResult",
+        "ControlsRunner",
+        "PIIControl",
+        "JailbreakControl",
+    ])
