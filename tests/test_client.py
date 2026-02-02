@@ -170,8 +170,8 @@ class TestGlacisSync:
         request = httpx_mock.get_request()
         assert request is not None
         url = str(request.url)
-        assert "org_id=org_test" in url
-        assert "service_id=svc_test" in url
+        assert "orgId=org_test" in url
+        assert "serviceId=svc_test" in url
         assert "limit=100" in url
         assert "cursor=cursor123" in url
 

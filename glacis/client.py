@@ -8,7 +8,7 @@ your infrastructure.
 
 Supports two modes:
 - Online (default): Sends attestations to api.glacis.io for witnessing
-- Offline: Signs attestations locally using Ed25519 via WASM
+- Offline: Signs attestations locally using Ed25519
 
 Example (online):
     >>> from glacis import Glacis
@@ -43,6 +43,7 @@ import httpx
 from glacis.crypto import hash_payload
 from glacis.models import (
     AttestReceipt,
+    ControlPlaneAttestation,
     GlacisApiError,
     GlacisRateLimitError,
     LogQueryResult,
@@ -53,8 +54,8 @@ from glacis.models import (
 )
 
 if TYPE_CHECKING:
+    from glacis.crypto import Ed25519Runtime
     from glacis.storage import ReceiptStorage
-    from glacis.wasm_runtime import WasmRuntime
 
 
 class GlacisMode(str, Enum):
@@ -136,7 +137,7 @@ class Glacis:
             self._storage: Optional["ReceiptStorage"] = None
             self._signing_seed: Optional[bytes] = None
             self._public_key: Optional[str] = None
-            self._wasm_runtime: Optional["WasmRuntime"] = None
+            self._ed25519: Optional["Ed25519Runtime"] = None
         else:
             # Offline mode
             if not signing_seed:
@@ -148,11 +149,11 @@ class Glacis:
             self._signing_seed = signing_seed
             self._client = None  # No HTTP client needed
 
-            # Initialize WASM runtime and derive public key
-            from glacis.wasm_runtime import WasmRuntime
+            # Initialize Ed25519 runtime and derive public key
+            from glacis.crypto import get_ed25519_runtime
 
-            self._wasm_runtime = WasmRuntime.get_instance()
-            self._public_key = self._wasm_runtime.get_public_key_hex(signing_seed)
+            self._ed25519 = get_ed25519_runtime()
+            self._public_key = self._ed25519.get_public_key_hex(signing_seed)
 
             # Initialize storage
             from glacis.storage import ReceiptStorage
@@ -183,20 +184,22 @@ class Glacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[ControlPlaneAttestation] = None,
     ) -> Union[AttestReceipt, OfflineAttestReceipt]:
         """
         Attest an AI operation.
 
-        The input and output are hashed locally using RFC 8785 canonical JSON + SHA-256.
-        In online mode, the hash is sent to the server for witnessing.
-        In offline mode, the attestation is signed locally.
+        The input, output, and control_plane_results are hashed locally using RFC 8785
+        canonical JSON + SHA-256. Only the hash is sent to the server - the actual
+        data never leaves your infrastructure (zero egress).
 
         Args:
             service_id: Service identifier (e.g., "my-ai-service")
             operation_type: Type of operation (inference, embedding, completion, classification)
             input: Input data (hashed locally, never sent)
             output: Output data (hashed locally, never sent)
-            metadata: Optional metadata (sent to server in online mode)
+            metadata: Optional metadata (stored locally for evidence)
+            control_plane_results: Optional control plane attestation (hashed locally, cryptographically bound)
 
         Returns:
             AttestReceipt (online) or OfflineAttestReceipt (offline)
@@ -205,32 +208,44 @@ class Glacis:
             GlacisApiError: On API errors (online mode)
             GlacisRateLimitError: When rate limited (online mode)
         """
-        payload_hash = self.hash({"input": input, "output": output})
+        # Build payload to hash - includes control_plane_results for cryptographic binding
+        payload_to_hash: dict[str, Any] = {"input": input, "output": output}
+        if control_plane_results:
+            payload_to_hash["control_plane_results"] = control_plane_results.model_dump(by_alias=True)
+        payload_hash = self.hash(payload_to_hash)
 
         if self.mode == GlacisMode.OFFLINE:
             return self._attest_offline(
-                service_id, operation_type, payload_hash, input, output, metadata
+                service_id, operation_type, payload_hash, input, output, metadata, control_plane_results
             )
 
-        return self._attest_online(service_id, operation_type, payload_hash, metadata)
+        return self._attest_online(service_id, operation_type, payload_hash, control_plane_results)
 
     def _attest_online(
         self,
         service_id: str,
         operation_type: str,
         payload_hash: str,
-        metadata: Optional[dict[str, str]],
+        control_plane_results: Optional[ControlPlaneAttestation] = None,
     ) -> AttestReceipt:
-        """Create a server-witnessed attestation."""
+        """Create a server-witnessed attestation.
+
+        The server is a pure witness service - it only receives the hash and
+        adds it to the Merkle tree. All rich metadata (input, output, control_plane_results)
+        stays in the customer's infrastructure for zero-egress compliance.
+
+        The control_plane_results is cryptographically bound via the payload_hash (which
+        includes control_plane_results in its computation).
+        """
         self._debug(f"Attesting (online): service_id={service_id}, hash={payload_hash[:16]}...")
 
+        # Only send what the server needs - hash goes into Merkle tree
+        # metadata and control_plane_results are NOT sent (zero egress - stored locally)
         body: dict[str, Any] = {
             "serviceId": service_id,
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
-        if metadata:
-            body["metadata"] = metadata
 
         response = self._request_with_retry(
             "POST",
@@ -240,6 +255,8 @@ class Glacis:
         )
 
         receipt = AttestReceipt.model_validate(response)
+        # Attach control_plane_results locally for evidence (not sent to server)
+        receipt.control_plane_results = control_plane_results
         self._debug(f"Attestation successful: {receipt.attestation_id}")
         return receipt
 
@@ -251,6 +268,7 @@ class Glacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]],
+        control_plane_results: Optional[ControlPlaneAttestation] = None,
     ) -> OfflineAttestReceipt:
         """Create a locally-signed attestation."""
         self._debug(f"Attesting (offline): service_id={service_id}, hash={payload_hash[:16]}...")
@@ -259,8 +277,8 @@ class Glacis:
         timestamp = datetime.utcnow().isoformat() + "Z"
         timestamp_ms = int(datetime.utcnow().timestamp() * 1000)
 
-        # Build attestation payload
-        attestation_payload = {
+        # Build attestation payload (this is what gets signed)
+        attestation_payload: dict[str, Any] = {
             "version": 1,
             "serviceId": service_id,
             "operationType": operation_type,
@@ -269,15 +287,19 @@ class Glacis:
             "mode": "offline",
         }
 
+        # Include control plane results in signed payload if provided
+        if control_plane_results:
+            attestation_payload["controlPlaneResults"] = control_plane_results.model_dump(by_alias=True)
+
         # Sign using WASM
         attestation_json = json.dumps(
             attestation_payload, separators=(",", ":"), sort_keys=True
         )
-        assert self._wasm_runtime is not None
+        assert self._ed25519 is not None
         assert self._signing_seed is not None
         assert self._public_key is not None
 
-        signed_json = self._wasm_runtime.sign_attestation_json(
+        signed_json = self._ed25519.sign_attestation_json(
             self._signing_seed, attestation_json
         )
         signed = json.loads(signed_json)
@@ -290,6 +312,7 @@ class Glacis:
             payload_hash=payload_hash,
             signature=signed["signature"],
             public_key=self._public_key,
+            control_plane_results=control_plane_results,
         )
 
         # Store in SQLite
@@ -334,7 +357,7 @@ class Glacis:
             # Online attestation ID
             return self._verify_online(receipt)
         elif isinstance(receipt, AttestReceipt):
-            return self._verify_online(receipt.attestation_id)
+            return self._verify_online(receipt.attestation_hash)
         else:
             raise TypeError(f"Invalid receipt type: {type(receipt)}")
 
@@ -359,13 +382,13 @@ class Glacis:
             # which we don't currently do. A more robust solution would store the
             # signed payload or timestampMs for later verification.
 
-            # Use WASM to verify if we have the runtime
-            if self._wasm_runtime and self._signing_seed:
+            # Use Ed25519 to verify if we have the runtime
+            if self._ed25519 and self._signing_seed:
                 # We can at least verify the public key matches our seed
-                derived_pubkey = self._wasm_runtime.get_public_key_hex(self._signing_seed)
+                derived_pubkey = self._ed25519.get_public_key_hex(self._signing_seed)
                 signature_valid = derived_pubkey == receipt.public_key
             else:
-                # Without the WASM runtime, we can't fully verify
+                # Without the Ed25519 runtime, we can't fully verify
                 # But we can check if the receipt is in our storage
                 signature_valid = True  # Trusted from local storage
 
@@ -430,9 +453,9 @@ class Glacis:
         """
         params: dict[str, Any] = {}
         if org_id:
-            params["org_id"] = org_id
+            params["orgId"] = org_id
         if service_id:
-            params["service_id"] = service_id
+            params["serviceId"] = service_id
         if start:
             params["start"] = start
         if end:
@@ -702,9 +725,9 @@ class AsyncGlacis:
         """
         params: dict[str, Any] = {}
         if org_id:
-            params["org_id"] = org_id
+            params["orgId"] = org_id
         if service_id:
-            params["service_id"] = service_id
+            params["serviceId"] = service_id
         if start:
             params["start"] = start
         if end:

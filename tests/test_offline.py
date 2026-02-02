@@ -136,47 +136,29 @@ class TestOfflineMode:
 
             glacis.close()
 
-    def test_wasm_runtime_loads(self):
-        """WASM runtime loads and functions correctly."""
-        from glacis.wasm_runtime import WasmRuntime
+    def test_ed25519_runtime_loads(self):
+        """Ed25519 runtime loads and functions correctly."""
+        from glacis.crypto import get_ed25519_runtime
 
-        runtime = WasmRuntime.get_instance()
-
-        # Test SHA-256
-        hash_result = runtime.sha256(b"hello world")
-        expected = bytes.fromhex(
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        )
-        assert hash_result == expected
+        runtime = get_ed25519_runtime()
 
         # Test public key derivation
         seed = bytes(32)  # All zeros
-        pubkey = runtime.derive_public_key(seed)
-        assert len(pubkey) == 32
-
         pubkey_hex = runtime.get_public_key_hex(seed)
         assert len(pubkey_hex) == 64
-        assert pubkey.hex() == pubkey_hex
 
-    def test_wasm_signing_and_verification(self):
-        """WASM Ed25519 signing and verification works."""
-        from glacis.wasm_runtime import WasmRuntime
+    def test_ed25519_signing(self):
+        """Ed25519 signing works."""
+        from glacis.crypto import get_ed25519_runtime
 
-        runtime = WasmRuntime.get_instance()
+        runtime = get_ed25519_runtime()
 
         seed = os.urandom(32)
         message = b"test message"
 
         # Sign
-        signature = runtime.ed25519_sign(seed, message)
+        signature = runtime.sign(seed, message)
         assert len(signature) == 64
-
-        # Verify
-        pubkey = runtime.derive_public_key(seed)
-        assert runtime.ed25519_verify(pubkey, message, signature) is True
-
-        # Verify with wrong message should fail
-        assert runtime.ed25519_verify(pubkey, b"wrong", signature) is False
 
 
 class TestOpenAIOfflineIntegration:

@@ -1,8 +1,11 @@
 """
-SQLite storage for offline receipts.
+SQLite storage for attestation receipts and evidence.
 
-Stores local attestation receipts in ~/.glacis/receipts.db for persistence
-and later verification.
+Stores local attestation receipts and full evidence in ~/.glacis/glacis.db
+for persistence, audit trails, and later verification.
+
+Evidence (input, output, control_plane_results) is stored locally for zero-egress
+compliance - only hashes are sent to the GLACIS server.
 """
 
 from __future__ import annotations
@@ -14,11 +17,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from glacis.models import OfflineAttestReceipt
+    from glacis.models import AttestReceipt, ControlPlaneAttestation, OfflineAttestReceipt
 
-DEFAULT_DB_PATH = Path.home() / ".glacis" / "receipts.db"
+DEFAULT_DB_PATH = Path.home() / ".glacis" / "glacis.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS offline_receipts (
@@ -40,9 +43,55 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON offline_receipts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_payload_hash ON offline_receipts(payload_hash);
 CREATE INDEX IF NOT EXISTS idx_created_at ON offline_receipts(created_at);
 
+-- Evidence table for full audit trail (both online and offline modes)
+CREATE TABLE IF NOT EXISTS evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attestation_id TEXT NOT NULL,
+    attestation_hash TEXT NOT NULL,
+    mode TEXT NOT NULL,  -- 'online' or 'offline'
+    service_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    output_json TEXT NOT NULL,
+    control_plane_json TEXT,
+    metadata_json TEXT,
+    UNIQUE(attestation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_id ON evidence(attestation_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_hash ON evidence(attestation_hash);
+CREATE INDEX IF NOT EXISTS idx_evidence_service_id ON evidence(service_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
+
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
+"""
+
+# Migration from v1 to v2: Add evidence table
+MIGRATION_V1_TO_V2 = """
+CREATE TABLE IF NOT EXISTS evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attestation_id TEXT NOT NULL,
+    attestation_hash TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    output_json TEXT NOT NULL,
+    control_plane_json TEXT,
+    metadata_json TEXT,
+    UNIQUE(attestation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_id ON evidence(attestation_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_hash ON evidence(attestation_hash);
+CREATE INDEX IF NOT EXISTS idx_evidence_service_id ON evidence(service_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
 """
 
 
@@ -102,12 +151,16 @@ class ReceiptStorage:
 
     def _run_migrations(self, from_version: int) -> None:
         """Run schema migrations."""
-        # No migrations needed yet since this is v1
         conn = self._conn
         if conn is None:
             return
 
         cursor = conn.cursor()
+
+        # Migration from v1 to v2: Add evidence table
+        if from_version < 2:
+            cursor.executescript(MIGRATION_V1_TO_V2)
+
         cursor.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
             (SCHEMA_VERSION,),
@@ -334,3 +387,263 @@ class ReceiptStorage:
     ) -> None:
         """Context manager exit."""
         self.close()
+
+    # =========================================================================
+    # Evidence Storage (for full audit trail)
+    # =========================================================================
+
+    def store_evidence(
+        self,
+        attestation_id: str,
+        attestation_hash: str,
+        mode: str,
+        service_id: str,
+        operation_type: str,
+        timestamp: str,
+        input_data: Any,
+        output_data: Any,
+        control_plane_results: Optional["ControlPlaneAttestation"] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """
+        Store full evidence for an attestation.
+
+        This stores the complete input, output, and control plane results locally
+        for audit trails and dispute resolution. Only the hash was sent to GLACIS.
+
+        Args:
+            attestation_id: The attestation ID (att_xxx or oatt_xxx)
+            attestation_hash: The hash that was attested (payload_hash)
+            mode: 'online' or 'offline'
+            service_id: Service identifier
+            operation_type: Type of operation
+            timestamp: ISO 8601 timestamp
+            input_data: Full input data (will be JSON serialized)
+            output_data: Full output data (will be JSON serialized)
+            control_plane_results: Optional control plane attestation
+            metadata: Optional metadata dict
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        control_plane_json = None
+        if control_plane_results:
+            control_plane_json = json.dumps(
+                control_plane_results.model_dump(by_alias=True)
+            )
+
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO evidence
+            (attestation_id, attestation_hash, mode, service_id, operation_type,
+             timestamp, created_at, input_json, output_json, control_plane_json, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attestation_id,
+                attestation_hash,
+                mode,
+                service_id,
+                operation_type,
+                timestamp,
+                datetime.utcnow().isoformat() + "Z",
+                json.dumps(input_data),
+                json.dumps(output_data),
+                control_plane_json,
+                json.dumps(metadata) if metadata else None,
+            ),
+        )
+        conn.commit()
+
+    def get_evidence(self, attestation_id: str) -> Optional[dict[str, Any]]:
+        """
+        Retrieve full evidence by attestation ID.
+
+        Args:
+            attestation_id: The attestation ID (att_xxx or oatt_xxx)
+
+        Returns:
+            Dict with input, output, control_plane_results, and metadata,
+            or None if not found
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM evidence WHERE attestation_id = ?",
+            (attestation_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        result: dict[str, Any] = {
+            "attestation_id": row["attestation_id"],
+            "attestation_hash": row["attestation_hash"],
+            "mode": row["mode"],
+            "service_id": row["service_id"],
+            "operation_type": row["operation_type"],
+            "timestamp": row["timestamp"],
+            "created_at": row["created_at"],
+            "input": json.loads(row["input_json"]),
+            "output": json.loads(row["output_json"]),
+            "control_plane_results": (
+                json.loads(row["control_plane_json"])
+                if row["control_plane_json"]
+                else None
+            ),
+            "metadata": (
+                json.loads(row["metadata_json"]) if row["metadata_json"] else None
+            ),
+        }
+        return result
+
+    def get_evidence_by_hash(self, attestation_hash: str) -> Optional[dict[str, Any]]:
+        """
+        Retrieve full evidence by attestation hash.
+
+        Useful for verifying that stored evidence matches the attested hash.
+
+        Args:
+            attestation_hash: The payload hash that was attested
+
+        Returns:
+            Dict with input, output, control_plane_results, and metadata,
+            or None if not found
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM evidence WHERE attestation_hash = ?",
+            (attestation_hash,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        result: dict[str, Any] = {
+            "attestation_id": row["attestation_id"],
+            "attestation_hash": row["attestation_hash"],
+            "mode": row["mode"],
+            "service_id": row["service_id"],
+            "operation_type": row["operation_type"],
+            "timestamp": row["timestamp"],
+            "created_at": row["created_at"],
+            "input": json.loads(row["input_json"]),
+            "output": json.loads(row["output_json"]),
+            "control_plane_results": (
+                json.loads(row["control_plane_json"])
+                if row["control_plane_json"]
+                else None
+            ),
+            "metadata": (
+                json.loads(row["metadata_json"]) if row["metadata_json"] else None
+            ),
+        }
+        return result
+
+    def query_evidence(
+        self,
+        service_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """
+        Query evidence with optional filters.
+
+        Args:
+            service_id: Filter by service ID
+            mode: Filter by mode ('online' or 'offline')
+            start: Filter by timestamp >= start (ISO 8601)
+            end: Filter by timestamp <= end (ISO 8601)
+            limit: Maximum number of results (default 50)
+
+        Returns:
+            List of evidence records
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        query = "SELECT * FROM evidence WHERE 1=1"
+        params: list[Any] = []
+
+        if service_id:
+            query += " AND service_id = ?"
+            params.append(service_id)
+        if mode:
+            query += " AND mode = ?"
+            params.append(mode)
+        if start:
+            query += " AND timestamp >= ?"
+            params.append(start)
+        if end:
+            query += " AND timestamp <= ?"
+            params.append(end)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        results = []
+        for row in rows:
+            results.append({
+                "attestation_id": row["attestation_id"],
+                "attestation_hash": row["attestation_hash"],
+                "mode": row["mode"],
+                "service_id": row["service_id"],
+                "operation_type": row["operation_type"],
+                "timestamp": row["timestamp"],
+                "created_at": row["created_at"],
+                "input": json.loads(row["input_json"]),
+                "output": json.loads(row["output_json"]),
+                "control_plane_results": (
+                    json.loads(row["control_plane_json"])
+                    if row["control_plane_json"]
+                    else None
+                ),
+                "metadata": (
+                    json.loads(row["metadata_json"]) if row["metadata_json"] else None
+                ),
+            })
+        return results
+
+    def count_evidence(
+        self, service_id: Optional[str] = None, mode: Optional[str] = None
+    ) -> int:
+        """
+        Count evidence records.
+
+        Args:
+            service_id: Optional service ID filter
+            mode: Optional mode filter ('online' or 'offline')
+
+        Returns:
+            Number of matching evidence records
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        query = "SELECT COUNT(*) FROM evidence WHERE 1=1"
+        params: list[Any] = []
+
+        if service_id:
+            query += " AND service_id = ?"
+            params.append(service_id)
+        if mode:
+            query += " AND mode = ?"
+            params.append(mode)
+
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+    # NOTE: Evidence is intentionally append-only (no delete method).
+    # For a compliant audit trail, evidence must be immutable.
+    # Evidence deletion should only happen through:
+    # 1. Data retention policies (automated, time-based)
+    # 2. Explicit admin/compliance operations
+    # 3. Legal requirements (GDPR right to be forgotten)
+    # These operations should be logged and audited separately.

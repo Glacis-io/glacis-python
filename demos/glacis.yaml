@@ -1,0 +1,30 @@
+# GLACIS Configuration
+# This file controls attestation and control settings
+
+version: "1.0"
+
+# Policy metadata (included in attestations)
+policy:
+  id: "hipaa-safe-harbor"
+  version: "1.0"
+  tenant_id: "demo-org"
+
+# Controls configuration
+controls:
+  # PII/PHI Redaction (HIPAA Safe Harbor)
+  pii_phi:
+    enabled: true
+    backend: "presidio"       # Backend model identifier
+    mode: "fast"              # "fast" (regex only) or "full" (regex + NER)
+
+  # Jailbreak/Prompt Injection Detection
+  jailbreak:
+    enabled: true
+    backend: "prompt_guard_22m"  # "prompt_guard_22m" or "prompt_guard_86m"
+    threshold: 0.5               # Classification threshold (0-1)
+    action: "flag"               # "flag" | "block" | "log"
+
+# Attestation settings
+attestation:
+  offline: true
+  service_id: "glacis-demo"
