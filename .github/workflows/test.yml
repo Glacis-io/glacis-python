@@ -37,7 +37,7 @@ jobs:
       - name: Lint
         run: ruff check glacis/
 
-  verify-wasm:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,13 +52,8 @@ jobs:
           pip install build
           python -m build
 
-      - name: Verify WASM in wheel
-        run: |
-          unzip -l dist/*.whl | grep -q "s3p_core_wasi.wasm"
-          echo "WASM binary found in wheel"
-
       - name: Test wheel installation
         run: |
           pip install dist/*.whl
           python -c "from glacis import Glacis; print('Import OK')"
-          python -c "from glacis.wasm_runtime import get_runtime; print(f'Runtime: {get_runtime()}')"
+          python -c "from glacis.crypto import get_ed25519_runtime; print(f'Ed25519 runtime loaded')"
