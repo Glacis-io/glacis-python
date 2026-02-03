@@ -134,7 +134,9 @@ class AttestReceipt(BaseModel):
     receipt: Optional[FullReceipt] = Field(default=None, description="Full receipt with proofs")
     verify_url: str = Field(alias="verifyUrl", description="Verification endpoint URL")
     control_plane_results: Optional["ControlPlaneAttestation"] = Field(
-        alias="controlPlaneResults", default=None, description="Control plane results from executed controls"
+        alias="controlPlaneResults",
+        default=None,
+        description="Control plane results from executed controls",
     )
 
     # Computed properties for convenience
@@ -203,7 +205,9 @@ class VerifyResult(BaseModel):
     org: Optional[OrgInfo] = Field(default=None, description="Organization info")
     verification: Optional[Verification] = Field(default=None, description="Verification details")
     proof: Optional[MerkleInclusionProof] = Field(default=None, description="Merkle proof")
-    tree_head: Optional[SignedTreeHead] = Field(alias="treeHead", default=None, description="Current tree head")
+    tree_head: Optional[SignedTreeHead] = Field(
+        alias="treeHead", default=None, description="Current tree head"
+    )
     error: Optional[str] = Field(
         default=None, description="Error message if validation failed"
     )
@@ -255,7 +259,9 @@ class LogQueryResult(BaseModel):
         alias="nextCursor", default=None, description="Cursor for next page"
     )
     count: int = Field(description="Number of entries returned")
-    tree_head: Optional[SignedTreeHead] = Field(alias="treeHead", default=None, description="Current tree head")
+    tree_head: Optional[SignedTreeHead] = Field(
+        alias="treeHead", default=None, description="Current tree head"
+    )
 
     class Config:
         populate_by_name = True
@@ -411,7 +417,9 @@ class JailbreakSummary(BaseModel):
     detected: bool = False
     score: float = Field(default=0.0, ge=0.0, le=1.0, description="Model confidence score")
     action: Literal["pass", "flag", "block", "log"] = "pass"
-    categories: list[str] = Field(default_factory=list, description="Detection categories (e.g., ['jailbreak'])")
+    categories: list[str] = Field(
+        default_factory=list, description="Detection categories (e.g., ['jailbreak'])"
+    )
     backend: str = Field(default="", description="Backend model used for detection")
 
     class Config:
@@ -461,7 +469,9 @@ class ControlPlaneAttestation(BaseModel):
     controls: list[ControlExecution] = Field(default_factory=list)
     safety: SafetyScores
     pii_phi: Optional[PiiPhiSummary] = Field(alias="piiPhi", default=None)
-    jailbreak: Optional[JailbreakSummary] = Field(default=None, description="Jailbreak detection results")
+    jailbreak: Optional[JailbreakSummary] = Field(
+        default=None, description="Jailbreak detection results"
+    )
     evidence_commitment: Optional[str] = Field(alias="evidenceCommitment", default=None)
     deep_inspection: Optional[DeepInspection] = Field(alias="deepInspection", default=None)
     sampling: SamplingMetadata
@@ -503,7 +513,9 @@ class OfflineAttestReceipt(BaseModel):
         description="Always UNVERIFIED for offline receipts",
     )
     control_plane_results: Optional[ControlPlaneAttestation] = Field(
-        alias="controlPlaneResults", default=None, description="Control plane results from executed controls"
+        alias="controlPlaneResults",
+        default=None,
+        description="Control plane results from executed controls",
     )
 
     class Config:

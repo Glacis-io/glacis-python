@@ -19,7 +19,8 @@ Example:
 
 import hashlib
 import json
-from typing import Any
+from base64 import b64encode
+from typing import Any, Optional
 
 
 def canonical_json(data: Any) -> str:
@@ -124,10 +125,6 @@ def hash_bytes(data: bytes) -> str:
 # =============================================================================
 # Ed25519 Signing (for offline attestations)
 # =============================================================================
-
-from base64 import b64encode
-from typing import Optional
-
 
 class CryptoError(Exception):
     """Error from cryptographic operations."""

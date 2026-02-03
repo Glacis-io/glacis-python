@@ -111,7 +111,8 @@ class JailbreakControl(BaseControl):
         import os
 
         try:
-            from transformers import pipeline, logging as hf_logging
+            from transformers import logging as hf_logging
+            from transformers import pipeline
         except ImportError:
             raise ImportError(
                 "Jailbreak detection requires the 'transformers' package. "
@@ -145,7 +146,8 @@ class JailbreakControl(BaseControl):
         Returns:
             ControlResult with detection results:
             - detected: True if jailbreak attempt detected above threshold
-            - action: The configured action ("flag", "block", or "log") if detected, "pass" otherwise
+            - action: The configured action ("flag", "block", or "log")
+              if detected, "pass" otherwise
             - score: Model confidence score (0-1)
             - categories: ["jailbreak"] if detected, empty otherwise
             - metadata: Contains raw label and backend info
@@ -160,6 +162,7 @@ class JailbreakControl(BaseControl):
             'flag'
         """
         self._ensure_initialized()
+        assert self._classifier is not None
 
         start_time = time.perf_counter()
 
@@ -174,16 +177,28 @@ class JailbreakControl(BaseControl):
         label = result["label"]
         score = result["score"]
 
-        # For MALICIOUS label, score is confidence of malicious
-        # For BENIGN label, score is confidence of benign
+        # Prompt Guard 2 models return:
+        # - LABEL_0 or BENIGN = safe input
+        # - LABEL_1 or MALICIOUS = jailbreak/injection attempt
+        # The score is the confidence for that label
+        is_malicious_label = label in ("MALICIOUS", "LABEL_1")
+
+        # For MALICIOUS/LABEL_1, score is confidence of malicious
+        # For BENIGN/LABEL_0, score is confidence of benign
         # We want probability of malicious
-        if label == "MALICIOUS":
+        if is_malicious_label:
             malicious_score = score
         else:
-            # BENIGN with high confidence means low malicious probability
+            # BENIGN/LABEL_0 with high confidence means low malicious probability
             malicious_score = 1.0 - score
 
         detected = malicious_score >= self._config.threshold
+
+        # Debug output with normalized label names
+        label_name = "MALICIOUS" if is_malicious_label else "BENIGN"
+        print(f"[glacis] Jailbreak check: label={label_name}, raw_score={score:.3f}, "
+              f"malicious_score={malicious_score:.3f}, threshold={self._config.threshold}, "
+              f"detected={detected}")
 
         return ControlResult(
             control_type=self.control_type,

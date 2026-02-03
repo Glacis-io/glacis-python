@@ -19,7 +19,14 @@ if TYPE_CHECKING:
     from glacis import Glacis
     from glacis.config import GlacisConfig
     from glacis.controls import ControlsRunner
-    from glacis.models import AttestReceipt, OfflineAttestReceipt, ControlPlaneAttestation
+    from glacis.models import (
+        AttestReceipt,
+        ControlExecution,
+        ControlPlaneAttestation,
+        JailbreakSummary,
+        OfflineAttestReceipt,
+        PiiPhiSummary,
+    )
 
 
 # Thread-local storage for the last receipt
@@ -51,7 +58,7 @@ def set_last_receipt(receipt: Union["AttestReceipt", "OfflineAttestReceipt"]) ->
     _thread_local.last_receipt = receipt
 
 
-def get_evidence(attestation_id: str) -> Optional[dict]:
+def get_evidence(attestation_id: str) -> Optional[dict[str, Any]]:
     """
     Get the full evidence for an attestation by ID.
 
@@ -134,7 +141,7 @@ def initialize_config(
     Returns:
         Tuple of (config, effective_offline, effective_service_id)
     """
-    from glacis.config import GlacisConfig, load_config
+    from glacis.config import load_config
 
     cfg: GlacisConfig = load_config(config_path)
 
@@ -158,7 +165,9 @@ def initialize_config(
         effective_offline = cfg.attestation.offline
 
     # Determine service ID
-    effective_service_id = service_id if service_id != default_service_id else cfg.attestation.service_id
+    effective_service_id = (
+        service_id if service_id != default_service_id else cfg.attestation.service_id
+    )
 
     return cfg, effective_offline, effective_service_id
 
@@ -230,10 +239,10 @@ def store_evidence(
     receipt: Union["AttestReceipt", "OfflineAttestReceipt"],
     service_id: str,
     operation_type: str,
-    input_data: dict,
-    output_data: dict,
+    input_data: dict[str, Any],
+    output_data: dict[str, Any],
     control_plane_results: Optional["ControlPlaneAttestation"],
-    metadata: dict,
+    metadata: dict[str, Any],
     debug: bool,
 ) -> None:
     """
@@ -249,8 +258,8 @@ def store_evidence(
         metadata: Additional metadata
         debug: Enable debug logging
     """
-    from glacis.storage import ReceiptStorage
     from glacis.models import OfflineAttestReceipt
+    from glacis.storage import ReceiptStorage
 
     storage = ReceiptStorage()
     attestation_hash = (
@@ -285,4 +294,183 @@ __all__ = [
     "create_controls_runner",
     "store_evidence",
     "NOISY_LOGGERS",
+    "ControlResultsAccumulator",
+    "process_text_for_controls",
+    "create_control_plane_attestation_from_accumulator",
+    "handle_blocked_request",
 ]
+
+
+# --- Shared Control Execution Logic ---
+
+class ControlResultsAccumulator:
+    """Accumulates results from multiple control execution runs."""
+
+    def __init__(self) -> None:
+        self.pii_summary: Optional["PiiPhiSummary"] = None
+        self.jailbreak_summary: Optional["JailbreakSummary"] = None
+        self.control_executions: list["ControlExecution"] = []
+        self.should_block: bool = False
+
+    def update(self, results: list[Any]) -> None:
+        """Update accumulator with check results."""
+        from glacis.models import ControlExecution, JailbreakSummary, PiiPhiSummary
+
+        for result in results:
+            if result.control_type == "pii" and result.detected:
+                if self.pii_summary:
+                    self.pii_summary.categories = sorted(
+                        set(self.pii_summary.categories) | set(result.categories)
+                    )
+                    self.pii_summary.count += len(result.categories)
+                else:
+                    self.pii_summary = PiiPhiSummary(
+                        detected=True,
+                        action="redacted",
+                        categories=result.categories,
+                        count=len(result.categories),
+                    )
+                self.control_executions.append(
+                    ControlExecution(
+                        id="glacis-pii-redactor",
+                        type="pii",
+                        version="0.3.0",
+                        provider="glacis",
+                        latency_ms=result.latency_ms,
+                        status="flag",
+                    )
+                )
+
+            elif result.control_type == "jailbreak":
+                if not self.jailbreak_summary or (result.score or 0) > self.jailbreak_summary.score:
+                    self.jailbreak_summary = JailbreakSummary(
+                        detected=result.detected,
+                        score=result.score or 0.0,
+                        action=result.action,
+                        categories=result.categories,
+                        backend=result.metadata.get("backend", ""),
+                    )
+                self.control_executions.append(
+                    ControlExecution(
+                        id="glacis-jailbreak-detector",
+                        type="jailbreak",
+                        version="0.3.0",
+                        provider="glacis",
+                        latency_ms=result.latency_ms,
+                        status=result.action if result.detected else "pass",
+                    )
+                )
+                if result.action == "block":
+                    self.should_block = True
+
+
+def process_text_for_controls(
+    runner: "ControlsRunner",
+    text: str,
+    accumulator: ControlResultsAccumulator
+) -> str:
+    """Run controls on text, update accumulator, and return (potentially redacted) text."""
+    results = runner.run(text)
+    accumulator.update(results)
+    final_text = runner.get_final_text(results) or text
+    return final_text
+
+
+def create_control_plane_attestation_from_accumulator(
+    accumulator: ControlResultsAccumulator,
+    cfg: "GlacisConfig",
+    model: str,
+    provider: str,
+    endpoint: str,
+) -> Any:
+    """Create ControlPlaneAttestation from accumulated results."""
+    from glacis.models import (
+        ControlPlaneAttestation,
+        Determination,
+        ModelInfo,
+        PolicyContext,
+        PolicyScope,
+        SafetyScores,
+        SamplingDecision,
+        SamplingMetadata,
+    )
+
+    action: Literal["forwarded", "redacted", "blocked"]
+    trigger: Optional[str]
+    if accumulator.pii_summary:
+        action, trigger = "redacted", "pii"
+    elif accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
+        action = "blocked" if accumulator.jailbreak_summary.action == "block" else "forwarded"
+        trigger = "jailbreak"
+    else:
+        action, trigger = "forwarded", None
+
+    return ControlPlaneAttestation(
+        policy=PolicyContext(
+            id=cfg.policy.id,
+            version=cfg.policy.version,
+            model=ModelInfo(model_id=model, provider=provider),
+            scope=PolicyScope(
+                tenant_id=cfg.policy.tenant_id,
+                endpoint=endpoint,
+            ),
+        ),
+        determination=Determination(action=action, trigger=trigger, confidence=1.0),
+        controls=accumulator.control_executions,
+        safety=SafetyScores(
+            overall_risk=accumulator.jailbreak_summary.score
+            if accumulator.jailbreak_summary
+            else 0.0
+        ),
+        pii_phi=accumulator.pii_summary,
+        jailbreak=accumulator.jailbreak_summary,
+        sampling=SamplingMetadata(
+            level="L0",
+            decision=SamplingDecision(sampled=True, reason="forced", rate=1.0),
+        ),
+    )
+
+
+def handle_blocked_request(
+    glacis_client: "Glacis",
+    service_id: str,
+    input_data: dict[str, Any],
+    control_plane_results: Any,
+    provider: str,
+    model: str,
+    jailbreak_score: float,
+    debug: bool,
+) -> None:
+    """Attest a blocked request and raise GlacisBlockedError."""
+    output_data = {"blocked": True, "reason": "jailbreak_detected"}
+    metadata = {"provider": provider, "model": model, "blocked": str(True)}
+
+    try:
+        receipt = glacis_client.attest(
+            service_id=service_id,
+            operation_type="completion",
+            input=input_data,
+            output=output_data,
+            metadata=metadata,
+            control_plane_results=control_plane_results,
+        )
+        set_last_receipt(receipt)
+        store_evidence(
+            receipt=receipt,
+            service_id=service_id,
+            operation_type="completion",
+            input_data=input_data,
+            output_data=output_data,
+            control_plane_results=control_plane_results,
+            metadata=metadata,
+            debug=debug,
+        )
+    except Exception as e:
+        if debug:
+            print(f"[glacis] Attestation failed: {e}")
+
+    raise GlacisBlockedError(
+        f"Jailbreak detected (score={jailbreak_score:.2f})",
+        control_type="jailbreak",
+        score=jailbreak_score,
+    )

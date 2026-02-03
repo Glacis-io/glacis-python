@@ -199,7 +199,8 @@ class Glacis:
             input: Input data (hashed locally, never sent)
             output: Output data (hashed locally, never sent)
             metadata: Optional metadata (stored locally for evidence)
-            control_plane_results: Optional control plane attestation (hashed locally, cryptographically bound)
+            control_plane_results: Optional control plane attestation
+                (hashed locally, cryptographically bound)
 
         Returns:
             AttestReceipt (online) or OfflineAttestReceipt (offline)
@@ -211,12 +212,15 @@ class Glacis:
         # Build payload to hash - includes control_plane_results for cryptographic binding
         payload_to_hash: dict[str, Any] = {"input": input, "output": output}
         if control_plane_results:
-            payload_to_hash["control_plane_results"] = control_plane_results.model_dump(by_alias=True)
+            payload_to_hash["control_plane_results"] = (
+                control_plane_results.model_dump(by_alias=True)
+            )
         payload_hash = self.hash(payload_to_hash)
 
         if self.mode == GlacisMode.OFFLINE:
             return self._attest_offline(
-                service_id, operation_type, payload_hash, input, output, metadata, control_plane_results
+                service_id, operation_type, payload_hash,
+                input, output, metadata, control_plane_results,
             )
 
         return self._attest_online(service_id, operation_type, payload_hash, control_plane_results)
@@ -289,7 +293,9 @@ class Glacis:
 
         # Include control plane results in signed payload if provided
         if control_plane_results:
-            attestation_payload["controlPlaneResults"] = control_plane_results.model_dump(by_alias=True)
+            attestation_payload["controlPlaneResults"] = (
+                control_plane_results.model_dump(by_alias=True)
+            )
 
         # Sign using WASM
         attestation_json = json.dumps(

@@ -85,12 +85,12 @@ class TestGlacisSync:
         assert body["serviceId"] == "my-service"
         assert body["operationType"] == "inference"
         assert len(body["payloadHash"]) == 64  # SHA-256 hex
-        assert body["metadata"] == {"model": "gpt-4"}
 
-        # Payload should NOT be in the request
+        # Zero-egress: payload and metadata should NOT be in the request
         assert "input" not in body
         assert "output" not in body
         assert "prompt" not in body
+        assert "metadata" not in body  # Metadata stored locally, not sent
 
         # Verify response parsing
         assert receipt.attestation_id == "att_test123"

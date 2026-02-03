@@ -95,7 +95,11 @@ class ControlsRunner:
         if config.pii_phi.enabled:
             self._controls.append(PIIControl(config.pii_phi))
             if debug:
-                print(f"[glacis] PIIControl initialized (backend={config.pii_phi.backend}, mode={config.pii_phi.mode})")
+                print(
+                    f"[glacis] PIIControl initialized"
+                    f" (backend={config.pii_phi.backend},"
+                    f" mode={config.pii_phi.mode})"
+                )
 
         if config.jailbreak.enabled:
             self._controls.append(JailbreakControl(config.jailbreak))
@@ -188,7 +192,9 @@ class ControlsRunner:
                 return result.modified_text
         return None
 
-    def get_result_by_type(self, results: list[ControlResult], control_type: str) -> Optional[ControlResult]:
+    def get_result_by_type(
+        self, results: list[ControlResult], control_type: str,
+    ) -> Optional[ControlResult]:
         """
         Get a specific control's result by type.
 

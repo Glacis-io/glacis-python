@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from glacis.models import AttestReceipt, ControlPlaneAttestation, OfflineAttestReceipt
+    from glacis.models import ControlPlaneAttestation, OfflineAttestReceipt
 
 DEFAULT_DB_PATH = Path.home() / ".glacis" / "glacis.db"
 
@@ -116,7 +116,10 @@ class ReceiptStorage:
     def _get_connection(self) -> sqlite3.Connection:
         """Get or create database connection."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
+            # check_same_thread=False allows the connection to be used across threads
+            # This is safe because we're only doing simple CRUD operations
+            # and SQLite handles locking internally
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._init_schema()
         return self._conn

@@ -14,7 +14,6 @@ from typing import Any, Union
 
 import httpx
 
-from glacis import Glacis
 from glacis.models import (
     AttestReceipt,
     OfflineAttestReceipt,

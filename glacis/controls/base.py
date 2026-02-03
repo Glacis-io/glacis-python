@@ -31,7 +31,7 @@ class ControlResult(BaseModel):
 
     control_type: str = Field(description="Control type identifier")
     detected: bool = Field(default=False, description="Whether threat was detected")
-    action: Literal["pass", "flag", "block", "redact"] = Field(
+    action: Literal["pass", "flag", "block", "redact", "log"] = Field(
         default="pass", description="Action taken or recommended"
     )
     score: Optional[float] = Field(
