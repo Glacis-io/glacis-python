@@ -141,165 +141,53 @@ def attested_anthropic(
         system = kwargs.get("system")
 
         # Run controls if enabled
-        pii_summary: Optional[PiiPhiSummary] = None
-        jailbreak_summary: Optional[JailbreakSummary] = None
-        control_executions: list[ControlExecution] = []
-
         if controls_runner:
-            # Process system prompt through controls
-            if system and isinstance(system, str):
-                results = controls_runner.run(system)
-                for result in results:
-                    if result.control_type == "pii" and result.detected:
-                        pii_summary = PiiPhiSummary(
-                            detected=True,
-                            action="redacted",
-                            categories=result.categories,
-                            count=len(result.categories),
-                        )
-                        control_executions.append(
-                            ControlExecution(
-                                id="glacis-pii-redactor",
-                                type="pii",
-                                version="0.3.0",
-                                provider="glacis",
-                                latency_ms=result.latency_ms,
-                                status="flag",
-                            )
-                        )
-                    elif result.control_type == "jailbreak":
-                        jailbreak_summary = JailbreakSummary(
-                            detected=result.detected,
-                            score=result.score or 0.0,
-                            action=result.action,
-                            categories=result.categories,
-                            backend=result.metadata.get("backend", ""),
-                        )
-                        control_executions.append(
-                            ControlExecution(
-                                id="glacis-jailbreak-detector",
-                                type="jailbreak",
-                                version="0.3.0",
-                                provider="glacis",
-                                latency_ms=result.latency_ms,
-                                status=result.action if result.detected else "pass",
-                            )
-                        )
-                        if result.action == "block":
-                            raise GlacisBlockedError(
-                                f"Jailbreak detected in system prompt (score={result.score:.2f})",
-                                control_type="jailbreak",
-                                score=jailbreak_summary.score,
-                            )
+            from glacis.integrations.base import (
+                ControlResultsAccumulator,
+                process_text_for_controls,
+                create_control_plane_attestation_from_accumulator,
+                handle_blocked_request,
+            )
 
-                final_system = controls_runner.get_final_text(results) or system
+            accumulator = ControlResultsAccumulator()
+            
+            # Process system prompt through controls (system prompt is always "new" in current context)
+            if system and isinstance(system, str):
+                final_system = process_text_for_controls(controls_runner, system, accumulator)
                 kwargs["system"] = final_system
 
-            # Process each message through controls
+            # Process messages with delta scanning (only scan last user message)
             processed_messages = []
+            
+            # Find the last user message index
+            last_user_idx = -1
+            for i, msg in enumerate(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    last_user_idx = i
 
-            for msg in messages:
-                if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                    content = msg["content"]
-                    results = controls_runner.run(content)
-
-                    for result in results:
-                        if result.control_type == "pii" and result.detected:
-                            if pii_summary:
-                                pii_summary.categories = sorted(
-                                    set(pii_summary.categories) | set(result.categories)
-                                )
-                                pii_summary.count += len(result.categories)
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "") if isinstance(msg, dict) else ""
+                
+                # Only run controls on the LAST user message (the new one)
+                if role == "user" and i == last_user_idx:
+                    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                        content = msg["content"]
+                        final_text = process_text_for_controls(controls_runner, content, accumulator)
+                        processed_messages.append({**msg, "content": final_text})
+                    
+                    elif isinstance(msg, dict) and isinstance(msg.get("content"), list):
+                        # Handle content blocks (text, image, etc.)
+                        redacted_content = []
+                        for block in msg["content"]:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text", "")
+                                final_text = process_text_for_controls(controls_runner, text, accumulator)
+                                redacted_content.append({**block, "text": final_text})
                             else:
-                                pii_summary = PiiPhiSummary(
-                                    detected=True,
-                                    action="redacted",
-                                    categories=result.categories,
-                                    count=len(result.categories),
-                                )
-                            control_executions.append(
-                                ControlExecution(
-                                    id="glacis-pii-redactor",
-                                    type="pii",
-                                    version="0.3.0",
-                                    provider="glacis",
-                                    latency_ms=result.latency_ms,
-                                    status="flag",
-                                )
-                            )
-
-                        elif result.control_type == "jailbreak":
-                            if not jailbreak_summary or (result.score or 0) > jailbreak_summary.score:
-                                jailbreak_summary = JailbreakSummary(
-                                    detected=result.detected,
-                                    score=result.score or 0.0,
-                                    action=result.action,
-                                    categories=result.categories,
-                                    backend=result.metadata.get("backend", ""),
-                                )
-                            control_executions.append(
-                                ControlExecution(
-                                    id="glacis-jailbreak-detector",
-                                    type="jailbreak",
-                                    version="0.3.0",
-                                    provider="glacis",
-                                    latency_ms=result.latency_ms,
-                                    status=result.action if result.detected else "pass",
-                                )
-                            )
-                            if result.action == "block":
-                                raise GlacisBlockedError(
-                                    f"Jailbreak detected (score={result.score:.2f})",
-                                    control_type="jailbreak",
-                                    score=jailbreak_summary.score,
-                                )
-
-                    final_text = controls_runner.get_final_text(results) or content
-                    processed_messages.append({**msg, "content": final_text})
-
-                elif isinstance(msg, dict) and isinstance(msg.get("content"), list):
-                    # Handle content blocks (text, image, etc.)
-                    redacted_content = []
-                    for block in msg["content"]:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            results = controls_runner.run(text)
-
-                            for result in results:
-                                if result.control_type == "pii" and result.detected:
-                                    if pii_summary:
-                                        pii_summary.categories = sorted(
-                                            set(pii_summary.categories) | set(result.categories)
-                                        )
-                                        pii_summary.count += len(result.categories)
-                                    else:
-                                        pii_summary = PiiPhiSummary(
-                                            detected=True,
-                                            action="redacted",
-                                            categories=result.categories,
-                                            count=len(result.categories),
-                                        )
-                                elif result.control_type == "jailbreak":
-                                    if not jailbreak_summary or (result.score or 0) > jailbreak_summary.score:
-                                        jailbreak_summary = JailbreakSummary(
-                                            detected=result.detected,
-                                            score=result.score or 0.0,
-                                            action=result.action,
-                                            categories=result.categories,
-                                            backend=result.metadata.get("backend", ""),
-                                        )
-                                    if result.action == "block":
-                                        raise GlacisBlockedError(
-                                            f"Jailbreak detected (score={result.score:.2f})",
-                                            control_type="jailbreak",
-                                            score=jailbreak_summary.score,
-                                        )
-
-                            final_text = controls_runner.get_final_text(results) or text
-                            redacted_content.append({**block, "text": final_text})
-                        else:
-                            redacted_content.append(block)
-                    processed_messages.append({**msg, "content": redacted_content})
+                                redacted_content.append(block)
+                        processed_messages.append({**msg, "content": redacted_content})
+                    else:
+                        processed_messages.append(msg)
                 else:
                     processed_messages.append(msg)
 
@@ -307,45 +195,37 @@ def attested_anthropic(
             messages = processed_messages
 
             if debug:
-                if pii_summary:
-                    print(f"[glacis] PII redacted: {pii_summary.categories} ({pii_summary.count} items)")
-                if jailbreak_summary and jailbreak_summary.detected:
-                    print(f"[glacis] Jailbreak detected: score={jailbreak_summary.score:.2f}, action={jailbreak_summary.action}")
+                if accumulator.pii_summary:
+                    print(f"[glacis] PII redacted: {accumulator.pii_summary.categories} ({accumulator.pii_summary.count} items)")
+                if accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
+                    print(f"[glacis] Jailbreak detected: score={accumulator.jailbreak_summary.score:.2f}, action={accumulator.jailbreak_summary.action}")
 
-        # Make the API call
-        response = original_create(*args, **kwargs)
-
-        # Build control plane attestation
-        control_plane_results: Optional[ControlPlaneAttestation] = None
-        if controls_runner:
-            if pii_summary:
-                action, trigger = "redacted", "pii"
-            elif jailbreak_summary and jailbreak_summary.detected:
-                action = "blocked" if jailbreak_summary.action == "block" else "forwarded"
-                trigger = "jailbreak"
-            else:
-                action, trigger = "forwarded", None
-
-            control_plane_results = ControlPlaneAttestation(
-                policy=PolicyContext(
-                    id=cfg.policy.id,
-                    version=cfg.policy.version,
-                    model=ModelInfo(model_id=model, provider="anthropic"),
-                    scope=PolicyScope(
-                        tenant_id=cfg.policy.tenant_id,
-                        endpoint="messages.create",
-                    ),
-                ),
-                determination=Determination(action=action, trigger=trigger, confidence=1.0),
-                controls=control_executions,
-                safety=SafetyScores(overall_risk=jailbreak_summary.score if jailbreak_summary else 0.0),
-                pii_phi=pii_summary,
-                jailbreak=jailbreak_summary,
-                sampling=SamplingMetadata(
-                    level="L0",
-                    decision=SamplingDecision(sampled=True, reason="forced", rate=1.0),
-                ),
+            # Build control plane attestation
+            control_plane_results = create_control_plane_attestation_from_accumulator(
+                accumulator, cfg, model, "anthropic", "messages.create"
             )
+
+            # Check if we need to block BEFORE making the API call
+            if accumulator.should_block:
+                handle_blocked_request(
+                    glacis_client=glacis,
+                    service_id=effective_service_id,
+                    input_data={
+                        "model": model,
+                        "messages": messages,
+                        "system": kwargs.get("system")
+                    },
+                    control_plane_results=control_plane_results,
+                    provider="anthropic",
+                    model=model,
+                    jailbreak_score=accumulator.jailbreak_summary.score if accumulator.jailbreak_summary else 0.0,
+                    debug=debug,
+                )
+        else:
+            control_plane_results = None
+
+        # Make the API call (only if not blocked)
+        response = original_create(*args, **kwargs)
 
         # Build input/output data
         input_data: dict[str, Any] = {"model": model, "messages": messages}

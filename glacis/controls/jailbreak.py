@@ -174,16 +174,28 @@ class JailbreakControl(BaseControl):
         label = result["label"]
         score = result["score"]
 
-        # For MALICIOUS label, score is confidence of malicious
-        # For BENIGN label, score is confidence of benign
+        # Prompt Guard 2 models return:
+        # - LABEL_0 or BENIGN = safe input
+        # - LABEL_1 or MALICIOUS = jailbreak/injection attempt
+        # The score is the confidence for that label
+        is_malicious_label = label in ("MALICIOUS", "LABEL_1")
+
+        # For MALICIOUS/LABEL_1, score is confidence of malicious
+        # For BENIGN/LABEL_0, score is confidence of benign
         # We want probability of malicious
-        if label == "MALICIOUS":
+        if is_malicious_label:
             malicious_score = score
         else:
-            # BENIGN with high confidence means low malicious probability
+            # BENIGN/LABEL_0 with high confidence means low malicious probability
             malicious_score = 1.0 - score
 
         detected = malicious_score >= self._config.threshold
+
+        # Debug output with normalized label names
+        label_name = "MALICIOUS" if is_malicious_label else "BENIGN"
+        print(f"[glacis] Jailbreak check: label={label_name}, raw_score={score:.3f}, "
+              f"malicious_score={malicious_score:.3f}, threshold={self._config.threshold}, "
+              f"detected={detected}")
 
         return ControlResult(
             control_type=self.control_type,

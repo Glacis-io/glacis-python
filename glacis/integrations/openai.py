@@ -139,66 +139,29 @@ def attested_openai(
         model = kwargs.get("model", "unknown")
 
         # Run controls if enabled
-        pii_summary: Optional[PiiPhiSummary] = None
-        jailbreak_summary: Optional[JailbreakSummary] = None
-        control_executions: list[ControlExecution] = []
-
         if controls_runner:
+            from glacis.integrations.base import (
+                ControlResultsAccumulator,
+                process_text_for_controls,
+                create_control_plane_attestation_from_accumulator,
+                handle_blocked_request,
+            )
+
+            accumulator = ControlResultsAccumulator()
             processed_messages = []
 
-            for msg in messages:
+            # Find the last user message index (the new message to check)
+            last_user_idx = -1
+            for i, msg in enumerate(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    last_user_idx = i
+
+            for i, msg in enumerate(messages):
                 role = msg.get("role", "") if isinstance(msg, dict) else ""
-                if isinstance(msg, dict) and isinstance(msg.get("content"), str) and role == "user":
+                # Only run controls on the LAST user message (the new one)
+                if isinstance(msg, dict) and isinstance(msg.get("content"), str) and role == "user" and i == last_user_idx:
                     content = msg["content"]
-                    results = controls_runner.run(content)
-
-                    for result in results:
-                        if result.control_type == "pii":
-                            if result.detected:
-                                pii_summary = PiiPhiSummary(
-                                    detected=True,
-                                    action="redacted",
-                                    categories=result.categories,
-                                    count=len(result.categories),
-                                )
-                            control_executions.append(
-                                ControlExecution(
-                                    id="glacis-pii-redactor",
-                                    type="pii",
-                                    version="0.3.0",
-                                    provider="glacis",
-                                    latency_ms=result.latency_ms,
-                                    status="flag" if result.detected else "pass",
-                                )
-                            )
-
-                        elif result.control_type == "jailbreak":
-                            jailbreak_summary = JailbreakSummary(
-                                detected=result.detected,
-                                score=result.score or 0.0,
-                                action=result.action,
-                                categories=result.categories,
-                                backend=result.metadata.get("backend", ""),
-                            )
-                            control_executions.append(
-                                ControlExecution(
-                                    id="glacis-jailbreak-detector",
-                                    type="jailbreak",
-                                    version="0.3.0",
-                                    provider="glacis",
-                                    latency_ms=result.latency_ms,
-                                    status=result.action if result.detected else "pass",
-                                )
-                            )
-
-                            if result.action == "block":
-                                raise GlacisBlockedError(
-                                    f"Jailbreak detected (score={result.score:.2f})",
-                                    control_type="jailbreak",
-                                    score=jailbreak_summary.score,
-                                )
-
-                    final_text = controls_runner.get_final_text(results) or content
+                    final_text = process_text_for_controls(controls_runner, content, accumulator)
                     processed_messages.append({**msg, "content": final_text})
                 else:
                     processed_messages.append(msg)
@@ -206,40 +169,28 @@ def attested_openai(
             kwargs["messages"] = processed_messages
             messages = processed_messages
 
-        # Make the API call
-        response = original_create(*args, **kwargs)
-
-        # Build control plane attestation
-        control_plane_results: Optional[ControlPlaneAttestation] = None
-        if controls_runner:
-            if pii_summary:
-                action, trigger = "redacted", "pii"
-            elif jailbreak_summary and jailbreak_summary.detected:
-                action = "blocked" if jailbreak_summary.action == "block" else "forwarded"
-                trigger = "jailbreak"
-            else:
-                action, trigger = "forwarded", None
-
-            control_plane_results = ControlPlaneAttestation(
-                policy=PolicyContext(
-                    id=cfg.policy.id,
-                    version=cfg.policy.version,
-                    model=ModelInfo(model_id=model, provider="openai"),
-                    scope=PolicyScope(
-                        tenant_id=cfg.policy.tenant_id,
-                        endpoint="chat.completions",
-                    ),
-                ),
-                determination=Determination(action=action, trigger=trigger, confidence=1.0),
-                controls=control_executions,
-                safety=SafetyScores(overall_risk=jailbreak_summary.score if jailbreak_summary else 0.0),
-                pii_phi=pii_summary,
-                jailbreak=jailbreak_summary,
-                sampling=SamplingMetadata(
-                    level="L0",
-                    decision=SamplingDecision(sampled=True, reason="forced", rate=1.0),
-                ),
+            # Build control plane attestation
+            control_plane_results = create_control_plane_attestation_from_accumulator(
+                accumulator, cfg, model, "openai", "chat.completions"
             )
+
+            # Check if we need to block BEFORE making the API call
+            if accumulator.should_block:
+                handle_blocked_request(
+                    glacis_client=glacis,
+                    service_id=effective_service_id,
+                    input_data={"model": model, "messages": messages},
+                    control_plane_results=control_plane_results,
+                    provider="openai",
+                    model=model,
+                    jailbreak_score=accumulator.jailbreak_summary.score if accumulator.jailbreak_summary else 0.0,
+                    debug=debug,
+                )
+        else:
+            control_plane_results = None
+
+        # Make the API call (only if not blocked)
+        response = original_create(*args, **kwargs)
 
         # Build input/output data
         input_data = {"model": model, "messages": messages}
