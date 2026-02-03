@@ -85,19 +85,6 @@ def attested_anthropic(
             "Install it with: pip install glacis[anthropic]"
         )
 
-    from glacis.models import (
-        ControlExecution,
-        ControlPlaneAttestation,
-        Determination,
-        JailbreakSummary,
-        ModelInfo,
-        PiiPhiSummary,
-        PolicyContext,
-        PolicyScope,
-        SafetyScores,
-        SamplingDecision,
-        SamplingMetadata,
-    )
 
     # Initialize config and determine modes
     cfg, effective_offline, effective_service_id = initialize_config(
@@ -144,21 +131,23 @@ def attested_anthropic(
         if controls_runner:
             from glacis.integrations.base import (
                 ControlResultsAccumulator,
-                process_text_for_controls,
                 create_control_plane_attestation_from_accumulator,
                 handle_blocked_request,
+                process_text_for_controls,
             )
 
             accumulator = ControlResultsAccumulator()
-            
+
             # Process system prompt through controls (system prompt is always "new" in current context)
             if system and isinstance(system, str):
-                final_system = process_text_for_controls(controls_runner, system, accumulator)
+                final_system = process_text_for_controls(
+                    controls_runner, system, accumulator
+                )
                 kwargs["system"] = final_system
 
             # Process messages with delta scanning (only scan last user message)
             processed_messages = []
-            
+
             # Find the last user message index
             last_user_idx = -1
             for i, msg in enumerate(messages):
@@ -167,21 +156,25 @@ def attested_anthropic(
 
             for i, msg in enumerate(messages):
                 role = msg.get("role", "") if isinstance(msg, dict) else ""
-                
+
                 # Only run controls on the LAST user message (the new one)
                 if role == "user" and i == last_user_idx:
                     if isinstance(msg, dict) and isinstance(msg.get("content"), str):
                         content = msg["content"]
-                        final_text = process_text_for_controls(controls_runner, content, accumulator)
+                        final_text = process_text_for_controls(
+                            controls_runner, content, accumulator
+                        )
                         processed_messages.append({**msg, "content": final_text})
-                    
+
                     elif isinstance(msg, dict) and isinstance(msg.get("content"), list):
                         # Handle content blocks (text, image, etc.)
                         redacted_content = []
                         for block in msg["content"]:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 text = block.get("text", "")
-                                final_text = process_text_for_controls(controls_runner, text, accumulator)
+                                final_text = process_text_for_controls(
+                                    controls_runner, text, accumulator
+                                )
                                 redacted_content.append({**block, "text": final_text})
                             else:
                                 redacted_content.append(block)
@@ -196,9 +189,16 @@ def attested_anthropic(
 
             if debug:
                 if accumulator.pii_summary:
-                    print(f"[glacis] PII redacted: {accumulator.pii_summary.categories} ({accumulator.pii_summary.count} items)")
+                    print(
+                        f"[glacis] PII redacted: {accumulator.pii_summary.categories} "
+                        f"({accumulator.pii_summary.count} items)"
+                    )
                 if accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
-                    print(f"[glacis] Jailbreak detected: score={accumulator.jailbreak_summary.score:.2f}, action={accumulator.jailbreak_summary.action}")
+                    print(
+                        f"[glacis] Jailbreak detected: "
+                        f"score={accumulator.jailbreak_summary.score:.2f}, "
+                        f"action={accumulator.jailbreak_summary.action}"
+                    )
 
             # Build control plane attestation
             control_plane_results = create_control_plane_attestation_from_accumulator(
@@ -218,7 +218,9 @@ def attested_anthropic(
                     control_plane_results=control_plane_results,
                     provider="anthropic",
                     model=model,
-                    jailbreak_score=accumulator.jailbreak_summary.score if accumulator.jailbreak_summary else 0.0,
+                    jailbreak_score=accumulator.jailbreak_summary.score
+                    if accumulator.jailbreak_summary
+                    else 0.0,
                     debug=debug,
                 )
         else:

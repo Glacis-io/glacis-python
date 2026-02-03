@@ -17,9 +17,7 @@ from __future__ import annotations
 import logging
 import time
 import warnings
-from typing import TYPE_CHECKING, Any, Literal, Optional
-
-from pydantic import BaseModel, Field
+from typing import TYPE_CHECKING, Any, Optional
 
 from glacis.controls.base import BaseControl, ControlResult
 

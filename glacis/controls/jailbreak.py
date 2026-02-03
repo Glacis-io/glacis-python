@@ -111,7 +111,8 @@ class JailbreakControl(BaseControl):
         import os
 
         try:
-            from transformers import pipeline, logging as hf_logging
+            from transformers import logging as hf_logging
+            from transformers import pipeline
         except ImportError:
             raise ImportError(
                 "Jailbreak detection requires the 'transformers' package. "

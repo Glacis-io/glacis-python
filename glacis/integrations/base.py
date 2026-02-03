@@ -19,7 +19,14 @@ if TYPE_CHECKING:
     from glacis import Glacis
     from glacis.config import GlacisConfig
     from glacis.controls import ControlsRunner
-    from glacis.models import AttestReceipt, OfflineAttestReceipt, ControlPlaneAttestation
+    from glacis.models import (
+        AttestReceipt,
+        ControlExecution,
+        ControlPlaneAttestation,
+        JailbreakSummary,
+        OfflineAttestReceipt,
+        PiiPhiSummary,
+    )
 
 
 # Thread-local storage for the last receipt
@@ -134,7 +141,7 @@ def initialize_config(
     Returns:
         Tuple of (config, effective_offline, effective_service_id)
     """
-    from glacis.config import GlacisConfig, load_config
+    from glacis.config import load_config
 
     cfg: GlacisConfig = load_config(config_path)
 
@@ -158,7 +165,9 @@ def initialize_config(
         effective_offline = cfg.attestation.offline
 
     # Determine service ID
-    effective_service_id = service_id if service_id != default_service_id else cfg.attestation.service_id
+    effective_service_id = (
+        service_id if service_id != default_service_id else cfg.attestation.service_id
+    )
 
     return cfg, effective_offline, effective_service_id
 
@@ -249,8 +258,8 @@ def store_evidence(
         metadata: Additional metadata
         debug: Enable debug logging
     """
-    from glacis.storage import ReceiptStorage
     from glacis.models import OfflineAttestReceipt
+    from glacis.storage import ReceiptStorage
 
     storage = ReceiptStorage()
     attestation_hash = (
@@ -297,7 +306,7 @@ __all__ = [
 class ControlResultsAccumulator:
     """Accumulates results from multiple control execution runs."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.pii_summary: Optional["PiiPhiSummary"] = None
         self.jailbreak_summary: Optional["JailbreakSummary"] = None
         self.control_executions: list["ControlExecution"] = []
@@ -305,7 +314,7 @@ class ControlResultsAccumulator:
 
     def update(self, results: list[Any]) -> None:
         """Update accumulator with check results."""
-        from glacis.models import ControlExecution, PiiPhiSummary, JailbreakSummary
+        from glacis.models import ControlExecution, JailbreakSummary, PiiPhiSummary
 
         for result in results:
             if result.control_type == "pii" and result.detected:
@@ -406,7 +415,11 @@ def create_control_plane_attestation_from_accumulator(
         ),
         determination=Determination(action=action, trigger=trigger, confidence=1.0),
         controls=accumulator.control_executions,
-        safety=SafetyScores(overall_risk=accumulator.jailbreak_summary.score if accumulator.jailbreak_summary else 0.0),
+        safety=SafetyScores(
+            overall_risk=accumulator.jailbreak_summary.score
+            if accumulator.jailbreak_summary
+            else 0.0
+        ),
         pii_phi=accumulator.pii_summary,
         jailbreak=accumulator.jailbreak_summary,
         sampling=SamplingMetadata(
@@ -428,7 +441,7 @@ def handle_blocked_request(
 ) -> None:
     """Attest a blocked request and raise GlacisBlockedError."""
     output_data = {"blocked": True, "reason": "jailbreak_detected"}
-    metadata = {"provider": provider, "model": model, "blocked": True}
+    metadata = {"provider": provider, "model": model, "blocked": str(True)}
 
     try:
         receipt = glacis_client.attest(

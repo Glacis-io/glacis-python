@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from glacis.models import AttestReceipt, ControlPlaneAttestation, OfflineAttestReceipt
+    from glacis.models import ControlPlaneAttestation, OfflineAttestReceipt
 
 DEFAULT_DB_PATH = Path.home() / ".glacis" / "glacis.db"
 

@@ -84,19 +84,6 @@ def attested_openai(
             "Install it with: pip install glacis[openai]"
         )
 
-    from glacis.models import (
-        ControlExecution,
-        ControlPlaneAttestation,
-        Determination,
-        JailbreakSummary,
-        ModelInfo,
-        PiiPhiSummary,
-        PolicyContext,
-        PolicyScope,
-        SafetyScores,
-        SamplingDecision,
-        SamplingMetadata,
-    )
 
     # Initialize config and determine modes
     cfg, effective_offline, effective_service_id = initialize_config(
@@ -142,9 +129,9 @@ def attested_openai(
         if controls_runner:
             from glacis.integrations.base import (
                 ControlResultsAccumulator,
-                process_text_for_controls,
                 create_control_plane_attestation_from_accumulator,
                 handle_blocked_request,
+                process_text_for_controls,
             )
 
             accumulator = ControlResultsAccumulator()
@@ -159,7 +146,12 @@ def attested_openai(
             for i, msg in enumerate(messages):
                 role = msg.get("role", "") if isinstance(msg, dict) else ""
                 # Only run controls on the LAST user message (the new one)
-                if isinstance(msg, dict) and isinstance(msg.get("content"), str) and role == "user" and i == last_user_idx:
+                if (
+                    isinstance(msg, dict)
+                    and isinstance(msg.get("content"), str)
+                    and role == "user"
+                    and i == last_user_idx
+                ):
                     content = msg["content"]
                     final_text = process_text_for_controls(controls_runner, content, accumulator)
                     processed_messages.append({**msg, "content": final_text})
@@ -183,7 +175,9 @@ def attested_openai(
                     control_plane_results=control_plane_results,
                     provider="openai",
                     model=model,
-                    jailbreak_score=accumulator.jailbreak_summary.score if accumulator.jailbreak_summary else 0.0,
+                    jailbreak_score=accumulator.jailbreak_summary.score
+                    if accumulator.jailbreak_summary
+                    else 0.0,
                     debug=debug,
                 )
         else:
