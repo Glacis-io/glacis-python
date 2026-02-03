@@ -80,7 +80,7 @@ from glacis.streaming import SessionContext, SessionReceipt, StreamingSession
 
 # Controls module (optional dependencies for individual controls)
 try:
-    from glacis.controls import (
+    from glacis.controls import (  # noqa: F401
         BaseControl,
         ControlResult,
         ControlsRunner,

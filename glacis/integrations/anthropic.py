@@ -138,7 +138,8 @@ def attested_anthropic(
 
             accumulator = ControlResultsAccumulator()
 
-            # Process system prompt through controls (system prompt is always "new" in current context)
+            # Process system prompt through controls
+            # (system prompt is always "new" in current context)
             if system and isinstance(system, str):
                 final_system = process_text_for_controls(
                     controls_runner, system, accumulator

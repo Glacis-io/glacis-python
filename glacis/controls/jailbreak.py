@@ -146,7 +146,8 @@ class JailbreakControl(BaseControl):
         Returns:
             ControlResult with detection results:
             - detected: True if jailbreak attempt detected above threshold
-            - action: The configured action ("flag", "block", or "log") if detected, "pass" otherwise
+            - action: The configured action ("flag", "block", or "log")
+              if detected, "pass" otherwise
             - score: Model confidence score (0-1)
             - categories: ["jailbreak"] if detected, empty otherwise
             - metadata: Contains raw label and backend info

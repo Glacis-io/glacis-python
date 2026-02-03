@@ -464,7 +464,10 @@ class PIIControl(BaseControl):
             PatternRecognizer(
                 supported_entity="DATE_TIME",
                 patterns=date_patterns,
-                context=["dob", "birth", "born", "date of birth", "birthday", "admitted", "discharged", "died"],
+                context=[
+                    "dob", "birth", "born", "date of birth",
+                    "birthday", "admitted", "discharged", "died",
+                ],
             )
         )
 
@@ -555,7 +558,11 @@ class PIIControl(BaseControl):
             PatternRecognizer(
                 supported_entity="HEALTH_PLAN_BENEFICIARY",
                 patterns=health_plan_patterns,
-                context=["medicare", "medicaid", "member", "subscriber", "beneficiary", "insurance", "policy", "group", "health plan", "coverage"],
+                context=[
+                    "medicare", "medicaid", "member", "subscriber",
+                    "beneficiary", "insurance", "policy", "group",
+                    "health plan", "coverage",
+                ],
             )
         )
 
@@ -618,7 +625,11 @@ class PIIControl(BaseControl):
             PatternRecognizer(
                 supported_entity="MEDICAL_LICENSE",
                 patterns=medical_license_patterns,
-                context=["license", "medical license", "state license", "board certified", "credentials", "physician", "practitioner"],
+                context=[
+                    "license", "medical license", "state license",
+                    "board certified", "credentials", "physician",
+                    "practitioner",
+                ],
             )
         )
 
