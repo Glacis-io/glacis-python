@@ -58,7 +58,7 @@ def set_last_receipt(receipt: Union["AttestReceipt", "OfflineAttestReceipt"]) ->
     _thread_local.last_receipt = receipt
 
 
-def get_evidence(attestation_id: str) -> Optional[dict]:
+def get_evidence(attestation_id: str) -> Optional[dict[str, Any]]:
     """
     Get the full evidence for an attestation by ID.
 
@@ -239,10 +239,10 @@ def store_evidence(
     receipt: Union["AttestReceipt", "OfflineAttestReceipt"],
     service_id: str,
     operation_type: str,
-    input_data: dict,
-    output_data: dict,
+    input_data: dict[str, Any],
+    output_data: dict[str, Any],
     control_plane_results: Optional["ControlPlaneAttestation"],
-    metadata: dict,
+    metadata: dict[str, Any],
     debug: bool,
 ) -> None:
     """
@@ -395,6 +395,8 @@ def create_control_plane_attestation_from_accumulator(
         SamplingMetadata,
     )
 
+    action: Literal["forwarded", "redacted", "blocked"]
+    trigger: Optional[str]
     if accumulator.pii_summary:
         action, trigger = "redacted", "pii"
     elif accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
@@ -432,7 +434,7 @@ def create_control_plane_attestation_from_accumulator(
 def handle_blocked_request(
     glacis_client: "Glacis",
     service_id: str,
-    input_data: dict,
+    input_data: dict[str, Any],
     control_plane_results: Any,
     provider: str,
     model: str,

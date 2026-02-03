@@ -161,6 +161,7 @@ class JailbreakControl(BaseControl):
             'flag'
         """
         self._ensure_initialized()
+        assert self._classifier is not None
 
         start_time = time.perf_counter()
 
