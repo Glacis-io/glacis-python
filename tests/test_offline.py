@@ -190,5 +190,43 @@ class TestOpenAIOfflineIntegration:
         assert hasattr(client.chat.completions, "create")
 
 
+class TestGeminiOfflineIntegration:
+    """Test Gemini integration with offline mode (no actual API calls)."""
+
+    def test_attested_gemini_requires_seed_for_offline(self):
+        """attested_gemini with offline=True requires signing_seed."""
+        pytest.importorskip("google.genai")
+        from glacis.integrations.gemini import attested_gemini
+
+        with pytest.raises(ValueError, match="signing_seed is required"):
+            attested_gemini(offline=True)
+
+    def test_attested_gemini_offline_creates_client(self):
+        """attested_gemini with offline mode creates a wrapped client."""
+        pytest.importorskip("google.genai")
+        from glacis.integrations.gemini import attested_gemini
+
+        seed = os.urandom(32)
+        client = attested_gemini(
+            gemini_api_key="fake-key",
+            offline=True,
+            signing_seed=seed,
+        )
+
+        # Check the client was created and wrapped
+        assert hasattr(client.models, "generate_content")
+
+    def test_attested_gemini_requires_key_online(self):
+        """Online mode requires glacis_api_key."""
+        pytest.importorskip("google.genai")
+        from glacis.integrations.gemini import attested_gemini
+
+        with pytest.raises(ValueError, match="api_key|glacis_api_key"):
+            attested_gemini(
+                gemini_api_key="fake-key",
+                offline=False,
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

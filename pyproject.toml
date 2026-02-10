@@ -42,6 +42,9 @@ openai = [
 anthropic = [
     "anthropic>=0.18.0",
 ]
+gemini = [
+    "google-genai>=1.0.0",
+]
 redaction = [
     "presidio-analyzer>=2.2.0",
     "presidio-anonymizer>=2.2.0",
@@ -57,7 +60,7 @@ controls = [
     "glacis[redaction,jailbreak]",
 ]
 all = [
-    "glacis[dev,openai,anthropic,controls]",
+    "glacis[dev,openai,anthropic,gemini,controls]",
 ]
 
 [project.urls]
@@ -103,6 +106,10 @@ module = [
     "openai.*",
     "anthropic",
     "anthropic.*",
+    "google",
+    "google.*",
+    "google.genai",
+    "google.genai.*",
     "presidio_analyzer",
     "presidio_analyzer.*",
     "presidio_anonymizer",

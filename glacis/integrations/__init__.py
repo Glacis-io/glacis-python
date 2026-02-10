@@ -7,6 +7,7 @@ all API calls to the GLACIS transparency log with optional PII/PHI redaction.
 Available integrations:
 - OpenAI: `from glacis.integrations.openai import attested_openai`
 - Anthropic: `from glacis.integrations.anthropic import attested_anthropic`
+- Gemini: `from glacis.integrations.gemini import attested_gemini`
 
 Example (OpenAI):
     >>> from glacis.integrations.openai import attested_openai, get_last_receipt
@@ -45,18 +46,22 @@ from glacis.integrations.base import (
     get_evidence,
     get_last_receipt,
 )
+from glacis.integrations.gemini import attested_gemini
 from glacis.integrations.openai import attested_openai
 
 # Backwards compatible aliases
 get_last_openai_receipt = get_last_receipt
 get_last_anthropic_receipt = get_last_receipt
+get_last_gemini_receipt = get_last_receipt
 
 __all__ = [
     "attested_openai",
     "attested_anthropic",
+    "attested_gemini",
     "get_last_receipt",
     "get_last_openai_receipt",
     "get_last_anthropic_receipt",
+    "get_last_gemini_receipt",
     "get_evidence",
     "GlacisBlockedError",
 ]
