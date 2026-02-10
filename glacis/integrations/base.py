@@ -22,10 +22,8 @@ if TYPE_CHECKING:
     from glacis.models import (
         AttestReceipt,
         ControlExecution,
-        ControlPlaneAttestation,
-        JailbreakSummary,
+        ControlPlaneResults,
         OfflineAttestReceipt,
-        PiiPhiSummary,
     )
 
 
@@ -74,9 +72,9 @@ def get_evidence(attestation_id: str) -> Optional[dict[str, Any]]:
 
     Example:
         >>> receipt = get_last_receipt()
-        >>> evidence = get_evidence(receipt.attestation_id)
+        >>> evidence = get_evidence(receipt.id)
         >>> print(evidence["input"]["messages"])
-        >>> print(evidence["control_plane_results"]["pii_phi"])
+        >>> print(evidence["control_plane_results"]["controls"])
     """
     from glacis.storage import ReceiptStorage
 
@@ -241,7 +239,7 @@ def store_evidence(
     operation_type: str,
     input_data: dict[str, Any],
     output_data: dict[str, Any],
-    control_plane_results: Optional["ControlPlaneAttestation"],
+    control_plane_results: Optional["ControlPlaneResults"],
     metadata: dict[str, Any],
     debug: bool,
 ) -> None:
@@ -254,7 +252,7 @@ def store_evidence(
         operation_type: Type of operation
         input_data: Input payload
         output_data: Output payload
-        control_plane_results: Control plane attestation
+        control_plane_results: Control plane results
         metadata: Additional metadata
         debug: Enable debug logging
     """
@@ -262,14 +260,13 @@ def store_evidence(
     from glacis.storage import ReceiptStorage
 
     storage = ReceiptStorage()
-    attestation_hash = (
-        receipt.payload_hash
-        if isinstance(receipt, OfflineAttestReceipt)
-        else receipt.attestation_hash
-    )
+    # Both receipt types now use evidence_hash field (aligned)
+    evidence_hash = receipt.evidence_hash
+    # Both receipt types now use id field (aligned)
+    attestation_id = receipt.id
     storage.store_evidence(
-        attestation_id=receipt.attestation_id,
-        attestation_hash=attestation_hash,
+        attestation_id=attestation_id,
+        attestation_hash=evidence_hash,
         mode="offline" if isinstance(receipt, OfflineAttestReceipt) else "online",
         service_id=service_id,
         operation_type=operation_type,
@@ -280,7 +277,7 @@ def store_evidence(
         metadata=metadata,
     )
     if debug:
-        print(f"[glacis] Attestation created: {receipt.attestation_id}")
+        print(f"[glacis] Attestation created: {attestation_id}")
 
 
 __all__ = [
@@ -296,7 +293,8 @@ __all__ = [
     "NOISY_LOGGERS",
     "ControlResultsAccumulator",
     "process_text_for_controls",
-    "create_control_plane_attestation_from_accumulator",
+    "create_control_plane_results_from_accumulator",
+    "create_control_plane_attestation_from_accumulator",  # backward compat alias
     "handle_blocked_request",
 ]
 
@@ -304,32 +302,33 @@ __all__ = [
 # --- Shared Control Execution Logic ---
 
 class ControlResultsAccumulator:
-    """Accumulates results from multiple control execution runs."""
+    """Accumulates results from multiple control execution runs.
+
+    Tracks internal state for determining action (forwarded/redacted/blocked).
+    PII and jailbreak summaries are now captured in controls[] rather than
+    separate summary objects.
+    """
 
     def __init__(self) -> None:
-        self.pii_summary: Optional["PiiPhiSummary"] = None
-        self.jailbreak_summary: Optional["JailbreakSummary"] = None
+        # Internal state for action determination
+        self._pii_detected: bool = False
+        self._pii_categories: list[str] = []
+        self._jailbreak_detected: bool = False
+        self._jailbreak_score: float = 0.0
+        self._jailbreak_action: str = "pass"
         self.control_executions: list["ControlExecution"] = []
         self.should_block: bool = False
 
     def update(self, results: list[Any]) -> None:
         """Update accumulator with check results."""
-        from glacis.models import ControlExecution, JailbreakSummary, PiiPhiSummary
+        from glacis.models import ControlExecution
 
         for result in results:
             if result.control_type == "pii" and result.detected:
-                if self.pii_summary:
-                    self.pii_summary.categories = sorted(
-                        set(self.pii_summary.categories) | set(result.categories)
-                    )
-                    self.pii_summary.count += len(result.categories)
-                else:
-                    self.pii_summary = PiiPhiSummary(
-                        detected=True,
-                        action="redacted",
-                        categories=result.categories,
-                        count=len(result.categories),
-                    )
+                self._pii_detected = True
+                self._pii_categories = sorted(
+                    set(self._pii_categories) | set(result.categories)
+                )
                 self.control_executions.append(
                     ControlExecution(
                         id="glacis-pii-redactor",
@@ -342,14 +341,10 @@ class ControlResultsAccumulator:
                 )
 
             elif result.control_type == "jailbreak":
-                if not self.jailbreak_summary or (result.score or 0) > self.jailbreak_summary.score:
-                    self.jailbreak_summary = JailbreakSummary(
-                        detected=result.detected,
-                        score=result.score or 0.0,
-                        action=result.action,
-                        categories=result.categories,
-                        backend=result.metadata.get("backend", ""),
-                    )
+                if not self._jailbreak_detected or (result.score or 0) > self._jailbreak_score:
+                    self._jailbreak_detected = result.detected
+                    self._jailbreak_score = result.score or 0.0
+                    self._jailbreak_action = result.action
                 self.control_executions.append(
                     ControlExecution(
                         id="glacis-jailbreak-detector",
@@ -376,59 +371,56 @@ def process_text_for_controls(
     return final_text
 
 
-def create_control_plane_attestation_from_accumulator(
+def create_control_plane_results_from_accumulator(
     accumulator: ControlResultsAccumulator,
     cfg: "GlacisConfig",
     model: str,
     provider: str,
-    endpoint: str,
-) -> Any:
-    """Create ControlPlaneAttestation from accumulated results."""
+) -> "ControlPlaneResults":
+    """Create ControlPlaneResults from accumulated results.
+
+    Note: PII and jailbreak detection results are now captured in controls[]
+    rather than separate summary objects. Sampling info moved to Evidence/Review.
+    """
     from glacis.models import (
-        ControlPlaneAttestation,
+        ControlPlaneResults,
         Determination,
         ModelInfo,
         PolicyContext,
         PolicyScope,
         SafetyScores,
-        SamplingDecision,
-        SamplingMetadata,
     )
 
     action: Literal["forwarded", "redacted", "blocked"]
     trigger: Optional[str]
-    if accumulator.pii_summary:
+    if accumulator._pii_detected:
         action, trigger = "redacted", "pii"
-    elif accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
-        action = "blocked" if accumulator.jailbreak_summary.action == "block" else "forwarded"
+    elif accumulator._jailbreak_detected:
+        action = "blocked" if accumulator._jailbreak_action == "block" else "forwarded"
         trigger = "jailbreak"
     else:
         action, trigger = "forwarded", None
 
-    return ControlPlaneAttestation(
+    return ControlPlaneResults(
         policy=PolicyContext(
             id=cfg.policy.id,
             version=cfg.policy.version,
             model=ModelInfo(model_id=model, provider=provider),
             scope=PolicyScope(
-                tenant_id=cfg.policy.tenant_id,
-                endpoint=endpoint,
+                environment=cfg.policy.environment,
+                tags=cfg.policy.tags,
             ),
         ),
         determination=Determination(action=action, trigger=trigger, confidence=1.0),
         controls=accumulator.control_executions,
         safety=SafetyScores(
-            overall_risk=accumulator.jailbreak_summary.score
-            if accumulator.jailbreak_summary
-            else 0.0
-        ),
-        pii_phi=accumulator.pii_summary,
-        jailbreak=accumulator.jailbreak_summary,
-        sampling=SamplingMetadata(
-            level="L0",
-            decision=SamplingDecision(sampled=True, reason="forced", rate=1.0),
+            overall_risk=accumulator._jailbreak_score
         ),
     )
+
+
+# Keep old name for backward compatibility
+create_control_plane_attestation_from_accumulator = create_control_plane_results_from_accumulator
 
 
 def handle_blocked_request(

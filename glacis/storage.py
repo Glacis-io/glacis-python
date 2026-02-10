@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from glacis.models import ControlPlaneAttestation, OfflineAttestReceipt
+    from glacis.models import ControlPlaneResults, OfflineAttestReceipt
 
 DEFAULT_DB_PATH = Path.home() / ".glacis" / "glacis.db"
 
@@ -198,7 +198,7 @@ class ReceiptStorage:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                receipt.attestation_id,
+                receipt.id,
                 receipt.timestamp,
                 receipt.service_id,
                 receipt.operation_type,
@@ -236,7 +236,8 @@ class ReceiptStorage:
             return None
 
         return OfflineAttestReceipt(
-            attestation_id=row["attestation_id"],
+            id=row["attestation_id"],
+            evidence_hash=row["payload_hash"],
             timestamp=row["timestamp"],
             service_id=row["service_id"],
             operation_type=row["operation_type"],
@@ -264,7 +265,8 @@ class ReceiptStorage:
             return None
 
         return OfflineAttestReceipt(
-            attestation_id=row["attestation_id"],
+            id=row["attestation_id"],
+            evidence_hash=row["payload_hash"],
             timestamp=row["timestamp"],
             service_id=row["service_id"],
             operation_type=row["operation_type"],
@@ -318,7 +320,8 @@ class ReceiptStorage:
 
         return [
             OfflineAttestReceipt(
-                attestation_id=row["attestation_id"],
+                id=row["attestation_id"],
+                evidence_hash=row["payload_hash"],
                 timestamp=row["timestamp"],
                 service_id=row["service_id"],
                 operation_type=row["operation_type"],
@@ -402,10 +405,10 @@ class ReceiptStorage:
         mode: str,
         service_id: str,
         operation_type: str,
-        timestamp: str,
+        timestamp: int,
         input_data: Any,
         output_data: Any,
-        control_plane_results: Optional["ControlPlaneAttestation"] = None,
+        control_plane_results: Optional["ControlPlaneResults"] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """
@@ -420,10 +423,10 @@ class ReceiptStorage:
             mode: 'online' or 'offline'
             service_id: Service identifier
             operation_type: Type of operation
-            timestamp: ISO 8601 timestamp
+            timestamp: Unix timestamp in milliseconds
             input_data: Full input data (will be JSON serialized)
             output_data: Full output data (will be JSON serialized)
-            control_plane_results: Optional control plane attestation
+            control_plane_results: Optional control plane results
             metadata: Optional metadata dict
         """
         conn = self._get_connection()
@@ -448,7 +451,7 @@ class ReceiptStorage:
                 mode,
                 service_id,
                 operation_type,
-                timestamp,
+                str(timestamp),  # Store as string for compatibility
                 datetime.utcnow().isoformat() + "Z",
                 json.dumps(input_data),
                 json.dumps(output_data),

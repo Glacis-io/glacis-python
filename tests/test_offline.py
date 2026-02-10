@@ -45,7 +45,7 @@ class TestOfflineMode:
             )
 
             # Check receipt properties
-            assert receipt.attestation_id.startswith("oatt_")
+            assert receipt.id.startswith("oatt_")
             assert receipt.witness_status == "UNVERIFIED"
             assert receipt.service_id == "test-service"
             assert receipt.operation_type == "inference"
@@ -99,7 +99,7 @@ class TestOfflineMode:
 
             # Create new client and retrieve
             glacis2 = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
-            stored = glacis2._storage.get_receipt(receipt.attestation_id)
+            stored = glacis2._storage.get_receipt(receipt.id)
 
             assert stored is not None
             assert stored.payload_hash == receipt.payload_hash
@@ -132,7 +132,7 @@ class TestOfflineMode:
 
             last = glacis.get_last_receipt()
             assert last is not None
-            assert last.attestation_id == receipt2.attestation_id
+            assert last.id == receipt2.id
 
             glacis.close()
 

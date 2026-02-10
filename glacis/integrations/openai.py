@@ -163,7 +163,7 @@ def attested_openai(
 
             # Build control plane attestation
             control_plane_results = create_control_plane_attestation_from_accumulator(
-                accumulator, cfg, model, "openai", "chat.completions"
+                accumulator, cfg, model, "openai"
             )
 
             # Check if we need to block BEFORE making the API call
@@ -175,9 +175,7 @@ def attested_openai(
                     control_plane_results=control_plane_results,
                     provider="openai",
                     model=model,
-                    jailbreak_score=accumulator.jailbreak_summary.score
-                    if accumulator.jailbreak_summary
-                    else 0.0,
+                    jailbreak_score=accumulator._jailbreak_score,
                     debug=debug,
                 )
         else:

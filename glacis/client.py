@@ -43,7 +43,7 @@ import httpx
 from glacis.crypto import hash_payload
 from glacis.models import (
     AttestReceipt,
-    ControlPlaneAttestation,
+    ControlPlaneResults,
     GlacisApiError,
     GlacisRateLimitError,
     LogQueryResult,
@@ -184,7 +184,7 @@ class Glacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]] = None,
-        control_plane_results: Optional[ControlPlaneAttestation] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
     ) -> Union[AttestReceipt, OfflineAttestReceipt]:
         """
         Attest an AI operation.
@@ -230,7 +230,7 @@ class Glacis:
         service_id: str,
         operation_type: str,
         payload_hash: str,
-        control_plane_results: Optional[ControlPlaneAttestation] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
     ) -> AttestReceipt:
         """Create a server-witnessed attestation.
 
@@ -261,7 +261,7 @@ class Glacis:
         receipt = AttestReceipt.model_validate(response)
         # Attach control_plane_results locally for evidence (not sent to server)
         receipt.control_plane_results = control_plane_results
-        self._debug(f"Attestation successful: {receipt.attestation_id}")
+        self._debug(f"Attestation successful: {receipt.id}")
         return receipt
 
     def _attest_offline(
@@ -272,13 +272,12 @@ class Glacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]],
-        control_plane_results: Optional[ControlPlaneAttestation] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
     ) -> OfflineAttestReceipt:
         """Create a locally-signed attestation."""
         self._debug(f"Attesting (offline): service_id={service_id}, hash={payload_hash[:16]}...")
 
         attestation_id = f"oatt_{uuid.uuid4()}"
-        timestamp = datetime.utcnow().isoformat() + "Z"
         timestamp_ms = int(datetime.utcnow().timestamp() * 1000)
 
         # Build attestation payload (this is what gets signed)
@@ -311,8 +310,9 @@ class Glacis:
         signed = json.loads(signed_json)
 
         receipt = OfflineAttestReceipt(
-            attestation_id=attestation_id,
-            timestamp=timestamp,
+            id=attestation_id,
+            evidence_hash=payload_hash,
+            timestamp=timestamp_ms,
             service_id=service_id,
             operation_type=operation_type,
             payload_hash=payload_hash,
@@ -363,7 +363,7 @@ class Glacis:
             # Online attestation ID
             return self._verify_online(receipt)
         elif isinstance(receipt, AttestReceipt):
-            return self._verify_online(receipt.attestation_hash)
+            return self._verify_online(receipt.evidence_hash)
         else:
             raise TypeError(f"Invalid receipt type: {type(receipt)}")
 
@@ -380,7 +380,7 @@ class Glacis:
 
     def _verify_offline(self, receipt: OfflineAttestReceipt) -> OfflineVerifyResult:
         """Verify an offline attestation's signature locally."""
-        self._debug(f"Verifying (offline): {receipt.attestation_id}")
+        self._debug(f"Verifying (offline): {receipt.id}")
 
         try:
             # For offline verification, we verify the public key matches our signing seed.
@@ -697,7 +697,7 @@ class AsyncGlacis:
         )
 
         receipt = AttestReceipt.model_validate(response)
-        self._debug(f"Attestation successful: {receipt.attestation_id}")
+        self._debug(f"Attestation successful: {receipt.id}")
         return receipt
 
     async def verify(self, attestation_id: str) -> VerifyResult:

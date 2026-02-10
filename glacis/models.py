@@ -51,6 +51,30 @@ class SignedTreeHead(BaseModel):
         populate_by_name = True
 
 
+class AttestationMetadata(BaseModel):
+    """Metadata for attestation requests - supports correlation and revision chains."""
+
+    phase: Optional[Literal["input", "output"]] = Field(
+        default=None, description="Distinguishes input vs output attestation"
+    )
+    correlation_id: Optional[str] = Field(
+        alias="correlationId",
+        default=None,
+        description="UUID linking all attestations in an operation",
+    )
+    sequence_index: Optional[int] = Field(
+        alias="sequenceIndex",
+        default=None,
+        description="Order within phase (0,1,2... for inputs; 0 for output)",
+    )
+    supersedes: Optional[str] = Field(
+        default=None, description="Attestation ID this replaces (revision chains)"
+    )
+
+    class Config:
+        populate_by_name = True
+
+
 class AttestInput(BaseModel):
     """Input for attestation."""
 
@@ -61,8 +85,8 @@ class AttestInput(BaseModel):
     )
     input: Any = Field(description="Input data (hashed locally, never sent)")
     output: Any = Field(description="Output data (hashed locally, never sent)")
-    metadata: Optional[dict[str, str]] = Field(
-        default=None, description="Optional metadata (sent to server)"
+    metadata: Optional[AttestationMetadata] = Field(
+        default=None, description="Optional metadata for correlation and revision chains"
     )
 
     class Config:
@@ -116,27 +140,38 @@ class FullReceipt(BaseModel):
     mono_counter: int
     wall_time_ns: str
     witness_signature: str
-    transparency_proofs: TransparencyProofs
+    transparency_proofs: Optional[TransparencyProofs] = Field(default=None)
 
     class Config:
         populate_by_name = True
 
 
 class AttestReceipt(BaseModel):
-    """Receipt returned from attestation."""
+    """Receipt returned from attestation.
 
-    attestation_id: str = Field(alias="attestationId", description="Unique attestation ID")
-    attestation_hash: str = Field(alias="attestation_hash", description="Content hash")
-    timestamp: str = Field(description="ISO 8601 timestamp")
+    # TODO: Badge/verify URL functionality may be added back as a computed property
+    # in the future once the verification endpoint design is finalized.
+    """
+
+    id: str = Field(alias="attestationId", description="Unique attestation ID")
+    evidence_hash: str = Field(alias="evidenceHash", description="Evidence content hash (hex-encoded)")
+    timestamp: int = Field(description="Unix timestamp in milliseconds")
     leaf_index: int = Field(alias="leafIndex", description="Merkle tree leaf index")
     tree_size: int = Field(alias="treeSize", description="Tree size")
     epoch_id: Optional[str] = Field(alias="epochId", default=None)
     receipt: Optional[FullReceipt] = Field(default=None, description="Full receipt with proofs")
-    verify_url: str = Field(alias="verifyUrl", description="Verification endpoint URL")
-    control_plane_results: Optional["ControlPlaneAttestation"] = Field(
+    control_plane_results: Optional["ControlPlaneResults"] = Field(
         alias="controlPlaneResults",
         default=None,
-        description="Control plane results from executed controls",
+        description="Control plane results from executed controls (L0)",
+    )
+    evidence: Optional["Evidence"] = Field(
+        default=None,
+        description="L1 attestation - evidence persistence layer",
+    )
+    review: Optional["Review"] = Field(
+        default=None,
+        description="L2 attestation - deep review layer",
     )
 
     # Computed properties for convenience
@@ -144,11 +179,6 @@ class AttestReceipt(BaseModel):
     def witness_status(self) -> str:
         """Return witness status based on receipt presence."""
         return "WITNESSED" if self.receipt else "PENDING"
-
-    @property
-    def badge_url(self) -> str:
-        """Return badge/verify URL."""
-        return self.verify_url
 
     class Config:
         populate_by_name = True
@@ -327,6 +357,7 @@ class ModelInfo(BaseModel):
     model_id: str = Field(alias="modelId")
     provider: str
     system_prompt_hash: Optional[str] = Field(alias="systemPromptHash", default=None)
+    temperature: Optional[float] = Field(default=None, description="Model temperature setting")
 
     class Config:
         populate_by_name = True
@@ -335,9 +366,8 @@ class ModelInfo(BaseModel):
 class PolicyScope(BaseModel):
     """Scope for policy application."""
 
-    tenant_id: str = Field(alias="tenantId")
-    endpoint: str
-    user_class: Optional[str] = Field(alias="userClass", default=None)
+    environment: str = Field(description="Environment (e.g., 'production', 'staging')")
+    tags: list[str] = Field(default_factory=list, description="Custom tags")
 
     class Config:
         populate_by_name = True
@@ -391,41 +421,6 @@ class SafetyScores(BaseModel):
         populate_by_name = True
 
 
-class PiiPhiSummary(BaseModel):
-    """Summary of PII/PHI detection and handling.
-
-    This model captures metadata about PII/PHI detection for attestation.
-    The actual redacted text is stored in evidence, not in the attestation schema.
-    """
-
-    detected: bool = False
-    action: Literal["none", "redacted", "blocked"] = "none"
-    categories: list[str] = Field(default_factory=list)
-    count: int = 0
-
-    class Config:
-        populate_by_name = True
-
-
-class JailbreakSummary(BaseModel):
-    """Summary of jailbreak/prompt injection detection for attestation.
-
-    This model captures metadata about jailbreak detection results.
-    The raw model outputs and detailed scores are stored in evidence.
-    """
-
-    detected: bool = False
-    score: float = Field(default=0.0, ge=0.0, le=1.0, description="Model confidence score")
-    action: Literal["pass", "flag", "block", "log"] = "pass"
-    categories: list[str] = Field(
-        default_factory=list, description="Detection categories (e.g., ['jailbreak'])"
-    )
-    backend: str = Field(default="", description="Backend model used for detection")
-
-    class Config:
-        populate_by_name = True
-
-
 class DeepInspection(BaseModel):
     """Deep inspection results from L2 verification."""
 
@@ -438,43 +433,63 @@ class DeepInspection(BaseModel):
         populate_by_name = True
 
 
-class SamplingDecision(BaseModel):
-    """Sampling decision details."""
+class Evidence(BaseModel):
+    """L1 Attestation - Evidence persistence layer.
 
-    sampled: bool
-    reason: Literal["prf", "policy_trigger", "forced"]
-    prf_tag: Optional[str] = Field(alias="prfTag", default=None)
-    rate: float = Field(ge=0.0, le=1.0)
+    Contains sampling probability and opaque evidence data blob.
+    The sample_probability is typed for Rust to read for sampling decisions.
+    """
+
+    sample_probability: float = Field(
+        alias="sampleProbability",
+        ge=0.0,
+        le=1.0,
+        description="Probability of attestation evidence being sampled for persistence",
+    )
+    evidence_data: dict[str, Any] = Field(
+        alias="evidenceData",
+        default_factory=dict,
+        description="Opaque evidence data blob",
+    )
 
     class Config:
         populate_by_name = True
 
 
-class SamplingMetadata(BaseModel):
-    """Sampling metadata for attestation level."""
+class Review(BaseModel):
+    """L2 Attestation - Deep review layer.
 
-    level: Literal["L0", "L2"]
-    decision: SamplingDecision
+    Contains sampling probability and review data (DeepInspection results).
+    The sample_probability is typed for Rust to read for sampling decisions.
+    """
+
+    sample_probability: float = Field(
+        alias="sampleProbability",
+        ge=0.0,
+        le=1.0,
+        description="Probability of attestation being sampled for review",
+    )
+    review_data: DeepInspection = Field(
+        alias="reviewData",
+        description="Deep inspection results from L2 verification",
+    )
 
     class Config:
         populate_by_name = True
 
 
-class ControlPlaneAttestation(BaseModel):
-    """Control plane attestation capturing policy, controls, and safety metadata."""
+class ControlPlaneResults(BaseModel):
+    """Control plane results capturing policy, controls, and safety metadata (L0 only).
+
+    Note: PII/jailbreak detection results are captured in controls[].
+    Sampling and deep_inspection are moved to Evidence (L1) and Review (L2).
+    """
 
     schema_version: Literal["1.0"] = "1.0"
     policy: PolicyContext
     determination: Determination
     controls: list[ControlExecution] = Field(default_factory=list)
     safety: SafetyScores
-    pii_phi: Optional[PiiPhiSummary] = Field(alias="piiPhi", default=None)
-    jailbreak: Optional[JailbreakSummary] = Field(
-        default=None, description="Jailbreak detection results"
-    )
-    evidence_commitment: Optional[str] = Field(alias="evidenceCommitment", default=None)
-    deep_inspection: Optional[DeepInspection] = Field(alias="deepInspection", default=None)
-    sampling: SamplingMetadata
 
     class Config:
         populate_by_name = True
@@ -491,10 +506,13 @@ class OfflineAttestReceipt(BaseModel):
     locally using the public key, but are not witnessed by the transparency log.
     """
 
-    attestation_id: str = Field(
+    id: str = Field(
         alias="attestationId", description="Local attestation ID (oatt_xxx)"
     )
-    timestamp: str = Field(description="ISO 8601 timestamp")
+    evidence_hash: str = Field(
+        alias="evidenceHash", description="Evidence content hash (hex-encoded)"
+    )
+    timestamp: int = Field(description="Unix timestamp in milliseconds")
     service_id: str = Field(alias="serviceId", description="Service identifier")
     operation_type: str = Field(
         alias="operationType", description="Type of operation"
@@ -512,7 +530,7 @@ class OfflineAttestReceipt(BaseModel):
         alias="witnessStatus",
         description="Always UNVERIFIED for offline receipts",
     )
-    control_plane_results: Optional[ControlPlaneAttestation] = Field(
+    control_plane_results: Optional[ControlPlaneResults] = Field(
         alias="controlPlaneResults",
         default=None,
         description="Control plane results from executed controls",

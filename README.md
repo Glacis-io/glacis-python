@@ -61,7 +61,7 @@ response = client.chat.completions.create(
 
 # Get the attestation receipt
 receipt = get_last_receipt()
-print(f"Attestation ID: {receipt.attestation_id}")
+print(f"Attestation ID: {receipt.id}")
 ```
 
 Works the same for Anthropic:
@@ -171,7 +171,7 @@ Full payloads are stored locally for audits:
 from glacis.integrations.openai import get_last_receipt, get_evidence
 
 receipt = get_last_receipt()
-evidence = get_evidence(receipt.attestation_id)
+evidence = get_evidence(receipt.id)
 
 print(evidence["input"])                  # Original input
 print(evidence["output"])                 # Original output

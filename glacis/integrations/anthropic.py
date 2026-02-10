@@ -189,21 +189,20 @@ def attested_anthropic(
             messages = processed_messages
 
             if debug:
-                if accumulator.pii_summary:
+                if accumulator._pii_detected:
                     print(
-                        f"[glacis] PII redacted: {accumulator.pii_summary.categories} "
-                        f"({accumulator.pii_summary.count} items)"
+                        f"[glacis] PII redacted: {accumulator._pii_categories}"
                     )
-                if accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
+                if accumulator._jailbreak_detected:
                     print(
                         f"[glacis] Jailbreak detected: "
-                        f"score={accumulator.jailbreak_summary.score:.2f}, "
-                        f"action={accumulator.jailbreak_summary.action}"
+                        f"score={accumulator._jailbreak_score:.2f}, "
+                        f"action={accumulator._jailbreak_action}"
                     )
 
             # Build control plane attestation
             control_plane_results = create_control_plane_attestation_from_accumulator(
-                accumulator, cfg, model, "anthropic", "messages.create"
+                accumulator, cfg, model, "anthropic"
             )
 
             # Check if we need to block BEFORE making the API call
@@ -219,9 +218,7 @@ def attested_anthropic(
                     control_plane_results=control_plane_results,
                     provider="anthropic",
                     model=model,
-                    jailbreak_score=accumulator.jailbreak_summary.score
-                    if accumulator.jailbreak_summary
-                    else 0.0,
+                    jailbreak_score=accumulator._jailbreak_score,
                     debug=debug,
                 )
         else:

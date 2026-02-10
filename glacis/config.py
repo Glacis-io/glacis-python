@@ -8,7 +8,8 @@ Example glacis.yaml:
     version: "1.0"
     policy:
       id: "hipaa-safe-harbor"
-      tenant_id: "my-org"
+      environment: "production"
+      tags: ["healthcare", "hipaa"]
     controls:
       pii_phi:
         enabled: true
@@ -85,7 +86,8 @@ class PolicyConfig(BaseModel):
 
     id: str = Field(default="default", description="Policy identifier")
     version: str = Field(default="1.0", description="Policy version")
-    tenant_id: str = Field(default="default", description="Tenant identifier")
+    environment: str = Field(default="development", description="Environment (e.g., 'production', 'staging')")
+    tags: list[str] = Field(default_factory=list, description="Custom tags")
 
 
 class AttestationConfig(BaseModel):

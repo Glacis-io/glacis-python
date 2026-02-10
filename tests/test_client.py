@@ -6,6 +6,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from glacis import AsyncGlacis, Glacis
+from glacis.crypto import hash_payload
 from glacis.models import GlacisApiError, GlacisRateLimitError
 
 
@@ -48,20 +49,10 @@ class TestGlacisSync:
             url="https://api.glacis.io/v1/attest",
             json={
                 "attestationId": "att_test123",
-                "attestation_hash": "abc123def456",
-                "timestamp": "2024-01-01T00:00:00Z",
+                "evidenceHash": "a" * 64,  # Spec: evidenceHash
+                "timestamp": 1704067200000,  # Spec: Unix ms
                 "leafIndex": 42,
                 "treeSize": 100,
-                "leafHash": "abc123",
-                "merkleProof": {"leafIndex": 42, "treeSize": 100, "hashes": ["def456"]},
-                "signedTreeHead": {
-                    "treeSize": 100,
-                    "timestamp": "2024-01-01T00:00:00Z",
-                    "rootHash": "root123",
-                    "signature": "sig123",
-                },
-                "badgeUrl": "https://api.glacis.io/badge/att_test123.svg",
-                "verifyUrl": "https://api.glacis.io/v1/verify/att_test123",
             },
         )
 
@@ -93,7 +84,7 @@ class TestGlacisSync:
         assert "metadata" not in body  # Metadata stored locally, not sent
 
         # Verify response parsing
-        assert receipt.attestation_id == "att_test123"
+        assert receipt.id == "att_test123"
         assert receipt.leaf_index == 42
 
     def test_verify_public_endpoint(self, httpx_mock: HTTPXMock):
@@ -228,20 +219,10 @@ class TestGlacisAsync:
             url="https://api.glacis.io/v1/attest",
             json={
                 "attestationId": "att_async",
-                "attestation_hash": "hash123",
-                "timestamp": "2024-01-01T00:00:00Z",
+                "evidenceHash": "a" * 64,  # Spec: evidenceHash
+                "timestamp": 1704067200000,  # Spec: Unix ms
                 "leafIndex": 1,
                 "treeSize": 1,
-                "leafHash": "hash",
-                "merkleProof": {"leafIndex": 1, "treeSize": 1, "hashes": []},
-                "signedTreeHead": {
-                    "treeSize": 1,
-                    "timestamp": "2024-01-01T00:00:00Z",
-                    "rootHash": "root",
-                    "signature": "sig",
-                },
-                "badgeUrl": "",
-                "verifyUrl": "",
             },
         )
 
@@ -253,7 +234,7 @@ class TestGlacisAsync:
                 output={"result": "ok"},
             )
 
-        assert receipt.attestation_id == "att_async"
+        assert receipt.id == "att_async"
 
     @pytest.mark.asyncio
     async def test_async_verify(self, httpx_mock: HTTPXMock):
@@ -282,3 +263,160 @@ class TestGlacisAsync:
             result = await glacis.verify("att_test")
 
         assert result.valid is True
+
+    def test_async_requires_api_key(self):
+        """Empty API key raises ValueError."""
+        with pytest.raises(ValueError, match="api_key is required"):
+            AsyncGlacis(api_key="")
+
+    @pytest.mark.asyncio
+    async def test_async_rate_limit_error(self, httpx_mock: HTTPXMock):
+        """429 response raises GlacisRateLimitError."""
+        httpx_mock.add_response(
+            method="POST",
+            url="https://api.glacis.io/v1/attest",
+            status_code=429,
+            headers={"Retry-After": "30"},
+        )
+
+        async with AsyncGlacis(api_key="test", max_retries=0) as glacis:
+            with pytest.raises(GlacisRateLimitError) as exc:
+                await glacis.attest(
+                    service_id="test",
+                    operation_type="inference",
+                    input={},
+                    output={},
+                )
+            assert exc.value.retry_after_ms == 30000
+
+    @pytest.mark.asyncio
+    async def test_async_client_error_no_retry(self, httpx_mock: HTTPXMock):
+        """Client errors (4xx) are not retried."""
+        httpx_mock.add_response(
+            method="POST",
+            url="https://api.glacis.io/v1/attest",
+            status_code=400,
+            json={"error": "Bad request"},
+        )
+
+        async with AsyncGlacis(api_key="test", max_retries=3) as glacis:
+            with pytest.raises(GlacisApiError) as exc:
+                await glacis.attest(
+                    service_id="test",
+                    operation_type="inference",
+                    input={},
+                    output={},
+                )
+            assert exc.value.status == 400
+
+        assert len(httpx_mock.get_requests()) == 1
+
+    @pytest.mark.asyncio
+    async def test_async_query_log(self, httpx_mock: HTTPXMock):
+        """Async query_log builds params and parses result."""
+        httpx_mock.add_response(
+            method="GET",
+            json={
+                "entries": [],
+                "hasMore": False,
+                "count": 0,
+                "treeHead": {
+                    "treeSize": 0,
+                    "timestamp": "2024-01-01T00:00:00Z",
+                    "rootHash": "",
+                    "signature": "",
+                },
+            },
+        )
+
+        async with AsyncGlacis(api_key="test") as glacis:
+            result = await glacis.query_log(
+                org_id="org_test",
+                service_id="svc_test",
+                limit=50,
+            )
+
+        request = httpx_mock.get_request()
+        assert request is not None
+        url = str(request.url)
+        assert "orgId=org_test" in url
+        assert "serviceId=svc_test" in url
+        assert "limit=50" in url
+        assert result.count == 0
+
+    @pytest.mark.asyncio
+    async def test_async_get_tree_head(self, httpx_mock: HTTPXMock):
+        """Async get_tree_head parses response."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://api.glacis.io/v1/root",
+            json={
+                "size": 42,
+                "timestamp": "2024-06-01T00:00:00Z",
+                "rootHash": "abc123",
+                "signature": "sig456",
+            },
+        )
+
+        async with AsyncGlacis(api_key="test") as glacis:
+            head = await glacis.get_tree_head()
+
+        assert head.size == 42
+        assert head.root_hash == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_async_context_manager_closes(self, httpx_mock: HTTPXMock):
+        """async with calls aclose() on exit."""
+        glacis = AsyncGlacis(api_key="test")
+        async with glacis:
+            assert glacis._client is not None
+
+        # After context manager exit, client should be closed
+        assert glacis._client.is_closed
+
+    def test_async_hash_consistency(self):
+        """AsyncGlacis.hash() matches Glacis.hash() and hash_payload()."""
+        payload = {"input": {"prompt": "test"}, "output": {"response": "ok"}}
+
+        sync_glacis = Glacis(api_key="test")
+        async_glacis = AsyncGlacis(api_key="test")
+
+        assert sync_glacis.hash(payload) == async_glacis.hash(payload)
+        assert async_glacis.hash(payload) == hash_payload(payload)
+
+        sync_glacis.close()
+
+    @pytest.mark.asyncio
+    async def test_async_server_error_retries(self, httpx_mock: HTTPXMock):
+        """Server errors (5xx) are retried, succeeding on second attempt."""
+        # First request: 500 error
+        httpx_mock.add_response(
+            method="POST",
+            url="https://api.glacis.io/v1/attest",
+            status_code=500,
+        )
+        # Second request: success
+        httpx_mock.add_response(
+            method="POST",
+            url="https://api.glacis.io/v1/attest",
+            json={
+                "attestationId": "att_retry",
+                "evidenceHash": "b" * 64,
+                "timestamp": 1704067200000,
+                "leafIndex": 5,
+                "treeSize": 10,
+            },
+        )
+
+        async with AsyncGlacis(
+            api_key="test", max_retries=2, base_delay=0.01, max_delay=0.02
+        ) as glacis:
+            receipt = await glacis.attest(
+                service_id="test",
+                operation_type="inference",
+                input={"data": "test"},
+                output={"result": "ok"},
+            )
+
+        assert receipt.id == "att_retry"
+        assert len(httpx_mock.get_requests()) == 2
