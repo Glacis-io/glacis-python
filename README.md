@@ -31,6 +31,7 @@ Later, you can prove the hash matches your local records without revealing the d
 ```bash
 pip install glacis[openai]      # For OpenAI
 pip install glacis[anthropic]   # For Anthropic
+pip install glacis[gemini]      # For Google Gemini
 pip install glacis[controls]    # Add PII redaction + jailbreak detection
 pip install glacis[all]         # Everything
 ```
@@ -39,7 +40,7 @@ pip install glacis[all]         # Everything
 
 ### Option 1: Drop-in Wrapper (Recommended)
 
-Replace your OpenAI/Anthropic client with a wrapped version. Every API call is automatically attested.
+Replace your OpenAI/Anthropic/Gemini client with a wrapped version. Every API call is automatically attested.
 
 ```python
 import os
@@ -75,9 +76,28 @@ client = attested_anthropic(
 )
 ```
 
+And for Google Gemini:
+
+```python
+from glacis.integrations.gemini import attested_gemini, get_last_receipt
+
+client = attested_gemini(
+    gemini_api_key="...",
+    offline=True,
+    signing_seed=os.urandom(32),
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Hello!"
+)
+
+receipt = get_last_receipt()
+```
+
 ### Option 2: Direct API
 
-For custom attestations (non-OpenAI/Anthropic, or manual control):
+For custom attestations (non-OpenAI/Anthropic/Gemini, or manual control):
 
 ```python
 import os
