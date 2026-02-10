@@ -146,8 +146,8 @@ def attested_gemini(
                 # Update config with redacted system_instruction
                 if isinstance(config_param, dict):
                     kwargs["config"] = {**config_param, "system_instruction": final_system}
-                elif hasattr(config_param, "system_instruction"):
-                    config_param.system_instruction = final_system
+                elif config_param is not None and hasattr(config_param, "system_instruction"):
+                    config_param.system_instruction = final_system  # type: ignore[union-attr]
 
             # Process contents through controls
             if isinstance(contents, str):
@@ -328,7 +328,7 @@ def _serialize_contents(contents: Any) -> Any:
     if isinstance(contents, str):
         return contents
     if isinstance(contents, list):
-        result = []
+        result: list[Any] = []
         for item in contents:
             if isinstance(item, str):
                 result.append(item)
