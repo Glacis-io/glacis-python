@@ -44,6 +44,7 @@ from glacis.crypto import hash_payload
 from glacis.models import (
     AttestReceipt,
     ControlPlaneResults,
+    Evidence,
     GlacisApiError,
     GlacisRateLimitError,
     LogQueryResult,
@@ -185,6 +186,8 @@ class Glacis:
         output: Any,
         metadata: Optional[dict[str, str]] = None,
         control_plane_results: Optional[ControlPlaneResults] = None,
+        phase: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Union[AttestReceipt, OfflineAttestReceipt]:
         """
         Attest an AI operation.
@@ -201,6 +204,8 @@ class Glacis:
             metadata: Optional metadata (stored locally for evidence)
             control_plane_results: Optional control plane attestation
                 (hashed locally, cryptographically bound)
+            phase: Optional phase ("input" or "output") for correlation
+            correlation_id: Optional correlation ID linking input/output attestations
 
         Returns:
             AttestReceipt (online) or OfflineAttestReceipt (offline)
@@ -223,14 +228,21 @@ class Glacis:
                 input, output, metadata, control_plane_results,
             )
 
-        return self._attest_online(service_id, operation_type, payload_hash, control_plane_results)
+        return self._attest_online(
+            service_id, operation_type, payload_hash,
+            input, output, control_plane_results, phase, correlation_id,
+        )
 
     def _attest_online(
         self,
         service_id: str,
         operation_type: str,
         payload_hash: str,
+        input_data: Any,
+        output_data: Any,
         control_plane_results: Optional[ControlPlaneResults] = None,
+        phase: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> AttestReceipt:
         """Create a server-witnessed attestation.
 
@@ -244,12 +256,27 @@ class Glacis:
         self._debug(f"Attesting (online): service_id={service_id}, hash={payload_hash[:16]}...")
 
         # Only send what the server needs - hash goes into Merkle tree
-        # metadata and control_plane_results are NOT sent (zero egress - stored locally)
+        # User data (input, output) is NOT sent (zero egress)
+        # control_plane_results IS sent as compliance metadata for server-side storage
         body: dict[str, Any] = {
             "serviceId": service_id,
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
+
+        # Control plane results as opaque JSON for server-side storage
+        if control_plane_results:
+            body["controlPlaneResults"] = control_plane_results.model_dump(by_alias=True)
+
+        # Operational metadata for server-side correlation (NOT user data)
+        op_metadata: dict[str, Any] = {}
+        if phase:
+            op_metadata["phase"] = phase
+        if correlation_id:
+            op_metadata["correlationId"] = correlation_id
+        if op_metadata:
+            op_metadata["sequenceIndex"] = 0
+            body["metadata"] = op_metadata
 
         response = self._request_with_retry(
             "POST",
@@ -259,8 +286,31 @@ class Glacis:
         )
 
         receipt = AttestReceipt.model_validate(response)
-        # Attach control_plane_results locally for evidence (not sent to server)
+        # Also attach locally for convenience
         receipt.control_plane_results = control_plane_results
+
+        # L1/L2 Evidence: populate with raw data for local retention
+        if (
+            receipt.sampling_decision
+            and receipt.sampling_decision.level in ("L1", "L2")
+        ):
+            ev_data: dict[str, Any] = {
+                "input": input_data,
+                "output": output_data,
+            }
+            if control_plane_results:
+                ev_data["control_plane_results"] = (
+                    control_plane_results.model_dump(by_alias=True)
+                )
+            receipt.evidence = Evidence(
+                sample_probability=receipt.sampling_decision.sample_probability or 0.0,
+                evidence_data=ev_data,
+            )
+            self._debug(
+                f"L1 evidence populated (level={receipt.sampling_decision.level}, "
+                f"p={receipt.sampling_decision.sample_probability})"
+            )
+
         self._debug(f"Attestation successful: {receipt.id}")
         return receipt
 
@@ -440,6 +490,8 @@ class Glacis:
         end: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        phase: Optional[str] = None,
     ) -> LogQueryResult:
         """
         Query the public transparency log.
@@ -453,6 +505,8 @@ class Glacis:
             end: End timestamp (ISO 8601)
             limit: Maximum results (default: 50, max: 1000)
             cursor: Pagination cursor
+            correlation_id: Filter by correlation ID
+            phase: Filter by phase ("input" or "output")
 
         Returns:
             Paginated log entries
@@ -466,6 +520,10 @@ class Glacis:
             params["start"] = start
         if end:
             params["end"] = end
+        if correlation_id:
+            params["correlation_id"] = correlation_id
+        if phase:
+            params["phase"] = phase
         if limit:
             params["limit"] = limit
         if cursor:
@@ -660,34 +718,61 @@ class AsyncGlacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
+        phase: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> AttestReceipt:
         """
         Attest an AI operation.
 
         The input and output are hashed locally using RFC 8785 canonical JSON + SHA-256.
         Only the hash is sent to the server - the actual data never leaves your infrastructure.
+        Control plane results are sent to the server as compliance metadata.
 
         Args:
             service_id: Service identifier (e.g., "my-ai-service")
             operation_type: Type of operation (inference, embedding, completion, classification)
             input: Input data (hashed locally, never sent)
             output: Output data (hashed locally, never sent)
-            metadata: Optional metadata (sent to server)
+            metadata: Optional metadata (stored locally for evidence)
+            control_plane_results: Optional control plane attestation
+            phase: Optional phase ("input" or "output") for correlation
+            correlation_id: Optional correlation ID linking input/output attestations
 
         Returns:
             Receipt with proof of inclusion
         """
-        payload_hash = self.hash({"input": input, "output": output})
+        # Build payload to hash - includes control_plane_results for cryptographic binding
+        payload_to_hash: dict[str, Any] = {"input": input, "output": output}
+        if control_plane_results:
+            payload_to_hash["control_plane_results"] = (
+                control_plane_results.model_dump(by_alias=True)
+            )
+        payload_hash = self.hash(payload_to_hash)
 
         self._debug(f"Attesting: service_id={service_id}, hash={payload_hash[:16]}...")
 
+        # User data (input, output) is NOT sent (zero egress)
+        # control_plane_results IS sent as compliance metadata for server-side storage
         body: dict[str, Any] = {
             "serviceId": service_id,
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
-        if metadata:
-            body["metadata"] = metadata
+
+        # Control plane results as opaque JSON for server-side storage
+        if control_plane_results:
+            body["controlPlaneResults"] = control_plane_results.model_dump(by_alias=True)
+
+        # Operational metadata for server-side correlation (NOT user data)
+        op_metadata: dict[str, Any] = {}
+        if phase:
+            op_metadata["phase"] = phase
+        if correlation_id:
+            op_metadata["correlationId"] = correlation_id
+        if op_metadata:
+            op_metadata["sequenceIndex"] = 0
+            body["metadata"] = op_metadata
 
         response = await self._request_with_retry(
             "POST",
@@ -697,6 +782,31 @@ class AsyncGlacis:
         )
 
         receipt = AttestReceipt.model_validate(response)
+        # Also attach locally for convenience
+        receipt.control_plane_results = control_plane_results
+
+        # L1/L2 Evidence: populate with raw data for local retention
+        if (
+            receipt.sampling_decision
+            and receipt.sampling_decision.level in ("L1", "L2")
+        ):
+            ev_data: dict[str, Any] = {
+                "input": input,
+                "output": output,
+            }
+            if control_plane_results:
+                ev_data["control_plane_results"] = (
+                    control_plane_results.model_dump(by_alias=True)
+                )
+            receipt.evidence = Evidence(
+                sample_probability=receipt.sampling_decision.sample_probability or 0.0,
+                evidence_data=ev_data,
+            )
+            self._debug(
+                f"L1 evidence populated (level={receipt.sampling_decision.level}, "
+                f"p={receipt.sampling_decision.sample_probability})"
+            )
+
         self._debug(f"Attestation successful: {receipt.id}")
         return receipt
 
@@ -723,6 +833,8 @@ class AsyncGlacis:
         end: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        phase: Optional[str] = None,
     ) -> LogQueryResult:
         """
         Query the public transparency log.
@@ -738,6 +850,10 @@ class AsyncGlacis:
             params["start"] = start
         if end:
             params["end"] = end
+        if correlation_id:
+            params["correlation_id"] = correlation_id
+        if phase:
+            params["phase"] = phase
         if limit:
             params["limit"] = limit
         if cursor:

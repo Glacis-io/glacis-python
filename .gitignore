@@ -84,3 +84,6 @@ dmypy.json
 .env.local
 .env.*.local
 examples/.env
+
+# Claude Code
+.claude/

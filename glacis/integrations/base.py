@@ -264,6 +264,12 @@ def store_evidence(
     evidence_hash = receipt.evidence_hash
     # Both receipt types now use id field (aligned)
     attestation_id = receipt.id
+
+    # Extract sampling level from receipt if available
+    sampling_level = "L0"
+    if hasattr(receipt, "sampling_decision") and receipt.sampling_decision:
+        sampling_level = receipt.sampling_decision.level
+
     storage.store_evidence(
         attestation_id=attestation_id,
         attestation_hash=evidence_hash,
@@ -275,6 +281,7 @@ def store_evidence(
         output_data=output_data,
         control_plane_results=control_plane_results,
         metadata=metadata,
+        sampling_level=sampling_level,
     )
     if debug:
         print(f"[glacis] Attestation created: {attestation_id}")

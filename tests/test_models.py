@@ -15,6 +15,7 @@ from glacis.models import (
     Evidence,
     GlacisApiError,
     GlacisRateLimitError,
+    InclusionProof,
     LogEntry,
     LogQueryResult,
     MerkleInclusionProof,
@@ -83,10 +84,10 @@ class TestAttestReceipt:
         receipt = AttestReceipt.model_validate(data)
         assert receipt.witness_status == "WITNESSED"
 
-    def test_witness_status_pending(self, sample_online_receipt_data: dict[str, Any]):
-        """witness_status returns PENDING when no receipt."""
+    def test_witness_status_unverified(self, sample_online_receipt_data: dict[str, Any]):
+        """witness_status returns UNVERIFIED when no receipt."""
         receipt = AttestReceipt.model_validate(sample_online_receipt_data)
-        assert receipt.witness_status == "PENDING"
+        assert receipt.witness_status == "UNVERIFIED"
 
     def test_evidence_hash_field(self, sample_online_receipt_data: dict[str, Any]):
         """evidence_hash (formerly attestation_hash) is accessible."""
@@ -298,18 +299,38 @@ class TestErrorModels:
 class TestMerkleProofs:
     """Tests for Merkle proof models."""
 
-    def test_merkle_inclusion_proof(self):
-        """MerkleInclusionProof parsing."""
+    def test_inclusion_proof_camel_case(self):
+        """InclusionProof parses camelCase (API response format)."""
         data = {
             "leafIndex": 42,
             "treeSize": 100,
             "hashes": ["a" * 64, "b" * 64],
+            "rootHash": "c" * 64,
         }
-        proof = MerkleInclusionProof.model_validate(data)
+        proof = InclusionProof.model_validate(data)
 
         assert proof.leaf_index == 42
         assert proof.tree_size == 100
+        assert proof.root_hash == "c" * 64
         assert len(proof.hashes) == 2
+
+    def test_inclusion_proof_snake_case(self):
+        """InclusionProof parses snake_case (receipt-service wire format)."""
+        data = {
+            "leaf_index": 18,
+            "tree_size": 19,
+            "hashes": ["a" * 64],
+            "root_hash": "d" * 64,
+        }
+        proof = InclusionProof.model_validate(data)
+
+        assert proof.leaf_index == 18
+        assert proof.tree_size == 19
+        assert proof.root_hash == "d" * 64
+
+    def test_merkle_inclusion_proof_backward_compat(self):
+        """MerkleInclusionProof is an alias for InclusionProof."""
+        assert MerkleInclusionProof is InclusionProof
 
     def test_signed_tree_head(self):
         """SignedTreeHead parsing."""

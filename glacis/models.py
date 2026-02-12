@@ -28,15 +28,9 @@ class GlacisConfig(BaseModel):
     )
 
 
-class MerkleInclusionProof(BaseModel):
-    """Merkle inclusion proof structure."""
-
-    leaf_index: int = Field(alias="leafIndex", description="Index of the leaf (0-based)")
-    tree_size: int = Field(alias="treeSize", description="Total leaves when proof generated")
-    hashes: list[str] = Field(description="Sibling hashes (hex-encoded)")
-
-    class Config:
-        populate_by_name = True
+# MerkleInclusionProof is deprecated — use InclusionProof (defined below).
+# Kept as alias for backward compatibility.
+# See: glacis-specification-v1.0.md §Schema Architecture
 
 
 class SignedTreeHead(BaseModel):
@@ -94,35 +88,39 @@ class AttestInput(BaseModel):
 
 
 class InclusionProof(BaseModel):
-    """Merkle inclusion proof from transparency log."""
+    """RFC 6962 Merkle inclusion proof.
 
-    leaf_index: int = Field(alias="leaf_index", description="Leaf index in tree")
-    tree_size: int = Field(alias="tree_size", description="Tree size when proof generated")
-    hashes: list[str] = Field(description="Sibling hashes")
-    root_hash: str = Field(alias="root_hash", description="Root hash")
+    Canonical model per glacis-specification-v1.0.md §Schema Architecture.
+    Accepts both snake_case (receipt-service wire format) and camelCase (API responses).
+    """
 
-    class Config:
-        populate_by_name = True
-
-
-class STH(BaseModel):
-    """Signed Tree Head."""
-
-    tree_size: int = Field(alias="tree_size")
-    timestamp: str
-    root_hash: str = Field(alias="root_hash")
-    signature: str
+    leaf_index: int = Field(alias="leafIndex", description="Leaf index in tree (0-based)")
+    tree_size: int = Field(alias="treeSize", description="Tree size when proof generated")
+    hashes: list[str] = Field(description="Sibling hashes (hex-encoded)")
+    root_hash: str = Field(alias="rootHash", default=None, description="Root hash (hex-encoded)")
 
     class Config:
         populate_by_name = True
+
+
+# Backward-compatible alias (deprecated)
+MerkleInclusionProof = InclusionProof
+
+
+# STH is deprecated — use SignedTreeHead (defined above).
+# Kept as alias for backward compatibility.
+STH = SignedTreeHead
 
 
 class TransparencyProofs(BaseModel):
-    """Transparency proofs from receipt-service."""
+    """Transparency proofs from receipt-service (RFC 6962).
+
+    Canonical model per glacis-specification-v1.0.md §Schema Architecture.
+    """
 
     inclusion_proof: InclusionProof
-    sth_curr: STH
-    sth_prev: STH
+    sth_curr: SignedTreeHead
+    sth_prev: SignedTreeHead
     consistency_path: list[str] = Field(default_factory=list)
 
     class Config:
@@ -146,6 +144,25 @@ class FullReceipt(BaseModel):
         populate_by_name = True
 
 
+class SamplingDecision(BaseModel):
+    """Server-side PRF sampling decision for this attestation."""
+
+    level: str = Field(description="Sampling level: L0, L1, or L2")
+    sample_value: Optional[str] = Field(
+        alias="sampleValue",
+        default=None,
+        description="Hex PRF sample value for auditor verification",
+    )
+    sample_probability: Optional[float] = Field(
+        alias="sampleProbability",
+        default=None,
+        description="Org's sampling rate for this level (0.0-1.0)",
+    )
+
+    class Config:
+        populate_by_name = True
+
+
 class AttestReceipt(BaseModel):
     """Receipt returned from attestation.
 
@@ -160,6 +177,11 @@ class AttestReceipt(BaseModel):
     tree_size: int = Field(alias="treeSize", description="Tree size")
     epoch_id: Optional[str] = Field(alias="epochId", default=None)
     receipt: Optional[FullReceipt] = Field(default=None, description="Full receipt with proofs")
+    sampling_decision: Optional[SamplingDecision] = Field(
+        alias="samplingDecision",
+        default=None,
+        description="Server-side PRF sampling decision",
+    )
     control_plane_results: Optional["ControlPlaneResults"] = Field(
         alias="controlPlaneResults",
         default=None,
@@ -178,7 +200,7 @@ class AttestReceipt(BaseModel):
     @property
     def witness_status(self) -> str:
         """Return witness status based on receipt presence."""
-        return "WITNESSED" if self.receipt else "PENDING"
+        return "WITNESSED" if self.receipt else "UNVERIFIED"
 
     class Config:
         populate_by_name = True
@@ -234,7 +256,7 @@ class VerifyResult(BaseModel):
     )
     org: Optional[OrgInfo] = Field(default=None, description="Organization info")
     verification: Optional[Verification] = Field(default=None, description="Verification details")
-    proof: Optional[MerkleInclusionProof] = Field(default=None, description="Merkle proof")
+    proof: Optional[InclusionProof] = Field(default=None, description="Merkle inclusion proof")
     tree_head: Optional[SignedTreeHead] = Field(
         alias="treeHead", default=None, description="Current tree head"
     )
@@ -300,7 +322,7 @@ class LogQueryResult(BaseModel):
 class TreeHeadResponse(BaseModel):
     """Response from get_tree_head."""
 
-    size: int
+    tree_size: int = Field(alias="treeSize")
     root_hash: str = Field(alias="rootHash")
     timestamp: str
     signature: str

@@ -61,10 +61,11 @@ from glacis.models import (
     Evidence,
     GlacisApiError,
     GlacisConfig,
+    InclusionProof,
     LogEntry,
     LogQueryParams,
     LogQueryResult,
-    MerkleInclusionProof,
+    MerkleInclusionProof,  # Deprecated alias for InclusionProof
     ModelInfo,
     OfflineAttestReceipt,
     OfflineVerifyResult,
@@ -72,6 +73,7 @@ from glacis.models import (
     PolicyScope,
     Review,
     SafetyScores,
+    SamplingDecision,
     SignedTreeHead,
     VerifyResult,
 )
@@ -118,7 +120,8 @@ __all__ = [
     "LogQueryParams",
     "LogQueryResult",
     "LogEntry",
-    "MerkleInclusionProof",
+    "InclusionProof",
+    "MerkleInclusionProof",  # Deprecated alias for InclusionProof
     "SignedTreeHead",
     # Control Plane (L0)
     "ControlPlaneResults",
