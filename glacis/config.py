@@ -86,7 +86,9 @@ class PolicyConfig(BaseModel):
 
     id: str = Field(default="default", description="Policy identifier")
     version: str = Field(default="1.0", description="Policy version")
-    environment: str = Field(default="development", description="Environment (e.g., 'production', 'staging')")
+    environment: str = Field(
+        default="development", description="Environment (e.g., 'production', 'staging')",
+    )
     tags: list[str] = Field(default_factory=list, description="Custom tags")
 
 

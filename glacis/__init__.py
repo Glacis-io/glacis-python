@@ -133,6 +133,7 @@ __all__ = [
     "ControlType",
     "ControlStatus",
     "SafetyScores",
+    "SamplingDecision",
     # L1/L2 Attestation
     "Evidence",
     "Review",

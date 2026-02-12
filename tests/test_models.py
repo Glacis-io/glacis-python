@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from glacis.models import (
     AttestReceipt,
-    ControlExecution,
     ControlPlaneResults,
     Determination,
     Evidence,
@@ -21,12 +20,8 @@ from glacis.models import (
     MerkleInclusionProof,
     OfflineAttestReceipt,
     OfflineVerifyResult,
-    PolicyContext,
-    PolicyScope,
-    Review,
     SafetyScores,
     SignedTreeHead,
-    Verification,
     VerifyResult,
 )
 

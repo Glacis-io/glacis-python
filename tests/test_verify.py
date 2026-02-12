@@ -9,16 +9,13 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from glacis.models import OfflineAttestReceipt, VerifyResult
 from glacis.verify import (
     DEFAULT_BASE_URL,
-    main,
     verify_command,
     verify_offline,
     verify_online,
@@ -28,7 +25,9 @@ from glacis.verify import (
 class TestVerifyOnline:
     """Tests for online verification via HTTP."""
 
-    def test_verify_online_success(self, httpx_mock: HTTPXMock, sample_verify_response: dict[str, Any]):
+    def test_verify_online_success(
+        self, httpx_mock: HTTPXMock, sample_verify_response: dict[str, Any],
+    ):
         """Successful online verification."""
         httpx_mock.add_response(
             method="GET",
@@ -96,7 +95,9 @@ class TestVerifyOnline:
         assert result.valid is False
         assert "Connection refused" in result.error or "Request failed" in result.error
 
-    def test_verify_online_custom_base_url(self, httpx_mock: HTTPXMock, sample_verify_response: dict[str, Any]):
+    def test_verify_online_custom_base_url(
+        self, httpx_mock: HTTPXMock, sample_verify_response: dict[str, Any],
+    ):
         """Online verification with custom base URL."""
         custom_url = "https://custom.glacis.io"
         httpx_mock.add_response(

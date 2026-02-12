@@ -97,7 +97,9 @@ class InclusionProof(BaseModel):
     leaf_index: int = Field(alias="leafIndex", description="Leaf index in tree (0-based)")
     tree_size: int = Field(alias="treeSize", description="Tree size when proof generated")
     hashes: list[str] = Field(description="Sibling hashes (hex-encoded)")
-    root_hash: str = Field(alias="rootHash", default=None, description="Root hash (hex-encoded)")
+    root_hash: Optional[str] = Field(
+        alias="rootHash", default=None, description="Root hash (hex-encoded)",
+    )
 
     class Config:
         populate_by_name = True
@@ -171,7 +173,9 @@ class AttestReceipt(BaseModel):
     """
 
     id: str = Field(alias="attestationId", description="Unique attestation ID")
-    evidence_hash: str = Field(alias="evidenceHash", description="Evidence content hash (hex-encoded)")
+    evidence_hash: str = Field(
+        alias="evidenceHash", description="Evidence content hash (hex-encoded)",
+    )
     timestamp: int = Field(description="Unix timestamp in milliseconds")
     leaf_index: int = Field(alias="leafIndex", description="Merkle tree leaf index")
     tree_size: int = Field(alias="treeSize", description="Tree size")

@@ -120,7 +120,7 @@ class JailbreakControl(BaseControl):
             )
 
         # Suppress HuggingFace verbosity
-        hf_logging.set_verbosity_error()
+        hf_logging.set_verbosity_error()  # type: ignore[no-untyped-call]
 
         # Disable HuggingFace Hub telemetry and reduce network traffic
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")

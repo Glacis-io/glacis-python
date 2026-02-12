@@ -117,7 +117,7 @@ class TestOfflineMode:
             db_path = Path(tmpdir) / "test.db"
             glacis = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
 
-            receipt1 = glacis.attest(
+            glacis.attest(
                 service_id="test",
                 operation_type="inference",
                 input={"n": 1},

@@ -29,7 +29,7 @@ class TestConfigLoading:
     def test_load_config_from_file(self):
         """Loading config from YAML file."""
         try:
-            import yaml
+            import yaml  # noqa: F401
 
             from glacis.config import load_config
 
@@ -124,7 +124,7 @@ attestation:
     def test_config_partial_override(self):
         """Config with partial values uses defaults for missing."""
         try:
-            import yaml
+            import yaml  # noqa: F401
 
             from glacis.config import load_config
 

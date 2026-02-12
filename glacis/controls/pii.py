@@ -190,7 +190,7 @@ class PIIControl(BaseControl):
             )
             self._spacy_available = False
 
-        self._anonymizer = AnonymizerEngine()
+        self._anonymizer = AnonymizerEngine()  # type: ignore[no-untyped-call]
         self._initialized = True
 
     def _try_load_spacy(self) -> Optional[Any]:
@@ -269,7 +269,7 @@ class PIIControl(BaseControl):
 
         anonymized = self._anonymizer.anonymize(
             text=text,
-            analyzer_results=results,
+            analyzer_results=results,  # type: ignore[arg-type]
             operators=operators,
         )
 

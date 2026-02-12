@@ -9,10 +9,13 @@ Some tests are marked slow as they load ML models.
 
 import pytest
 
-# Skip all tests if controls not installed
+# Skip all tests if controls not installed (check both glacis.controls AND presidio)
 try:
-    from glacis.controls import ControlsRunner, PIIControl, JailbreakControl, ControlResult
-    from glacis.config import ControlsConfig, PiiPhiConfig, JailbreakConfig
+    import presidio_analyzer  # noqa: F401
+    import presidio_anonymizer  # noqa: F401
+
+    from glacis.config import ControlsConfig, JailbreakConfig, PiiPhiConfig
+    from glacis.controls import ControlResult, ControlsRunner, JailbreakControl, PIIControl
 
     CONTROLS_AVAILABLE = True
 except ImportError:

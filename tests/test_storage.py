@@ -2,16 +2,12 @@
 Tests for SQLite storage (glacis/storage.py).
 """
 
-import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 from glacis.models import OfflineAttestReceipt
-from glacis.storage import ReceiptStorage, SCHEMA_VERSION
+from glacis.storage import SCHEMA_VERSION, ReceiptStorage
 
 
 class TestStorageInit:
