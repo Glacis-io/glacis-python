@@ -214,23 +214,23 @@ class Glacis:
             GlacisApiError: On API errors (online mode)
             GlacisRateLimitError: When rate limited (online mode)
         """
-        # Build payload to hash - includes control_plane_results for cryptographic binding
-        payload_to_hash: dict[str, Any] = {"input": input, "output": output}
+        # I/O-only hash (sent to server as attestation_hash / payloadHash)
+        payload_hash = self.hash({"input": input, "output": output})
+
+        # Separate CPR hash (independently verifiable, signed in Merkle leaf)
+        cpr_hash: Optional[str] = None
         if control_plane_results:
-            payload_to_hash["control_plane_results"] = (
-                control_plane_results.model_dump(by_alias=True)
-            )
-        payload_hash = self.hash(payload_to_hash)
+            cpr_hash = self.hash(control_plane_results.model_dump(by_alias=True))
 
         if self.mode == GlacisMode.OFFLINE:
             return self._attest_offline(
                 service_id, operation_type, payload_hash,
-                input, output, metadata, control_plane_results,
+                input, output, metadata, control_plane_results, cpr_hash,
             )
 
         return self._attest_online(
             service_id, operation_type, payload_hash,
-            input, output, control_plane_results, phase, correlation_id,
+            input, output, cpr_hash, control_plane_results, phase, correlation_id,
         )
 
     def _attest_online(
@@ -240,22 +240,23 @@ class Glacis:
         payload_hash: str,
         input_data: Any,
         output_data: Any,
+        cpr_hash: Optional[str] = None,
         control_plane_results: Optional[ControlPlaneResults] = None,
         phase: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> AttestReceipt:
         """Create a server-witnessed attestation.
 
-        The server is a pure witness service - it only receives the hash and
-        adds it to the Merkle tree. All rich metadata (input, output, control_plane_results)
+        The server is a pure witness service - it only receives hashes and
+        adds them to the Merkle tree. All rich metadata (input, output, control_plane_results)
         stays in the customer's infrastructure for zero-egress compliance.
 
-        The control_plane_results is cryptographically bound via the payload_hash (which
-        includes control_plane_results in its computation).
+        payload_hash covers input+output; cpr_hash covers control_plane_results independently.
+        Both are signed in the Merkle leaf for independent verifiability.
         """
         self._debug(f"Attesting (online): service_id={service_id}, hash={payload_hash[:16]}...")
 
-        # Only send what the server needs - hash goes into Merkle tree
+        # Only send what the server needs - hashes go into Merkle tree
         # User data (input, output) is NOT sent (zero egress)
         # control_plane_results IS sent as compliance metadata for server-side storage
         body: dict[str, Any] = {
@@ -263,6 +264,10 @@ class Glacis:
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
+
+        # CPR hash as separate field in Merkle leaf (independently verifiable)
+        if cpr_hash:
+            body["cprHash"] = cpr_hash
 
         # Control plane results as opaque JSON for server-side storage
         if control_plane_results:
@@ -289,7 +294,8 @@ class Glacis:
         # Also attach locally for convenience
         receipt.control_plane_results = control_plane_results
 
-        # L1/L2 Evidence: populate with raw data for local retention
+        # L1/L2 Evidence: populate with raw I/O data for local retention
+        # CPR is NOT in evidence_data — it has its own cpr_hash in the Merkle leaf
         if (
             receipt.sampling_decision
             and receipt.sampling_decision.level in ("L1", "L2")
@@ -298,10 +304,6 @@ class Glacis:
                 "input": input_data,
                 "output": output_data,
             }
-            if control_plane_results:
-                ev_data["control_plane_results"] = (
-                    control_plane_results.model_dump(by_alias=True)
-                )
             receipt.evidence = Evidence(
                 sample_probability=receipt.sampling_decision.sample_probability or 0.0,
                 evidence_data=ev_data,
@@ -323,6 +325,7 @@ class Glacis:
         output: Any,
         metadata: Optional[dict[str, str]],
         control_plane_results: Optional[ControlPlaneResults] = None,
+        cpr_hash: Optional[str] = None,
     ) -> OfflineAttestReceipt:
         """Create a locally-signed attestation."""
         self._debug(f"Attesting (offline): service_id={service_id}, hash={payload_hash[:16]}...")
@@ -362,6 +365,7 @@ class Glacis:
         receipt = OfflineAttestReceipt(
             id=attestation_id,
             evidence_hash=payload_hash,
+            cpr_hash=cpr_hash,
             timestamp=timestamp_ms,
             service_id=service_id,
             operation_type=operation_type,
@@ -742,13 +746,13 @@ class AsyncGlacis:
         Returns:
             Receipt with proof of inclusion
         """
-        # Build payload to hash - includes control_plane_results for cryptographic binding
-        payload_to_hash: dict[str, Any] = {"input": input, "output": output}
+        # I/O-only hash (sent to server as attestation_hash / payloadHash)
+        payload_hash = self.hash({"input": input, "output": output})
+
+        # Separate CPR hash (independently verifiable, signed in Merkle leaf)
+        cpr_hash: Optional[str] = None
         if control_plane_results:
-            payload_to_hash["control_plane_results"] = (
-                control_plane_results.model_dump(by_alias=True)
-            )
-        payload_hash = self.hash(payload_to_hash)
+            cpr_hash = self.hash(control_plane_results.model_dump(by_alias=True))
 
         self._debug(f"Attesting: service_id={service_id}, hash={payload_hash[:16]}...")
 
@@ -759,6 +763,10 @@ class AsyncGlacis:
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
+
+        # CPR hash as separate field in Merkle leaf (independently verifiable)
+        if cpr_hash:
+            body["cprHash"] = cpr_hash
 
         # Control plane results as opaque JSON for server-side storage
         if control_plane_results:
@@ -785,7 +793,8 @@ class AsyncGlacis:
         # Also attach locally for convenience
         receipt.control_plane_results = control_plane_results
 
-        # L1/L2 Evidence: populate with raw data for local retention
+        # L1/L2 Evidence: populate with raw I/O data for local retention
+        # CPR is NOT in evidence_data — it has its own cpr_hash in the Merkle leaf
         if (
             receipt.sampling_decision
             and receipt.sampling_decision.level in ("L1", "L2")
@@ -794,10 +803,6 @@ class AsyncGlacis:
                 "input": input,
                 "output": output,
             }
-            if control_plane_results:
-                ev_data["control_plane_results"] = (
-                    control_plane_results.model_dump(by_alias=True)
-                )
             receipt.evidence = Evidence(
                 sample_probability=receipt.sampling_decision.sample_probability or 0.0,
                 evidence_data=ev_data,

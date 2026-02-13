@@ -136,6 +136,9 @@ class FullReceipt(BaseModel):
     attestation_hash: str
     heartbeat_epoch: int
     binary_hash: str
+    cpr_hash: Optional[str] = Field(
+        default=None, description="SHA-256 of control plane results",
+    )
     network_state_hash: str
     mono_counter: int
     wall_time_ns: str
@@ -175,6 +178,10 @@ class AttestReceipt(BaseModel):
     id: str = Field(alias="attestationId", description="Unique attestation ID")
     evidence_hash: str = Field(
         alias="evidenceHash", description="Evidence content hash (hex-encoded)",
+    )
+    cpr_hash: Optional[str] = Field(
+        alias="cprHash", default=None,
+        description="SHA-256 of control plane results (independent from evidenceHash)",
     )
     timestamp: int = Field(description="Unix timestamp in milliseconds")
     leaf_index: int = Field(alias="leafIndex", description="Merkle tree leaf index")
@@ -545,6 +552,10 @@ class OfflineAttestReceipt(BaseModel):
     )
     payload_hash: str = Field(
         alias="payloadHash", description="SHA-256 hash of input+output (hex)"
+    )
+    cpr_hash: Optional[str] = Field(
+        alias="cprHash", default=None,
+        description="SHA-256 of control plane results (independent from payloadHash)",
     )
     signature: str = Field(description="Ed25519 signature (base64)")
     public_key: str = Field(

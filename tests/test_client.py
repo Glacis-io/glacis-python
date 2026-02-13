@@ -189,6 +189,10 @@ class TestGlacisSync:
         assert body["controlPlaneResults"]["schema_version"] == "1.0"
         assert body["controlPlaneResults"]["determination"]["action"] == "forwarded"
 
+        # cprHash should be in the request body (separate from payloadHash)
+        assert "cprHash" in body
+        assert len(body["cprHash"]) == 64  # valid hex hash
+
         # User data still not sent (zero-egress)
         assert "input" not in body
         assert "output" not in body
@@ -397,21 +401,20 @@ class TestGlacisAsync:
         assert "controlPlaneResults" in body
         assert body["controlPlaneResults"]["schema_version"] == "1.0"
 
+        # cprHash should be in the request body (separate from payloadHash)
+        assert "cprHash" in body
+        assert len(body["cprHash"]) == 64
+
         # Receipt should have control_plane_results attached locally
         assert receipt.control_plane_results is not None
         assert receipt.control_plane_results.schema_version == "1.0"
 
-        # Hash should differ from hash without control_plane_results
-        hash_with = glacis.hash({
-            "input": {"data": "test"},
-            "output": {"result": "ok"},
-            "control_plane_results": cpr.model_dump(by_alias=True),
-        })
-        hash_without = glacis.hash({
+        # payloadHash sent to server is now I/O-only (CPR has its own cpr_hash)
+        hash_io_only = glacis.hash({
             "input": {"data": "test"},
             "output": {"result": "ok"},
         })
-        assert hash_with != hash_without
+        assert body["payloadHash"] == hash_io_only
 
     @pytest.mark.asyncio
     async def test_async_verify(self, httpx_mock: HTTPXMock):
