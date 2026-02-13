@@ -50,14 +50,13 @@ def main():
     receipt = get_last_receipt()
 
     print("Attestation:")
-    print(f"  Receipt ID: {receipt.attestation_id}")
+    print(f"  Receipt ID: {receipt.id}")
     print(f"  Leaf index: {receipt.leaf_index}")
     if receipt.receipt and receipt.receipt.transparency_proofs:
         root_hash = receipt.receipt.transparency_proofs.sth_curr.root_hash
         print(f"  Merkle root: {root_hash[:16]}...")
-    print(f"  Badge URL: {receipt.badge_url}")
     print()
-    print("Share the badge URL for third-party verification!")
+    print("Use receipt.id for third-party verification!")
 
 
 if __name__ == "__main__":

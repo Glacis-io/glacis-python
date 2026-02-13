@@ -43,7 +43,8 @@ import httpx
 from glacis.crypto import hash_payload
 from glacis.models import (
     AttestReceipt,
-    ControlPlaneAttestation,
+    ControlPlaneResults,
+    Evidence,
     GlacisApiError,
     GlacisRateLimitError,
     LogQueryResult,
@@ -184,7 +185,9 @@ class Glacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]] = None,
-        control_plane_results: Optional[ControlPlaneAttestation] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
+        phase: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Union[AttestReceipt, OfflineAttestReceipt]:
         """
         Attest an AI operation.
@@ -201,6 +204,8 @@ class Glacis:
             metadata: Optional metadata (stored locally for evidence)
             control_plane_results: Optional control plane attestation
                 (hashed locally, cryptographically bound)
+            phase: Optional phase ("input" or "output") for correlation
+            correlation_id: Optional correlation ID linking input/output attestations
 
         Returns:
             AttestReceipt (online) or OfflineAttestReceipt (offline)
@@ -209,47 +214,74 @@ class Glacis:
             GlacisApiError: On API errors (online mode)
             GlacisRateLimitError: When rate limited (online mode)
         """
-        # Build payload to hash - includes control_plane_results for cryptographic binding
-        payload_to_hash: dict[str, Any] = {"input": input, "output": output}
+        # I/O-only hash (sent to server as attestation_hash / payloadHash)
+        payload_hash = self.hash({"input": input, "output": output})
+
+        # Separate CPR hash (independently verifiable, signed in Merkle leaf)
+        cpr_hash: Optional[str] = None
         if control_plane_results:
-            payload_to_hash["control_plane_results"] = (
-                control_plane_results.model_dump(by_alias=True)
-            )
-        payload_hash = self.hash(payload_to_hash)
+            cpr_hash = self.hash(control_plane_results.model_dump(by_alias=True))
 
         if self.mode == GlacisMode.OFFLINE:
             return self._attest_offline(
                 service_id, operation_type, payload_hash,
-                input, output, metadata, control_plane_results,
+                input, output, metadata, control_plane_results, cpr_hash,
             )
 
-        return self._attest_online(service_id, operation_type, payload_hash, control_plane_results)
+        return self._attest_online(
+            service_id, operation_type, payload_hash,
+            input, output, cpr_hash, control_plane_results, phase, correlation_id,
+        )
 
     def _attest_online(
         self,
         service_id: str,
         operation_type: str,
         payload_hash: str,
-        control_plane_results: Optional[ControlPlaneAttestation] = None,
+        input_data: Any,
+        output_data: Any,
+        cpr_hash: Optional[str] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
+        phase: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> AttestReceipt:
         """Create a server-witnessed attestation.
 
-        The server is a pure witness service - it only receives the hash and
-        adds it to the Merkle tree. All rich metadata (input, output, control_plane_results)
+        The server is a pure witness service - it only receives hashes and
+        adds them to the Merkle tree. All rich metadata (input, output, control_plane_results)
         stays in the customer's infrastructure for zero-egress compliance.
 
-        The control_plane_results is cryptographically bound via the payload_hash (which
-        includes control_plane_results in its computation).
+        payload_hash covers input+output; cpr_hash covers control_plane_results independently.
+        Both are signed in the Merkle leaf for independent verifiability.
         """
         self._debug(f"Attesting (online): service_id={service_id}, hash={payload_hash[:16]}...")
 
-        # Only send what the server needs - hash goes into Merkle tree
-        # metadata and control_plane_results are NOT sent (zero egress - stored locally)
+        # Only send what the server needs - hashes go into Merkle tree
+        # User data (input, output) is NOT sent (zero egress)
+        # control_plane_results IS sent as compliance metadata for server-side storage
         body: dict[str, Any] = {
             "serviceId": service_id,
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
+
+        # CPR hash as separate field in Merkle leaf (independently verifiable)
+        if cpr_hash:
+            body["cprHash"] = cpr_hash
+
+        # Control plane results as opaque JSON for server-side storage
+        if control_plane_results:
+            body["controlPlaneResults"] = control_plane_results.model_dump(by_alias=True)
+
+        # Operational metadata for server-side correlation (NOT user data)
+        op_metadata: dict[str, Any] = {}
+        if phase:
+            op_metadata["phase"] = phase
+        if correlation_id:
+            op_metadata["correlationId"] = correlation_id
+        if op_metadata:
+            op_metadata["sequenceIndex"] = 0
+            body["metadata"] = op_metadata
 
         response = self._request_with_retry(
             "POST",
@@ -259,9 +291,29 @@ class Glacis:
         )
 
         receipt = AttestReceipt.model_validate(response)
-        # Attach control_plane_results locally for evidence (not sent to server)
+        # Also attach locally for convenience
         receipt.control_plane_results = control_plane_results
-        self._debug(f"Attestation successful: {receipt.attestation_id}")
+
+        # L1/L2 Evidence: populate with raw I/O data for local retention
+        # CPR is NOT in evidence_data — it has its own cpr_hash in the Merkle leaf
+        if (
+            receipt.sampling_decision
+            and receipt.sampling_decision.level in ("L1", "L2")
+        ):
+            ev_data: dict[str, Any] = {
+                "input": input_data,
+                "output": output_data,
+            }
+            receipt.evidence = Evidence(
+                sample_probability=receipt.sampling_decision.sample_probability or 0.0,
+                evidence_data=ev_data,
+            )
+            self._debug(
+                f"L1 evidence populated (level={receipt.sampling_decision.level}, "
+                f"p={receipt.sampling_decision.sample_probability})"
+            )
+
+        self._debug(f"Attestation successful: {receipt.id}")
         return receipt
 
     def _attest_offline(
@@ -272,13 +324,13 @@ class Glacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]],
-        control_plane_results: Optional[ControlPlaneAttestation] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
+        cpr_hash: Optional[str] = None,
     ) -> OfflineAttestReceipt:
         """Create a locally-signed attestation."""
         self._debug(f"Attesting (offline): service_id={service_id}, hash={payload_hash[:16]}...")
 
         attestation_id = f"oatt_{uuid.uuid4()}"
-        timestamp = datetime.utcnow().isoformat() + "Z"
         timestamp_ms = int(datetime.utcnow().timestamp() * 1000)
 
         # Build attestation payload (this is what gets signed)
@@ -311,8 +363,10 @@ class Glacis:
         signed = json.loads(signed_json)
 
         receipt = OfflineAttestReceipt(
-            attestation_id=attestation_id,
-            timestamp=timestamp,
+            id=attestation_id,
+            evidence_hash=payload_hash,
+            cpr_hash=cpr_hash,
+            timestamp=timestamp_ms,
             service_id=service_id,
             operation_type=operation_type,
             payload_hash=payload_hash,
@@ -363,7 +417,7 @@ class Glacis:
             # Online attestation ID
             return self._verify_online(receipt)
         elif isinstance(receipt, AttestReceipt):
-            return self._verify_online(receipt.attestation_hash)
+            return self._verify_online(receipt.evidence_hash)
         else:
             raise TypeError(f"Invalid receipt type: {type(receipt)}")
 
@@ -380,7 +434,7 @@ class Glacis:
 
     def _verify_offline(self, receipt: OfflineAttestReceipt) -> OfflineVerifyResult:
         """Verify an offline attestation's signature locally."""
-        self._debug(f"Verifying (offline): {receipt.attestation_id}")
+        self._debug(f"Verifying (offline): {receipt.id}")
 
         try:
             # For offline verification, we verify the public key matches our signing seed.
@@ -440,6 +494,8 @@ class Glacis:
         end: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        phase: Optional[str] = None,
     ) -> LogQueryResult:
         """
         Query the public transparency log.
@@ -453,6 +509,8 @@ class Glacis:
             end: End timestamp (ISO 8601)
             limit: Maximum results (default: 50, max: 1000)
             cursor: Pagination cursor
+            correlation_id: Filter by correlation ID
+            phase: Filter by phase ("input" or "output")
 
         Returns:
             Paginated log entries
@@ -466,6 +524,10 @@ class Glacis:
             params["start"] = start
         if end:
             params["end"] = end
+        if correlation_id:
+            params["correlation_id"] = correlation_id
+        if phase:
+            params["phase"] = phase
         if limit:
             params["limit"] = limit
         if cursor:
@@ -660,34 +722,65 @@ class AsyncGlacis:
         input: Any,
         output: Any,
         metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[ControlPlaneResults] = None,
+        phase: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> AttestReceipt:
         """
         Attest an AI operation.
 
         The input and output are hashed locally using RFC 8785 canonical JSON + SHA-256.
         Only the hash is sent to the server - the actual data never leaves your infrastructure.
+        Control plane results are sent to the server as compliance metadata.
 
         Args:
             service_id: Service identifier (e.g., "my-ai-service")
             operation_type: Type of operation (inference, embedding, completion, classification)
             input: Input data (hashed locally, never sent)
             output: Output data (hashed locally, never sent)
-            metadata: Optional metadata (sent to server)
+            metadata: Optional metadata (stored locally for evidence)
+            control_plane_results: Optional control plane attestation
+            phase: Optional phase ("input" or "output") for correlation
+            correlation_id: Optional correlation ID linking input/output attestations
 
         Returns:
             Receipt with proof of inclusion
         """
+        # I/O-only hash (sent to server as attestation_hash / payloadHash)
         payload_hash = self.hash({"input": input, "output": output})
+
+        # Separate CPR hash (independently verifiable, signed in Merkle leaf)
+        cpr_hash: Optional[str] = None
+        if control_plane_results:
+            cpr_hash = self.hash(control_plane_results.model_dump(by_alias=True))
 
         self._debug(f"Attesting: service_id={service_id}, hash={payload_hash[:16]}...")
 
+        # User data (input, output) is NOT sent (zero egress)
+        # control_plane_results IS sent as compliance metadata for server-side storage
         body: dict[str, Any] = {
             "serviceId": service_id,
             "operationType": operation_type,
             "payloadHash": payload_hash,
         }
-        if metadata:
-            body["metadata"] = metadata
+
+        # CPR hash as separate field in Merkle leaf (independently verifiable)
+        if cpr_hash:
+            body["cprHash"] = cpr_hash
+
+        # Control plane results as opaque JSON for server-side storage
+        if control_plane_results:
+            body["controlPlaneResults"] = control_plane_results.model_dump(by_alias=True)
+
+        # Operational metadata for server-side correlation (NOT user data)
+        op_metadata: dict[str, Any] = {}
+        if phase:
+            op_metadata["phase"] = phase
+        if correlation_id:
+            op_metadata["correlationId"] = correlation_id
+        if op_metadata:
+            op_metadata["sequenceIndex"] = 0
+            body["metadata"] = op_metadata
 
         response = await self._request_with_retry(
             "POST",
@@ -697,7 +790,29 @@ class AsyncGlacis:
         )
 
         receipt = AttestReceipt.model_validate(response)
-        self._debug(f"Attestation successful: {receipt.attestation_id}")
+        # Also attach locally for convenience
+        receipt.control_plane_results = control_plane_results
+
+        # L1/L2 Evidence: populate with raw I/O data for local retention
+        # CPR is NOT in evidence_data — it has its own cpr_hash in the Merkle leaf
+        if (
+            receipt.sampling_decision
+            and receipt.sampling_decision.level in ("L1", "L2")
+        ):
+            ev_data: dict[str, Any] = {
+                "input": input,
+                "output": output,
+            }
+            receipt.evidence = Evidence(
+                sample_probability=receipt.sampling_decision.sample_probability or 0.0,
+                evidence_data=ev_data,
+            )
+            self._debug(
+                f"L1 evidence populated (level={receipt.sampling_decision.level}, "
+                f"p={receipt.sampling_decision.sample_probability})"
+            )
+
+        self._debug(f"Attestation successful: {receipt.id}")
         return receipt
 
     async def verify(self, attestation_id: str) -> VerifyResult:
@@ -723,6 +838,8 @@ class AsyncGlacis:
         end: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        phase: Optional[str] = None,
     ) -> LogQueryResult:
         """
         Query the public transparency log.
@@ -738,6 +855,10 @@ class AsyncGlacis:
             params["start"] = start
         if end:
             params["end"] = end
+        if correlation_id:
+            params["correlation_id"] = correlation_id
+        if phase:
+            params["phase"] = phase
         if limit:
             params["limit"] = limit
         if cursor:

@@ -58,7 +58,7 @@ def verify_offline(receipt: OfflineAttestReceipt) -> OfflineVerifyResult:
     try:
         # Validate receipt structure and format
         valid = (
-            receipt.attestation_id.startswith("oatt_")
+            receipt.id.startswith("oatt_")
             and len(receipt.payload_hash) == 64
             and len(receipt.public_key) == 64
             and len(receipt.signature) > 0
@@ -105,12 +105,14 @@ def verify_command(args: argparse.Namespace) -> None:
     if att_id.startswith("oatt_"):
         receipt = OfflineAttestReceipt(**data)
         result = verify_offline(receipt)
+        receipt_id = receipt.id
     else:
         receipt = AttestReceipt(**data)
-        result = verify_online(receipt.attestation_hash, args.base_url)
+        result = verify_online(receipt.evidence_hash, args.base_url)
+        receipt_id = receipt.id
 
     # Output
-    print(f"Receipt: {receipt.attestation_id}")
+    print(f"Receipt: {receipt_id}")
     print(f"Type: {'Offline' if isinstance(receipt, OfflineAttestReceipt) else 'Online'}")
     print()
 

@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from glacis.models import ControlPlaneAttestation, OfflineAttestReceipt
+    from glacis.models import ControlPlaneResults, OfflineAttestReceipt
 
 DEFAULT_DB_PATH = Path.home() / ".glacis" / "glacis.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS offline_receipts (
@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     output_json TEXT NOT NULL,
     control_plane_json TEXT,
     metadata_json TEXT,
+    sampling_level TEXT NOT NULL DEFAULT 'L0',  -- 'L0', 'L1', or 'L2'
     UNIQUE(attestation_id)
 );
 
@@ -92,6 +93,11 @@ CREATE INDEX IF NOT EXISTS idx_evidence_attestation_id ON evidence(attestation_i
 CREATE INDEX IF NOT EXISTS idx_evidence_attestation_hash ON evidence(attestation_hash);
 CREATE INDEX IF NOT EXISTS idx_evidence_service_id ON evidence(service_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
+"""
+
+# Migration from v2 to v3: Add sampling_level column to evidence table
+MIGRATION_V2_TO_V3 = """
+ALTER TABLE evidence ADD COLUMN sampling_level TEXT NOT NULL DEFAULT 'L0';
 """
 
 
@@ -164,6 +170,13 @@ class ReceiptStorage:
         if from_version < 2:
             cursor.executescript(MIGRATION_V1_TO_V2)
 
+        # Migration from v2 to v3: Add sampling_level column
+        if from_version < 3:
+            try:
+                cursor.executescript(MIGRATION_V2_TO_V3)
+            except sqlite3.OperationalError:
+                pass  # Column already exists (idempotent)
+
         cursor.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
             (SCHEMA_VERSION,),
@@ -198,7 +211,7 @@ class ReceiptStorage:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                receipt.attestation_id,
+                receipt.id,
                 receipt.timestamp,
                 receipt.service_id,
                 receipt.operation_type,
@@ -236,7 +249,8 @@ class ReceiptStorage:
             return None
 
         return OfflineAttestReceipt(
-            attestation_id=row["attestation_id"],
+            id=row["attestation_id"],
+            evidence_hash=row["payload_hash"],
             timestamp=row["timestamp"],
             service_id=row["service_id"],
             operation_type=row["operation_type"],
@@ -264,7 +278,8 @@ class ReceiptStorage:
             return None
 
         return OfflineAttestReceipt(
-            attestation_id=row["attestation_id"],
+            id=row["attestation_id"],
+            evidence_hash=row["payload_hash"],
             timestamp=row["timestamp"],
             service_id=row["service_id"],
             operation_type=row["operation_type"],
@@ -318,7 +333,8 @@ class ReceiptStorage:
 
         return [
             OfflineAttestReceipt(
-                attestation_id=row["attestation_id"],
+                id=row["attestation_id"],
+                evidence_hash=row["payload_hash"],
                 timestamp=row["timestamp"],
                 service_id=row["service_id"],
                 operation_type=row["operation_type"],
@@ -402,11 +418,12 @@ class ReceiptStorage:
         mode: str,
         service_id: str,
         operation_type: str,
-        timestamp: str,
+        timestamp: int,
         input_data: Any,
         output_data: Any,
-        control_plane_results: Optional["ControlPlaneAttestation"] = None,
+        control_plane_results: Optional["ControlPlaneResults"] = None,
         metadata: Optional[dict[str, Any]] = None,
+        sampling_level: str = "L0",
     ) -> None:
         """
         Store full evidence for an attestation.
@@ -420,11 +437,12 @@ class ReceiptStorage:
             mode: 'online' or 'offline'
             service_id: Service identifier
             operation_type: Type of operation
-            timestamp: ISO 8601 timestamp
+            timestamp: Unix timestamp in milliseconds
             input_data: Full input data (will be JSON serialized)
             output_data: Full output data (will be JSON serialized)
-            control_plane_results: Optional control plane attestation
+            control_plane_results: Optional control plane results
             metadata: Optional metadata dict
+            sampling_level: Sampling level ('L0', 'L1', or 'L2')
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -439,8 +457,9 @@ class ReceiptStorage:
             """
             INSERT OR REPLACE INTO evidence
             (attestation_id, attestation_hash, mode, service_id, operation_type,
-             timestamp, created_at, input_json, output_json, control_plane_json, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             timestamp, created_at, input_json, output_json, control_plane_json,
+             metadata_json, sampling_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 attestation_id,
@@ -448,12 +467,13 @@ class ReceiptStorage:
                 mode,
                 service_id,
                 operation_type,
-                timestamp,
+                str(timestamp),  # Store as string for compatibility
                 datetime.utcnow().isoformat() + "Z",
                 json.dumps(input_data),
                 json.dumps(output_data),
                 control_plane_json,
                 json.dumps(metadata) if metadata else None,
+                sampling_level,
             ),
         )
         conn.commit()
@@ -497,6 +517,7 @@ class ReceiptStorage:
             "metadata": (
                 json.loads(row["metadata_json"]) if row["metadata_json"] else None
             ),
+            "sampling_level": row["sampling_level"] if "sampling_level" in row.keys() else "L0",
         }
         return result
 
@@ -541,6 +562,7 @@ class ReceiptStorage:
             "metadata": (
                 json.loads(row["metadata_json"]) if row["metadata_json"] else None
             ),
+            "sampling_level": row["sampling_level"] if "sampling_level" in row.keys() else "L0",
         }
         return result
 
@@ -610,6 +632,7 @@ class ReceiptStorage:
                 "metadata": (
                     json.loads(row["metadata_json"]) if row["metadata_json"] else None
                 ),
+                "sampling_level": row["sampling_level"] if "sampling_level" in row.keys() else "L0",
             })
         return results
 

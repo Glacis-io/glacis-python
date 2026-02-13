@@ -125,13 +125,13 @@ def attested_gemini(
             if isinstance(config_param, dict):
                 system_instruction = config_param.get("system_instruction")
             elif hasattr(config_param, "system_instruction"):
-                system_instruction = config_param.system_instruction
+                system_instruction = config_param.system_instruction  # type: ignore[union-attr]
 
         # Run controls if enabled
         if controls_runner:
             from glacis.integrations.base import (
                 ControlResultsAccumulator,
-                create_control_plane_attestation_from_accumulator,
+                create_control_plane_results_from_accumulator,
                 handle_blocked_request,
                 process_text_for_controls,
             )
@@ -145,8 +145,13 @@ def attested_gemini(
                 )
                 # Update config with redacted system_instruction
                 if isinstance(config_param, dict):
-                    kwargs["config"] = {**config_param, "system_instruction": final_system}
-                elif config_param is not None and hasattr(config_param, "system_instruction"):
+                    kwargs["config"] = {
+                        **config_param,
+                        "system_instruction": final_system,
+                    }
+                elif config_param is not None and hasattr(
+                    config_param, "system_instruction"
+                ):
                     config_param.system_instruction = final_system  # type: ignore[union-attr]
 
             # Process contents through controls
@@ -212,21 +217,20 @@ def attested_gemini(
                 contents = processed_contents
 
             if debug:
-                if accumulator.pii_summary:
+                if accumulator._pii_detected:
                     print(
-                        f"[glacis] PII redacted: {accumulator.pii_summary.categories} "
-                        f"({accumulator.pii_summary.count} items)"
+                        f"[glacis] PII redacted: {accumulator._pii_categories}"
                     )
-                if accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
+                if accumulator._jailbreak_detected:
                     print(
                         f"[glacis] Jailbreak detected: "
-                        f"score={accumulator.jailbreak_summary.score:.2f}, "
-                        f"action={accumulator.jailbreak_summary.action}"
+                        f"score={accumulator._jailbreak_score:.2f}, "
+                        f"action={accumulator._jailbreak_action}"
                     )
 
-            # Build control plane attestation
-            control_plane_results = create_control_plane_attestation_from_accumulator(
-                accumulator, cfg, model, "gemini", "models.generate_content"
+            # Build control plane results
+            control_plane_results = create_control_plane_results_from_accumulator(
+                accumulator, cfg, model, "gemini"
             )
 
             # Check if we need to block BEFORE making the API call
@@ -234,13 +238,14 @@ def attested_gemini(
                 handle_blocked_request(
                     glacis_client=glacis,
                     service_id=effective_service_id,
-                    input_data={"model": model, "contents": _serialize_contents(contents)},
+                    input_data={
+                        "model": model,
+                        "contents": _serialize_contents(contents),
+                    },
                     control_plane_results=control_plane_results,
                     provider="gemini",
                     model=model,
-                    jailbreak_score=accumulator.jailbreak_summary.score
-                    if accumulator.jailbreak_summary
-                    else 0.0,
+                    jailbreak_score=accumulator._jailbreak_score,
                     debug=debug,
                 )
         else:
@@ -256,7 +261,8 @@ def attested_gemini(
         }
         if system_instruction:
             input_data["system_instruction"] = (
-                system_instruction if isinstance(system_instruction, str)
+                system_instruction
+                if isinstance(system_instruction, str)
                 else str(system_instruction)
             )
 
@@ -269,7 +275,9 @@ def attested_gemini(
         if response.candidates:
             for candidate in response.candidates:
                 finish = (
-                    str(candidate.finish_reason) if candidate.finish_reason else None
+                    str(candidate.finish_reason)
+                    if candidate.finish_reason
+                    else None
                 )
                 candidate_data: dict[str, Any] = {
                     "finish_reason": finish,
@@ -287,9 +295,15 @@ def attested_gemini(
 
         if response.usage_metadata:
             output_data["usage"] = {
-                "prompt_tokens": response.usage_metadata.prompt_token_count or 0,
-                "candidates_tokens": response.usage_metadata.candidates_token_count or 0,
-                "total_tokens": response.usage_metadata.total_token_count or 0,
+                "prompt_tokens": (
+                    response.usage_metadata.prompt_token_count or 0
+                ),
+                "candidates_tokens": (
+                    response.usage_metadata.candidates_token_count or 0
+                ),
+                "total_tokens": (
+                    response.usage_metadata.total_token_count or 0
+                ),
             }
 
         # Attest and store

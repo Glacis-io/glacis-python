@@ -12,7 +12,7 @@ Example (online):
     ...     input={"prompt": "Hello, world!"},
     ...     output={"response": "Hi there!"},
     ... )
-    >>> print(f"Verified at: {receipt.verify_url}")
+    >>> print(f"Attestation ID: {receipt.id}")
 
 Example (offline):
     >>> from glacis import Glacis
@@ -49,29 +49,31 @@ Controls Example:
 from glacis.client import AsyncGlacis, Glacis, GlacisMode
 from glacis.crypto import canonical_json, hash_payload
 from glacis.models import (
+    AttestationMetadata,
     AttestInput,
     AttestReceipt,
     ControlExecution,
-    ControlPlaneAttestation,
+    ControlPlaneResults,
     ControlStatus,
     ControlType,
+    DeepInspection,
     Determination,
+    Evidence,
     GlacisApiError,
     GlacisConfig,
-    JailbreakSummary,
+    InclusionProof,
     LogEntry,
     LogQueryParams,
     LogQueryResult,
-    MerkleInclusionProof,
+    MerkleInclusionProof,  # Deprecated alias for InclusionProof
     ModelInfo,
     OfflineAttestReceipt,
     OfflineVerifyResult,
-    PiiPhiSummary,
     PolicyContext,
     PolicyScope,
+    Review,
     SafetyScores,
     SamplingDecision,
-    SamplingMetadata,
     SignedTreeHead,
     VerifyResult,
 )
@@ -110,6 +112,7 @@ __all__ = [
     # Models
     "GlacisConfig",
     "AttestInput",
+    "AttestationMetadata",
     "AttestReceipt",
     "OfflineAttestReceipt",
     "VerifyResult",
@@ -117,10 +120,11 @@ __all__ = [
     "LogQueryParams",
     "LogQueryResult",
     "LogEntry",
-    "MerkleInclusionProof",
+    "InclusionProof",
+    "MerkleInclusionProof",  # Deprecated alias for InclusionProof
     "SignedTreeHead",
-    # Control Plane
-    "ControlPlaneAttestation",
+    # Control Plane (L0)
+    "ControlPlaneResults",
     "PolicyContext",
     "PolicyScope",
     "ModelInfo",
@@ -129,10 +133,11 @@ __all__ = [
     "ControlType",
     "ControlStatus",
     "SafetyScores",
-    "PiiPhiSummary",
-    "JailbreakSummary",
-    "SamplingMetadata",
     "SamplingDecision",
+    # L1/L2 Attestation
+    "Evidence",
+    "Review",
+    "DeepInspection",
     # Crypto utilities
     "canonical_json",
     "hash_payload",

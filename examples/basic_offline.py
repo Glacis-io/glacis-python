@@ -32,7 +32,7 @@ def main():
     )
 
     print("Attestation created!")
-    print(f"  Receipt ID: {receipt.attestation_id}")
+    print(f"  Receipt ID: {receipt.id}")
     print(f"  Payload hash: {receipt.payload_hash}")
     print(f"  Witness status: {receipt.witness_status}")
     print()

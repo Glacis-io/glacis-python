@@ -195,7 +195,9 @@ class TestCrossRuntimeCompatibility:
         result = hash_payload(data)
 
         # The hash should be deterministic
-        expected_canonical = '{"input":{"prompt":"Hello, world!"},"output":{"response":"Hi there!"}}'
+        expected_canonical = (
+            '{"input":{"prompt":"Hello, world!"},"output":{"response":"Hi there!"}}'
+        )
         import hashlib
 
         expected_hash = hashlib.sha256(expected_canonical.encode()).hexdigest()
