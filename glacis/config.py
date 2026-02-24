@@ -54,10 +54,9 @@ Usage:
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from glacis.judges.config import JudgesConfig
-
 
 # ---------------------------------------------------------------------------
 # Per-control config models
@@ -69,7 +68,10 @@ class PiiPhiControlConfig(BaseModel):
     enabled: bool = Field(default=False, description="Enable PII/PHI scanning")
     entities: list[str] = Field(
         default_factory=list,
-        description="Entity types to scan for (e.g. 'US_SSN', 'EMAIL_ADDRESS'). Empty = all HIPAA entities.",
+        description=(
+            "Entity types to scan for (e.g. 'US_SSN', 'EMAIL_ADDRESS'). "
+            "Empty = all HIPAA entities."
+        ),
     )
     model: str = Field(
         default="presidio",
@@ -81,7 +83,10 @@ class PiiPhiControlConfig(BaseModel):
     )
     if_detected: Literal["forward", "flag", "block"] = Field(
         default="flag",
-        description="Behavior when PII/PHI is detected: forward (observe), flag (log + continue), or block (halt)",
+        description=(
+            "Behavior when PII/PHI is detected: "
+            "forward (observe), flag (log + continue), or block (halt)"
+        ),
     )
 
 
@@ -95,7 +100,10 @@ class WordFilterControlConfig(BaseModel):
     )
     if_detected: Literal["forward", "flag", "block"] = Field(
         default="flag",
-        description="Behavior when term matched: forward (observe), flag (log + continue), or block (halt)",
+        description=(
+            "Behavior when term matched: "
+            "forward (observe), flag (log + continue), or block (halt)"
+        ),
     )
 
 
@@ -115,7 +123,10 @@ class JailbreakControlConfig(BaseModel):
     )
     if_detected: Literal["forward", "flag", "block"] = Field(
         default="flag",
-        description="Behavior when jailbreak detected: forward (observe), flag (log + continue), or block (halt)",
+        description=(
+            "Behavior when jailbreak detected: "
+            "forward (observe), flag (log + continue), or block (halt)"
+        ),
     )
 
 
@@ -191,7 +202,10 @@ class SamplingConfig(BaseModel):
         default=1.0,
         ge=0.0,
         le=1.0,
-        description="Probability of L1 sampling (evidence collection / judge review). 1.0 = review all.",
+        description=(
+            "Probability of L1 sampling (evidence collection / judge review). "
+            "1.0 = review all."
+        ),
     )
     l2_rate: float = Field(
         default=0.0,
@@ -200,17 +214,33 @@ class SamplingConfig(BaseModel):
         description="Probability of L2 sampling (deep inspection, implies L1). 0.0 = disabled.",
     )
 
+    @model_validator(mode="after")
+    def _l2_within_l1(self) -> "SamplingConfig":
+        if self.l2_rate > self.l1_rate:
+            raise ValueError(
+                f"l2_rate ({self.l2_rate}) must be <= l1_rate ({self.l1_rate}): "
+                f"L2 sampling is a subset of L1"
+            )
+        return self
+
 
 class EvidenceStorageConfig(BaseModel):
     """Evidence storage backend configuration."""
 
     backend: Literal["sqlite", "json"] = Field(
         default="sqlite",
-        description="Evidence storage backend: 'sqlite' (default) or 'json' (JSONL append-only log)",
+        description=(
+            "Evidence storage backend: 'sqlite' (default) "
+            "or 'json' (JSONL append-only log)"
+        ),
     )
     path: Optional[str] = Field(
         default=None,
-        description="Storage path. For sqlite: .db file path. For json: directory containing .jsonl files. Default: ~/.glacis",
+        description=(
+            "Storage path. For sqlite: .db file path. "
+            "For json: directory containing .jsonl files. "
+            "Default: ~/.glacis"
+        ),
     )
 
 

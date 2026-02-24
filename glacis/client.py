@@ -476,7 +476,7 @@ class Glacis:
         Args:
             attestation: The parent batch attestation
             items: List of individual items to attest (e.g., QA pairs)
-            operation_type: Operation type for decomposed items (default: "qa_pair")
+            operation_type: Operation type for decomposed items (default: "item")
             source_data: Optional shared input data for all items
 
         Returns:

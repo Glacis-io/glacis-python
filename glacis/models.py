@@ -41,7 +41,9 @@ class SignedTreeHead(BaseModel):
     tree_size: int = Field(alias="treeSize", description="Total number of leaves")
     timestamp: str = Field(description="ISO 8601 timestamp when signed")
     root_hash: str = Field(alias="rootHash", description="Root hash (hex-encoded)")
-    public_key: Optional[str] = Field(alias="publicKey", default=None, description="Ed25519 public key (hex)")
+    public_key: Optional[str] = Field(
+        alias="publicKey", default=None, description="Ed25519 public key (hex)"
+    )
     signature: str = Field(description="Ed25519 signature (base64-encoded)")
 
 
@@ -236,7 +238,9 @@ class ControlExecution(BaseModel):
     provider: str
     latency_ms: int
     status: ControlStatus
-    score: Optional[float] = Field(default=None, description="Numeric score (e.g. jailbreak probability)")
+    score: Optional[float] = Field(
+        default=None, description="Numeric score (e.g. jailbreak probability)"
+    )
     result_hash: Optional[str] = None
     stage: Literal["input", "output"] = "input"
 
@@ -287,7 +291,9 @@ class Attestation(BaseModel):
 
     # SDK convenience (not on wire)
     is_offline: bool = Field(default=False)
-    timestamp: Optional[int] = Field(default=None, description="Unix timestamp ms (SDK convenience)")
+    timestamp: Optional[int] = Field(
+        default=None, description="Unix timestamp ms (SDK convenience)"
+    )
 
     @property
     def witness_status(self) -> str:

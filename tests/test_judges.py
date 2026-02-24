@@ -793,8 +793,8 @@ class TestShouldReview:
         """L2 sampling is nested — L2 ⊂ L1."""
         from glacis.config import SamplingConfig
 
-        # With l2_rate=1.0, everything is L2 regardless of l1_rate
-        config = SamplingConfig(l1_rate=0.0, l2_rate=1.0)
+        # With both rates at 1.0, everything is L2
+        config = SamplingConfig(l1_rate=1.0, l2_rate=1.0)
         g = Glacis(mode="offline", signing_seed=bytes(32), sampling_config=config)
         att = self._make_attestation()
         sd = g.should_review(att)

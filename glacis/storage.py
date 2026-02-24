@@ -391,7 +391,6 @@ class ReceiptStorage:
         Returns:
             The Attestation if found, None otherwise
         """
-        from glacis.models import Attestation
 
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -487,8 +486,17 @@ class ReceiptStorage:
             signature=row["signature"],
             public_key=row["public_key"],
             is_offline=True,
-            operation_id=row["operation_id"] if "operation_id" in keys and row["operation_id"] else "",
-            operation_sequence=row["operation_sequence"] if "operation_sequence" in keys and row["operation_sequence"] is not None else 0,
+            operation_id=(
+                row["operation_id"]
+                if "operation_id" in keys and row["operation_id"]
+                else ""
+            ),
+            operation_sequence=(
+                row["operation_sequence"]
+                if "operation_sequence" in keys
+                and row["operation_sequence"] is not None
+                else 0
+            ),
             supersedes=row["supersedes"] if "supersedes" in keys else None,
             cpr_hash=row["cpr_hash"] if "cpr_hash" in keys else None,
         )

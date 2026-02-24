@@ -31,7 +31,7 @@ class ControlResult(BaseModel):
         categories: List of detected categories (e.g., ["US_SSN", "PERSON"])
         latency_ms: Processing time in milliseconds
         metadata: Control-specific metadata (for audit trail)
-        modified_text: Reserved for future rewrite mode (not currently used)
+        modified_text: Modified text if control transforms the input (not currently used)
     """
 
     control_type: str = Field(description="Control type identifier")
@@ -50,7 +50,8 @@ class ControlResult(BaseModel):
         default_factory=dict, description="Control-specific metadata for audit"
     )
     modified_text: Optional[str] = Field(
-        default=None, description="Reserved for future rewrite mode (not currently used)"
+        default=None,
+        description="Modified text if control transforms the input (not currently used)",
     )
 
 

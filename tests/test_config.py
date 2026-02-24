@@ -239,6 +239,21 @@ class TestSamplingConfig:
         with pytest.raises(ValidationError):
             SamplingConfig(l2_rate=2.0)
 
+    def test_l2_rate_exceeds_l1_rate_raises(self):
+        from pydantic import ValidationError
+
+        from glacis.config import SamplingConfig
+
+        with pytest.raises(ValidationError, match="l2_rate.*must be <= l1_rate"):
+            SamplingConfig(l1_rate=0.3, l2_rate=0.8)
+
+    def test_l2_equals_l1_is_valid(self):
+        from glacis.config import SamplingConfig
+
+        config = SamplingConfig(l1_rate=0.5, l2_rate=0.5)
+        assert config.l1_rate == 0.5
+        assert config.l2_rate == 0.5
+
     def test_glacis_config_has_sampling(self):
         from glacis.config import GlacisConfig
 

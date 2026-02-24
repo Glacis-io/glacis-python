@@ -95,34 +95,56 @@ class ControlsRunner:
             if input_config.pii_phi.enabled:
                 self._input_controls.append(PIIControl(input_config.pii_phi))
                 if debug:
-                    print(f"[glacis] Input PIIControl initialized (model={input_config.pii_phi.model}, mode={input_config.pii_phi.mode})")
+                    pii = input_config.pii_phi
+                    print(
+                        f"[glacis] Input PIIControl initialized "
+                        f"(model={pii.model}, mode={pii.mode})"
+                    )
 
             if input_config.word_filter.enabled:
                 self._input_controls.append(WordFilterControl(input_config.word_filter))
                 if debug:
-                    print(f"[glacis] Input WordFilterControl initialized ({len(input_config.word_filter.entities)} entities)")
+                    n = len(input_config.word_filter.entities)
+                    print(
+                        f"[glacis] Input WordFilterControl "
+                        f"initialized ({n} entities)"
+                    )
 
             if input_config.jailbreak.enabled:
                 self._input_controls.append(JailbreakControl(input_config.jailbreak))
                 if debug:
-                    print(f"[glacis] Input JailbreakControl initialized (model={input_config.jailbreak.model})")
+                    print(
+                        f"[glacis] Input JailbreakControl initialized "
+                        f"(model={input_config.jailbreak.model})"
+                    )
 
         # --- Output stage built-in controls ---
         if output_config:
             if output_config.pii_phi.enabled:
                 self._output_controls.append(PIIControl(output_config.pii_phi))
                 if debug:
-                    print(f"[glacis] Output PIIControl initialized (model={output_config.pii_phi.model}, mode={output_config.pii_phi.mode})")
+                    pii = output_config.pii_phi
+                    print(
+                        f"[glacis] Output PIIControl initialized "
+                        f"(model={pii.model}, mode={pii.mode})"
+                    )
 
             if output_config.word_filter.enabled:
                 self._output_controls.append(WordFilterControl(output_config.word_filter))
                 if debug:
-                    print(f"[glacis] Output WordFilterControl initialized ({len(output_config.word_filter.entities)} entities)")
+                    n = len(output_config.word_filter.entities)
+                    print(
+                        f"[glacis] Output WordFilterControl "
+                        f"initialized ({n} entities)"
+                    )
 
             if output_config.jailbreak.enabled:
                 self._output_controls.append(JailbreakControl(output_config.jailbreak))
                 if debug:
-                    print(f"[glacis] Output JailbreakControl initialized (model={output_config.jailbreak.model})")
+                    print(
+                        f"[glacis] Output JailbreakControl initialized "
+                        f"(model={output_config.jailbreak.model})"
+                    )
 
         # --- Custom controls ---
         for ctrl in (input_controls or []):

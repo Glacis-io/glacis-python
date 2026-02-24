@@ -67,7 +67,7 @@ class TestOpenAIIntegration:
         # This test verifies the function exists and is callable
         result = get_last_receipt()
         # Result could be None or a receipt from a previous test
-        assert result is None or hasattr(result, "attestation_id")
+        assert result is None or hasattr(result, "id")
 
     def test_get_evidence_not_found(self, signing_seed: bytes):
         """get_evidence returns None for unknown ID."""
@@ -188,12 +188,13 @@ class TestIntegrationWithControls:
 
         # Create a minimal config file
         config_content = """
-version: "1.0"
+version: "1.3"
 controls:
-  pii_phi:
-    enabled: false
-  jailbreak:
-    enabled: false
+  input:
+    pii_phi:
+      enabled: false
+    jailbreak:
+      enabled: false
 attestation:
   offline: true
 """

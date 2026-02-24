@@ -15,17 +15,18 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 if TYPE_CHECKING:
     from glacis import Glacis
     from glacis.config import GlacisConfig, SamplingConfig
     from glacis.controls import ControlsRunner, StageResult
-    from glacis.controls.base import BaseControl, ControlResult
+    from glacis.controls.base import BaseControl
     from glacis.models import (
         Attestation,
         ControlExecution,
         ControlPlaneResults,
+        ControlType,
     )
 
 
@@ -370,7 +371,7 @@ class ControlResultsAccumulator:
             self.control_executions.append(
                 ControlExecution(
                     id=f"glacis-{result.control_type}",
-                    type=_map_control_type(result.control_type),
+                    type=cast("ControlType", _map_control_type(result.control_type)),
                     version=SDK_VERSION,
                     provider=result.metadata.get("provider", "glacis"),
                     latency_ms=result.latency_ms,
@@ -389,7 +390,7 @@ class ControlResultsAccumulator:
         else:
             self.effective_output_text = stage_result.effective_text
 
-    def get_blocking_control(self) -> Optional["ControlResult"]:
+    def get_blocking_control(self) -> Optional["ControlExecution"]:
         """Find the first control result that caused a block.
 
         Returns the ControlResult that triggered blocking, or None.

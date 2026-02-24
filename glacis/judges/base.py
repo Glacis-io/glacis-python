@@ -197,6 +197,7 @@ class JudgeRunner:
             else True
         )
 
+        recommendation: Literal["uphold", "borderline", "escalate"]
         if final_score >= self._config.uphold_threshold:
             recommendation = "uphold"
         elif final_score >= self._config.borderline_threshold:

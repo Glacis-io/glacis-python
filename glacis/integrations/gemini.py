@@ -156,7 +156,11 @@ def attested_gemini(
 
         # Extract system prompt hash and temperature for CPR
         from glacis.crypto import hash_payload
-        _sys_prompt_hash = hash_payload(system_instruction) if system_instruction and isinstance(system_instruction, str) else None
+        _sys_prompt_hash = (
+            hash_payload(system_instruction)
+            if system_instruction and isinstance(system_instruction, str)
+            else None
+        )
         _temperature = None
         if config_param is not None:
             if isinstance(config_param, dict):
@@ -331,12 +335,12 @@ def _extract_user_text(contents: Any) -> Optional[str]:
                         if isinstance(part, str):
                             return part
                         elif isinstance(part, dict) and "text" in part:
-                            return part["text"]
+                            return str(part["text"])
             elif hasattr(item, "role") and hasattr(item, "parts"):
                 if item.role == "user" and item.parts:
                     for part in item.parts:
                         if hasattr(part, "text") and part.text:
-                            return part.text
+                            return str(part.text)
     return None
 
 
@@ -347,7 +351,7 @@ def _extract_response_text(response: Any) -> Optional[str]:
             if candidate.content and candidate.content.parts:
                 for part in candidate.content.parts:
                     if hasattr(part, "text") and part.text:
-                        return part.text
+                        return str(part.text)
     return None
 
 
