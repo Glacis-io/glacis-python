@@ -15,8 +15,7 @@ from typing import Any, Union
 import httpx
 
 from glacis.models import (
-    AttestReceipt,
-    OfflineAttestReceipt,
+    Attestation,
     OfflineVerifyResult,
     VerifyResult,
 )
@@ -24,9 +23,9 @@ from glacis.models import (
 DEFAULT_BASE_URL = "https://api.glacis.io"
 
 
-def verify_online(attestation_hash: str, base_url: str) -> VerifyResult:
+def verify_online(attestation_id: str, base_url: str) -> VerifyResult:
     """Verify an online attestation via direct HTTP call."""
-    url = f"{base_url}/v1/verify/{attestation_hash}"
+    url = f"{base_url}/v1/verify/{attestation_id}"
 
     try:
         response = httpx.get(url, timeout=30.0)
@@ -44,7 +43,7 @@ def verify_online(attestation_hash: str, base_url: str) -> VerifyResult:
         )
 
 
-def verify_offline(receipt: OfflineAttestReceipt) -> OfflineVerifyResult:
+def verify_offline(receipt: Attestation) -> OfflineVerifyResult:
     """
     Verify an offline attestation.
 
@@ -58,8 +57,8 @@ def verify_offline(receipt: OfflineAttestReceipt) -> OfflineVerifyResult:
     try:
         # Validate receipt structure and format
         valid = (
-            receipt.attestation_id.startswith("oatt_")
-            and len(receipt.payload_hash) == 64
+            receipt.id.startswith("oatt_")
+            and len(receipt.evidence_hash) == 64
             and len(receipt.public_key) == 64
             and len(receipt.signature) > 0
             and receipt.witness_status == "UNVERIFIED"
@@ -97,21 +96,25 @@ def verify_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # Determine receipt type and verify
-    receipt: Union[AttestReceipt, OfflineAttestReceipt]
     result: Union[VerifyResult, OfflineVerifyResult]
 
     # Check for offline receipt - supports both camelCase and snake_case
-    att_id = data.get("attestationId") or data.get("attestation_id") or ""
-    if att_id.startswith("oatt_"):
-        receipt = OfflineAttestReceipt(**data)
+    att_id = data.get("attestationId") or data.get("id") or ""
+    is_offline = att_id.startswith("oatt_") or data.get("is_offline", False)
+
+    if is_offline:
+        receipt = Attestation.model_validate(data)
+        receipt.is_offline = True
         result = verify_offline(receipt)
+        receipt_type = "Offline"
     else:
-        receipt = AttestReceipt(**data)
-        result = verify_online(receipt.attestation_hash, args.base_url)
+        receipt = Attestation.model_validate(data)
+        result = verify_online(receipt.id, args.base_url)
+        receipt_type = "Online"
 
     # Output
-    print(f"Receipt: {receipt.attestation_id}")
-    print(f"Type: {'Offline' if isinstance(receipt, OfflineAttestReceipt) else 'Online'}")
+    print(f"Receipt: {receipt.id}")
+    print(f"Type: {receipt_type}")
     print()
 
     if result.valid:

@@ -7,13 +7,14 @@ Requires: pip install glacis[openai]
 """
 
 import os
-from pathlib import Path
 
 from glacis.integrations.openai import attested_openai, get_last_receipt
-from dotenv import load_dotenv
 
-
-load_dotenv(Path(__file__).parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 def main():
@@ -50,14 +51,11 @@ def main():
     receipt = get_last_receipt()
 
     print("Attestation:")
-    print(f"  Receipt ID: {receipt.attestation_id}")
-    print(f"  Leaf index: {receipt.leaf_index}")
-    if receipt.receipt and receipt.receipt.transparency_proofs:
-        root_hash = receipt.receipt.transparency_proofs.sth_curr.root_hash
-        print(f"  Merkle root: {root_hash[:16]}...")
-    print(f"  Badge URL: {receipt.badge_url}")
+    print(f"  Receipt ID: {receipt.id}")
+    print(f"  Evidence hash: {receipt.evidence_hash}")
+    print(f"  Witness status: {receipt.witness_status}")
     print()
-    print("Share the badge URL for third-party verification!")
+    print("Use receipt.id for third-party verification!")
 
 
 if __name__ == "__main__":

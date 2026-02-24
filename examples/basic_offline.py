@@ -32,8 +32,8 @@ def main():
     )
 
     print("Attestation created!")
-    print(f"  Receipt ID: {receipt.attestation_id}")
-    print(f"  Payload hash: {receipt.payload_hash}")
+    print(f"  Receipt ID: {receipt.id}")
+    print(f"  Evidence hash: {receipt.evidence_hash}")
     print(f"  Witness status: {receipt.witness_status}")
     print()
 
@@ -45,7 +45,7 @@ def main():
     print()
 
     # Receipts are stored locally
-    print("Receipts are stored in ~/.glacis/receipts.db")
+    print("Receipts are stored locally (SQLite by default, JSONL optional)")
     print()
     print("To get witnessed attestations with Merkle proofs,")
     print("use online mode with an API key from https://glacis.io")

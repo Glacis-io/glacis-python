@@ -45,13 +45,62 @@ class TestOfflineMode:
             )
 
             # Check receipt properties
-            assert receipt.attestation_id.startswith("oatt_")
+            assert receipt.id.startswith("oatt_")
             assert receipt.witness_status == "UNVERIFIED"
             assert receipt.service_id == "test-service"
             assert receipt.operation_type == "inference"
-            assert len(receipt.payload_hash) == 64  # SHA-256 hex
+            assert len(receipt.evidence_hash) == 64  # SHA-256 hex
             assert len(receipt.signature) > 0
             assert len(receipt.public_key) == 64  # Ed25519 pubkey hex
+
+            glacis.close()
+
+    def test_offline_attest_sets_operation_id(self):
+        """Offline attestation auto-generates operation_id."""
+        from glacis import Glacis
+
+        seed = os.urandom(32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            glacis = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
+
+            receipt = glacis.attest(
+                service_id="test",
+                operation_type="inference",
+                input={"a": 1},
+                output={"b": 2},
+            )
+
+            assert len(receipt.operation_id) == 36  # UUID format
+            assert receipt.operation_sequence == 0
+
+            glacis.close()
+
+    def test_offline_attest_with_supersedes(self):
+        """Offline attestation supports supersedes parameter."""
+        from glacis import Glacis
+
+        seed = os.urandom(32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            glacis = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
+
+            r1 = glacis.attest(
+                service_id="test",
+                operation_type="inference",
+                input={"v": 1},
+                output={"r": 1},
+            )
+
+            r2 = glacis.attest(
+                service_id="test",
+                operation_type="inference",
+                input={"v": 2},
+                output={"r": 2},
+                supersedes=r1.id,
+            )
+
+            assert r2.supersedes == r1.id
 
             glacis.close()
 
@@ -99,10 +148,10 @@ class TestOfflineMode:
 
             # Create new client and retrieve
             glacis2 = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
-            stored = glacis2._storage.get_receipt(receipt.attestation_id)
+            stored = glacis2._storage.get_receipt(receipt.id)
 
             assert stored is not None
-            assert stored.payload_hash == receipt.payload_hash
+            assert stored.evidence_hash == receipt.evidence_hash
             assert stored.signature == receipt.signature
             assert stored.public_key == receipt.public_key
 
@@ -117,7 +166,7 @@ class TestOfflineMode:
             db_path = Path(tmpdir) / "test.db"
             glacis = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
 
-            receipt1 = glacis.attest(
+            glacis.attest(
                 service_id="test",
                 operation_type="inference",
                 input={"n": 1},
@@ -132,7 +181,35 @@ class TestOfflineMode:
 
             last = glacis.get_last_receipt()
             assert last is not None
-            assert last.attestation_id == receipt2.attestation_id
+            assert last.id == receipt2.id
+
+            glacis.close()
+
+    def test_offline_decompose(self):
+        """decompose() creates child attestations with shared operation_id."""
+        from glacis import Glacis
+
+        seed = os.urandom(32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            glacis = Glacis(mode="offline", signing_seed=seed, db_path=db_path)
+
+            parent = glacis.attest(
+                service_id="test",
+                operation_type="qa_gen",
+                input={"chunk": "source text"},
+                output={"qa_pairs": [{"q": "Q1", "a": "A1"}, {"q": "Q2", "a": "A2"}]},
+                operation_id="op_batch",
+                operation_sequence=0,
+            )
+
+            items = [{"q": "Q1", "a": "A1"}, {"q": "Q2", "a": "A2"}]
+            children = glacis.decompose(parent, items=items)
+
+            assert len(children) == 2
+            assert all(c.operation_id == "op_batch" for c in children)
+            assert children[0].operation_sequence == 1
+            assert children[1].operation_sequence == 2
 
             glacis.close()
 

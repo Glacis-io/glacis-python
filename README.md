@@ -6,6 +6,10 @@
 
 **Tamper-proof audit logs for AI systems - without exposing sensitive data.**
 
+> **Note:** Online attestation (Merkle tree proofs via the Glacis API) is not yet available.
+> The SDK currently supports **offline mode** with local Ed25519 signing.
+> Online mode will be enabled in a future release.
+
 ## The Problem
 
 You need to prove what your AI did for compliance, audits, or legal discovery. But sending prompts and responses to a logging service exposes sensitive data (PII, PHI, trade secrets).
@@ -32,7 +36,7 @@ Later, you can prove the hash matches your local records without revealing the d
 pip install glacis[openai]      # For OpenAI
 pip install glacis[anthropic]   # For Anthropic
 pip install glacis[gemini]      # For Google Gemini
-pip install glacis[controls]    # Add PII redaction + jailbreak detection
+pip install glacis[controls]    # Add PII detection + jailbreak detection
 pip install glacis[all]         # Everything
 ```
 
@@ -61,7 +65,7 @@ response = client.chat.completions.create(
 
 # Get the attestation receipt
 receipt = get_last_receipt()
-print(f"Attestation ID: {receipt.attestation_id}")
+print(f"Attestation ID: {receipt.id}")
 ```
 
 Works the same for Anthropic:
@@ -113,45 +117,47 @@ receipt = glacis.attest(
 )
 ```
 
-## Adding PII Redaction
+## Adding Controls
 
-Automatically detect and redact sensitive data before it's hashed:
+Detect PII/PHI and prompt injection attempts in your AI calls. Enable controls via a YAML config file:
 
 ```python
 client = attested_openai(
     openai_api_key="sk-...",
     offline=True,
     signing_seed=os.urandom(32),
-    redaction="fast",  # Regex-based, or "full" for ML models
+    config_path="glacis.yaml",  # Enable controls via config
 )
-
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "My SSN is 123-45-6789"}]
-)
-
-# The attestation hash is computed on: "My SSN is [US_SSN]"
-# Original text still sent to OpenAI, but redacted version is attested
 ```
+
+Control results (detections, scores, latencies) are included in the attestation record.
 
 ## Configuration File
 
 For persistent settings, create `glacis.yaml`:
 
 ```yaml
+version: "1.3"
+
 attestation:
   offline: true
   service_id: my-ai-service
 
 controls:
-  pii_phi:
-    enabled: true
-    mode: fast          # "fast" (regex) or "full" (Presidio NER)
+  input:
+    pii_phi:
+      enabled: true
+      mode: fast            # "fast" (regex) or "full" (Presidio NER)
+      if_detected: flag     # "forward", "flag", or "block"
 
-  jailbreak:
-    enabled: true
-    threshold: 0.5      # Block prompt injection attempts
-    action: block       # "warn" or "block"
+    jailbreak:
+      enabled: true
+      threshold: 0.5
+      if_detected: block
+
+sampling:
+  l1_rate: 1.0   # Evidence collection rate (0.0-1.0)
+  l2_rate: 0.0   # Deep inspection rate (must be <= l1_rate)
 ```
 
 Then:
@@ -171,32 +177,25 @@ Full payloads are stored locally for audits:
 from glacis.integrations.openai import get_last_receipt, get_evidence
 
 receipt = get_last_receipt()
-evidence = get_evidence(receipt.attestation_id)
+evidence = get_evidence(receipt.id)
 
 print(evidence["input"])                  # Original input
 print(evidence["output"])                 # Original output
 print(evidence["control_plane_results"])  # PII/jailbreak results
 ```
 
-Evidence is stored in `~/.glacis/receipts.db` (SQLite).
+Evidence is stored locally using SQLite (default) or JSONL backends.
 
 ## Online vs Offline Mode
 
-| Feature | Offline | Online |
-|---------|---------|--------|
+> Online mode is not yet available. Use offline mode for now.
+
+| Feature | Offline | Online (coming soon) |
+|---------|---------|----------------------|
 | Requires Glacis account | No | Yes |
 | Signing | Local Ed25519 | Glacis witness |
 | Third-party verifiable | No | Yes (Merkle proofs) |
-| Use case | Development, air-gapped | Production, audits |
-
-To use online mode:
-
-```python
-client = attested_openai(
-    openai_api_key="sk-...",
-    glacis_api_key="glsk_live_...",  # Get at glacis.io
-)
-```
+| Use case | Development, production | Audits, regulatory |
 
 ## What Gets Sent to Glacis?
 

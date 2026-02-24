@@ -1,30 +1,76 @@
 # GLACIS Configuration
 # This file controls attestation and control settings
 
-version: "1.0"
+version: "1.3"
 
 # Policy metadata (included in attestations)
 policy:
   id: "hipaa-safe-harbor"
   version: "1.0"
-  tenant_id: "demo-org"
+  environment: "development"
+  tags: ["healthcare", "hipaa", "demo"]
 
-# Controls configuration
+# Controls configuration (staged: input/output)
+# Each control runs independently in parallel. The overall determination
+# is "blocked" if ANY control returns "block"; otherwise "forwarded".
 controls:
-  # PII/PHI Redaction (HIPAA Safe Harbor)
-  pii_phi:
-    enabled: true
-    backend: "presidio"       # Backend model identifier
-    mode: "fast"              # "fast" (regex only) or "full" (regex + NER)
+  output_block_action: "block"        # "block" = raise error, "forward" = return + mark blocked
 
-  # Jailbreak/Prompt Injection Detection
-  jailbreak:
-    enabled: true
-    backend: "prompt_guard_22m"  # "prompt_guard_22m" or "prompt_guard_86m"
-    threshold: 0.5               # Classification threshold (0-1)
-    action: "flag"               # "flag" | "block" | "log"
+  input:
+    # PII/PHI Detection (HIPAA Safe Harbor)
+    pii_phi:
+      enabled: true
+      model: "presidio"               # Detection model/engine
+      mode: "fast"                    # "fast" (regex only) or "full" (regex + NER)
+      entities: []                    # Empty = all HIPAA entities
+      if_detected: "flag"             # "forward" | "flag" | "block"
+
+    # Word/Phrase Filter
+    word_filter:
+      enabled: true
+      entities: ["confidential", "internal only", "do not share"]
+      if_detected: "flag"             # "forward" | "flag" | "block"
+
+    # Jailbreak/Prompt Injection Detection
+    jailbreak:
+      enabled: true
+      model: "prompt_guard_22m"       # "prompt_guard_22m" or "prompt_guard_86m"
+      threshold: 0.5                  # Classification threshold (0-1)
+      if_detected: "block"            # "forward" | "flag" | "block"
+
+  output:
+    # PII/PHI Detection on LLM responses
+    pii_phi:
+      enabled: true
+      model: "presidio"
+      mode: "fast"
+      entities: []
+      if_detected: "flag"
+
+    # Word/Phrase Filter on LLM responses
+    word_filter:
+      enabled: false
+      entities: ["confidential", "internal only", "do not share"]
+      if_detected: "flag"
+
+    # Jailbreak Detection on LLM responses (catches output-side injection)
+    jailbreak:
+      enabled: false
+      model: "prompt_guard_22m"
+      threshold: 0.5
+      if_detected: "flag"
+
+# Sampling configuration
+sampling:
+  l1_rate: 1.0                        # L1 evidence collection probability (0.0-1.0)
+  l2_rate: 0.0                        # L2 deep inspection probability (0.0-1.0, implies L1)
 
 # Attestation settings
 attestation:
-  offline: true
+  offline: true                       # true = local Ed25519 signing, false = server-side
   service_id: "glacis-demo"
+
+# Evidence storage backend configuration
+evidence_storage:
+  backend: "json"                     # "sqlite" (default) or "json" (JSONL append-only)
+  path: "~/.glacis"                   # Base directory (default: ~/.glacis)

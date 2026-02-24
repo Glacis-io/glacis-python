@@ -1,13 +1,13 @@
 """
-PII/PHI Redaction Control.
+PII/PHI Detection Control.
 
-HIPAA-compliant detection and redaction of the 18 Safe Harbor identifiers
+HIPAA-compliant detection of the 18 Safe Harbor identifiers
 using Microsoft Presidio with custom healthcare-specific recognizers.
 
-Supported backends:
+Supported models:
 - presidio: Microsoft Presidio (default)
 
-Two modes:
+Two scanning modes:
 - fast: Regex-only detection (<2ms typical)
 - full: Regex + spaCy NER (~15-20ms typical)
 """
@@ -23,39 +23,39 @@ from glacis.controls.base import BaseControl, ControlResult
 
 if TYPE_CHECKING:
     from presidio_analyzer import AnalyzerEngine, RecognizerResult
-    from presidio_anonymizer import AnonymizerEngine
 
-    from glacis.config import PiiPhiConfig
+    from glacis.config import PiiPhiControlConfig
 
 logger = logging.getLogger("glacis.controls.pii")
 
 
-# Supported backends for PII detection
-SUPPORTED_BACKENDS = ["presidio"]
+# Supported models for PII detection
+SUPPORTED_MODELS = ["presidio"]
 
 
 class PIIControl(BaseControl):
     """
-    PII/PHI detection and redaction control.
+    PII/PHI detection control.
 
     Uses Microsoft Presidio with custom recognizers for the 18 HIPAA Safe Harbor
-    identifiers. Supports two operating modes:
+    identifiers. Detects and reports entity categories.
 
     - "fast": Regex-only detection, typically <2ms
     - "full": Regex + spaCy NER for improved name/location detection, ~15-20ms
 
     Args:
-        config: PiiPhiConfig with enabled, backend, and mode settings
+        config: PiiPhiControlConfig with enabled, model, mode, entities,
+                and if_detected settings
 
     Example:
-        >>> from glacis.config import PiiPhiConfig
-        >>> config = PiiPhiConfig(enabled=True, backend="presidio", mode="fast")
+        >>> from glacis.config import PiiPhiControlConfig
+        >>> config = PiiPhiControlConfig(enabled=True, model="presidio", mode="fast")
         >>> control = PIIControl(config)
         >>> result = control.check("SSN: 123-45-6789")
         >>> result.detected
         True
-        >>> result.modified_text
-        "SSN: [US_SSN]"
+        >>> result.categories
+        ['US_SSN']
     """
 
     control_type = "pii"
@@ -94,15 +94,15 @@ class PIIControl(BaseControl):
         "UUID",
     ]
 
-    def __init__(self, config: "PiiPhiConfig") -> None:
+    def __init__(self, config: "PiiPhiControlConfig") -> None:
         self._config = config
         self._mode = config.mode
 
-        # Validate backend
-        if config.backend not in SUPPORTED_BACKENDS:
+        # Validate model
+        if config.model not in SUPPORTED_MODELS:
             raise ValueError(
-                f"Unknown PII backend: {config.backend}. "
-                f"Available: {SUPPORTED_BACKENDS}"
+                f"Unknown PII model: {config.model}. "
+                f"Available: {SUPPORTED_MODELS}"
             )
 
         # Default threshold: higher for "full" mode to reduce NER false positives
@@ -112,7 +112,6 @@ class PIIControl(BaseControl):
             self._score_threshold = 0.5
 
         self._analyzer: Optional["AnalyzerEngine"] = None
-        self._anonymizer: Optional["AnonymizerEngine"] = None
         self._spacy_available: bool = False
         self._initialized: bool = False
 
@@ -124,20 +123,17 @@ class PIIControl(BaseControl):
         # Suppress noisy loggers from Presidio and spaCy
         for logger_name in [
             "presidio-analyzer",
-            "presidio-anonymizer",
             "presidio_analyzer",
-            "presidio_anonymizer",
             "spacy",
         ]:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
 
         try:
             from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
-            from presidio_anonymizer import AnonymizerEngine
         except ImportError as e:
             raise ImportError(
-                "PII control requires presidio-analyzer and presidio-anonymizer. "
-                "Install with: pip install glacis[redaction]"
+                "PII control requires presidio-analyzer. "
+                "Install with: pip install glacis[controls]"
             ) from e
 
         registry = RecognizerRegistry()
@@ -190,7 +186,6 @@ class PIIControl(BaseControl):
             )
             self._spacy_available = False
 
-        self._anonymizer = AnonymizerEngine()
         self._initialized = True
 
     def _try_load_spacy(self) -> Optional[Any]:
@@ -210,13 +205,16 @@ class PIIControl(BaseControl):
 
     def check(self, text: str) -> ControlResult:
         """
-        Check text for PII/PHI and redact if found.
+        Check text for PII/PHI.
+
+        When ``entities`` is set in config, only those entity types are scanned.
+        If empty, all HIPAA Safe Harbor entities are scanned (default).
 
         Args:
             text: Input text to check
 
         Returns:
-            ControlResult with detection info and redacted text
+            ControlResult with detection info and categories
         """
         self._ensure_initialized()
 
@@ -226,21 +224,24 @@ class PIIControl(BaseControl):
             return ControlResult(
                 control_type=self.control_type,
                 detected=False,
-                action="pass",
+                action="forward",
                 categories=[],
                 latency_ms=0,
-                modified_text=text,
-                metadata={"backend": self._config.backend, "mode": self._mode},
+                metadata={"model": self._config.model, "mode": self._mode},
             )
 
         assert self._analyzer is not None
-        assert self._anonymizer is not None
 
-        results: list["RecognizerResult"] = self._analyzer.analyze(
-            text=text,
-            language="en",
-            score_threshold=self._score_threshold,
-        )
+        # Build analyze kwargs — filter by entities if configured
+        analyze_kwargs: dict[str, Any] = {
+            "text": text,
+            "language": "en",
+            "score_threshold": self._score_threshold,
+        }
+        if self._config.entities:
+            analyze_kwargs["entities"] = self._config.entities
+
+        results: list["RecognizerResult"] = self._analyzer.analyze(**analyze_kwargs)
 
         latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -248,42 +249,25 @@ class PIIControl(BaseControl):
             return ControlResult(
                 control_type=self.control_type,
                 detected=False,
-                action="pass",
+                action="forward",
                 categories=[],
                 latency_ms=latency_ms,
-                modified_text=text,
-                metadata={"backend": self._config.backend, "mode": self._mode},
+                metadata={"model": self._config.model, "mode": self._mode},
             )
 
         # De-duplicate overlapping detections
         results = self._resolve_overlaps(results)
-
-        # Build operators for replacement format [ENTITY_TYPE]
-        from presidio_anonymizer.entities import OperatorConfig
-
-        operators = {}
-        for entity_type in set(r.entity_type for r in results):
-            operators[entity_type] = OperatorConfig(
-                "replace", {"new_value": f"[{entity_type}]"}
-            )
-
-        anonymized = self._anonymizer.anonymize(
-            text=text,
-            analyzer_results=results,
-            operators=operators,
-        )
 
         categories = sorted(set(r.entity_type for r in results))
 
         return ControlResult(
             control_type=self.control_type,
             detected=True,
-            action="redact",
+            action=self._config.if_detected,
             categories=categories,
             latency_ms=latency_ms,
-            modified_text=anonymized.text,
             metadata={
-                "backend": self._config.backend,
+                "model": self._config.model,
                 "mode": self._mode,
                 "count": len(results),
             },
@@ -292,7 +276,6 @@ class PIIControl(BaseControl):
     def close(self) -> None:
         """Release resources."""
         self._analyzer = None
-        self._anonymizer = None
         self._initialized = False
 
     def _resolve_overlaps(self, results: list[Any]) -> list[Any]:

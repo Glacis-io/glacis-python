@@ -80,9 +80,7 @@ def _canonicalize_value(value: Any) -> str:
         sorted_keys = sorted(value.keys())
         pairs = []
         for key in sorted_keys:
-            # Skip None values (like undefined in JavaScript)
-            if value[key] is not None or key in value:
-                pairs.append(f"{json.dumps(key)}:{_canonicalize_value(value[key])}")
+            pairs.append(f"{json.dumps(key)}:{_canonicalize_value(value[key])}")
         return "{" + ",".join(pairs) + "}"
 
     raise ValueError(f"Cannot canonicalize value of type: {type(value).__name__}")

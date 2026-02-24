@@ -12,13 +12,13 @@ Example (online):
     ...     input={"prompt": "Hello, world!"},
     ...     output={"response": "Hi there!"},
     ... )
-    >>> print(f"Verified at: {receipt.verify_url}")
+    >>> print(f"Attestation ID: {receipt.id}")
 
 Example (offline):
     >>> from glacis import Glacis
     >>> import os
     >>> glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
-    >>> receipt = glacis.attest(...)  # Returns OfflineAttestReceipt
+    >>> receipt = glacis.attest(...)  # Returns Attestation
     >>> result = glacis.verify(receipt)  # witness_status="UNVERIFIED"
 
 Async Example:
@@ -26,113 +26,116 @@ Async Example:
     >>> glacis = AsyncGlacis(api_key="glsk_live_xxx")
     >>> receipt = await glacis.attest(...)
 
-Streaming Example:
-    >>> from glacis import Glacis
-    >>> from glacis.streaming import StreamingSession
-    >>> glacis = Glacis(api_key="glsk_live_xxx")
-    >>> session = await StreamingSession.start(glacis, {
-    ...     "service_id": "voice-assistant",
-    ...     "operation_type": "completion",
-    ...     "session_do_url": "https://session-do.glacis.io",
-    ... })
-    >>> await session.attest_chunk(input=audio_chunk, output=transcript)
-    >>> receipt = await session.end(metadata={"duration": "00:05:23"})
-
 Controls Example:
-    >>> from glacis.controls import ControlsRunner, PIIControl, JailbreakControl
+    >>> from glacis.controls import ControlsRunner, PIIControl, WordFilterControl
     >>> from glacis.config import load_config
     >>> cfg = load_config()  # Loads glacis.yaml
-    >>> runner = ControlsRunner(cfg.controls)
-    >>> results = runner.run("Patient SSN: 123-45-6789")
+    >>> runner = ControlsRunner(input_config=cfg.controls.input,
+    ...                         output_config=cfg.controls.output)
+    >>> result = runner.run_input("Patient SSN: 123-45-6789")
+    >>> result.effective_text  # always equals original text (scan-only)
 """
 
-from glacis.client import AsyncGlacis, Glacis, GlacisMode
+from glacis.client import AsyncGlacis, Glacis, GlacisMode, OperationContext
 from glacis.crypto import canonical_json, hash_payload
 from glacis.models import (
+    Attestation,
+    AttestationMetadata,
     AttestInput,
-    AttestReceipt,
+    AttestReceipt,  # Deprecated alias for Attestation
     ControlExecution,
-    ControlPlaneAttestation,
+    ControlPlaneResults,
     ControlStatus,
     ControlType,
+    DeepInspection,  # Deprecated alias for Review
     Determination,
+    Evidence,
     GlacisApiError,
     GlacisConfig,
-    JailbreakSummary,
+    InclusionProof,
     LogEntry,
     LogQueryParams,
     LogQueryResult,
-    MerkleInclusionProof,
+    MerkleInclusionProof,  # Deprecated alias for InclusionProof
     ModelInfo,
-    OfflineAttestReceipt,
+    OfflineAttestReceipt,  # Deprecated alias for Attestation
     OfflineVerifyResult,
-    PiiPhiSummary,
     PolicyContext,
-    PolicyScope,
-    SafetyScores,
+    Receipt,
+    Review,
     SamplingDecision,
-    SamplingMetadata,
     SignedTreeHead,
     VerifyResult,
 )
-from glacis.storage import ReceiptStorage
-from glacis.streaming import SessionContext, SessionReceipt, StreamingSession
+from glacis.storage import (
+    JsonStorageBackend,
+    ReceiptStorage,
+    StorageBackend,
+    create_storage,
+)
 
 # Controls module (optional dependencies for individual controls)
 try:
     from glacis.controls import (  # noqa: F401
         BaseControl,
+        ControlAction,
         ControlResult,
         ControlsRunner,
         JailbreakControl,
         PIIControl,
+        StageResult,
+        WordFilterControl,
     )
 
     _CONTROLS_AVAILABLE = True
 except ImportError:
     _CONTROLS_AVAILABLE = False
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Main classes
     "Glacis",
     "AsyncGlacis",
     "GlacisMode",
+    "OperationContext",
     # Exceptions
     "GlacisApiError",
-    # Streaming
-    "StreamingSession",
-    "SessionContext",
-    "SessionReceipt",
-    # Storage (offline mode)
+    # Evidence Storage
+    "StorageBackend",
     "ReceiptStorage",
-    # Models
+    "JsonStorageBackend",
+    "create_storage",
+    # Core models (v1.2)
+    "Attestation",
+    "Receipt",
     "GlacisConfig",
     "AttestInput",
-    "AttestReceipt",
-    "OfflineAttestReceipt",
+    "AttestationMetadata",
     "VerifyResult",
     "OfflineVerifyResult",
     "LogQueryParams",
     "LogQueryResult",
     "LogEntry",
-    "MerkleInclusionProof",
+    "InclusionProof",
+    "MerkleInclusionProof",  # Deprecated alias
     "SignedTreeHead",
-    # Control Plane
-    "ControlPlaneAttestation",
+    # Control Plane (L0)
+    "ControlPlaneResults",
     "PolicyContext",
-    "PolicyScope",
     "ModelInfo",
     "Determination",
     "ControlExecution",
     "ControlType",
     "ControlStatus",
-    "SafetyScores",
-    "PiiPhiSummary",
-    "JailbreakSummary",
-    "SamplingMetadata",
     "SamplingDecision",
+    # L1/L2
+    "Evidence",
+    "Review",
+    # Deprecated aliases (one release)
+    "AttestReceipt",
+    "OfflineAttestReceipt",
+    "DeepInspection",
     # Crypto utilities
     "canonical_json",
     "hash_payload",
@@ -142,8 +145,11 @@ __all__ = [
 if _CONTROLS_AVAILABLE:
     __all__.extend([
         "BaseControl",
+        "ControlAction",
         "ControlResult",
         "ControlsRunner",
         "PIIControl",
         "JailbreakControl",
+        "WordFilterControl",
+        "StageResult",
     ])

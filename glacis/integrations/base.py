@@ -7,27 +7,37 @@ Provides shared functionality for all provider integrations:
 - Evidence retrieval
 - Logger suppression
 - Config and client initialization helpers
+- Generic ControlResultsAccumulator for staged pipeline
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Literal, Optional, Union
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 if TYPE_CHECKING:
     from glacis import Glacis
-    from glacis.config import GlacisConfig
-    from glacis.controls import ControlsRunner
+    from glacis.config import GlacisConfig, SamplingConfig
+    from glacis.controls import ControlsRunner, StageResult
+    from glacis.controls.base import BaseControl
     from glacis.models import (
-        AttestReceipt,
+        Attestation,
         ControlExecution,
-        ControlPlaneAttestation,
-        JailbreakSummary,
-        OfflineAttestReceipt,
-        PiiPhiSummary,
+        ControlPlaneResults,
+        ControlType,
     )
 
+
+# SDK version used in ControlExecution records
+SDK_VERSION = "0.5.0"
+
+# Known control types that map directly to ControlType enum
+_KNOWN_CONTROL_TYPES = frozenset({
+    "content_safety", "pii", "jailbreak", "topic",
+    "prompt_security", "grounding", "word_filter", "custom",
+})
 
 # Thread-local storage for the last receipt
 _thread_local = threading.local()
@@ -42,23 +52,26 @@ class GlacisBlockedError(Exception):
         self.score = score
 
 
-def get_last_receipt() -> Optional[Union["AttestReceipt", "OfflineAttestReceipt"]]:
+def get_last_receipt() -> Optional["Attestation"]:
     """
-    Get the last attestation receipt from the current thread.
+    Get the last attestation from the current thread.
 
     Returns:
-        The last AttestReceipt or OfflineAttestReceipt, or None if no attestation
-        has been made in this thread.
+        The last Attestation, or None if no attestation has been made in this thread.
     """
     return getattr(_thread_local, "last_receipt", None)
 
 
-def set_last_receipt(receipt: Union["AttestReceipt", "OfflineAttestReceipt"]) -> None:
+def set_last_receipt(receipt: "Attestation") -> None:
     """Store the last receipt in thread-local storage."""
     _thread_local.last_receipt = receipt
 
 
-def get_evidence(attestation_id: str) -> Optional[dict[str, Any]]:
+def get_evidence(
+    attestation_id: str,
+    storage_backend: Optional[str] = None,
+    storage_path: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
     """
     Get the full evidence for an attestation by ID.
 
@@ -67,20 +80,19 @@ def get_evidence(attestation_id: str) -> Optional[dict[str, Any]]:
 
     Args:
         attestation_id: The attestation ID (att_xxx or oatt_xxx)
+        storage_backend: Backend type override ("sqlite" or "json")
+        storage_path: Storage path override
 
     Returns:
         Dict with input, output, control_plane_results, and metadata,
         or None if not found
-
-    Example:
-        >>> receipt = get_last_receipt()
-        >>> evidence = get_evidence(receipt.attestation_id)
-        >>> print(evidence["input"]["messages"])
-        >>> print(evidence["control_plane_results"]["pii_phi"])
     """
-    from glacis.storage import ReceiptStorage
+    from glacis.storage import create_storage
 
-    storage = ReceiptStorage()
+    storage = create_storage(
+        backend=storage_backend or "sqlite",
+        path=Path(storage_path) if storage_path else None,
+    )
     return storage.get_evidence(attestation_id)
 
 
@@ -88,9 +100,7 @@ def get_evidence(attestation_id: str) -> Optional[dict[str, Any]]:
 NOISY_LOGGERS = [
     "glacis",
     "presidio-analyzer",
-    "presidio-anonymizer",
     "presidio_analyzer",
-    "presidio_anonymizer",
     "spacy",
     "httpx",
     "httpcore",
@@ -121,7 +131,6 @@ def suppress_noisy_loggers(provider_loggers: list[str] | None = None) -> None:
 
 def initialize_config(
     config_path: Optional[str],
-    redaction: Union[bool, Literal["fast", "full"], None],
     offline: Optional[bool],
     glacis_api_key: Optional[str],
     default_service_id: str,
@@ -132,7 +141,6 @@ def initialize_config(
 
     Args:
         config_path: Path to glacis.yaml config file
-        redaction: PII redaction mode override
         offline: Offline mode override
         glacis_api_key: Glacis API key (implies online mode if provided)
         default_service_id: Default service ID for this provider
@@ -144,17 +152,6 @@ def initialize_config(
     from glacis.config import load_config
 
     cfg: GlacisConfig = load_config(config_path)
-
-    # Handle backward-compatible redaction parameter
-    if redaction is not None:
-        if redaction is True:
-            cfg.controls.pii_phi.enabled = True
-            cfg.controls.pii_phi.mode = "fast"
-        elif redaction is False:
-            cfg.controls.pii_phi.enabled = False
-        else:
-            cfg.controls.pii_phi.enabled = True
-            cfg.controls.pii_phi.mode = redaction
 
     # Determine offline mode
     if offline is not None:
@@ -178,6 +175,9 @@ def create_glacis_client(
     glacis_api_key: Optional[str],
     glacis_base_url: str,
     debug: bool,
+    storage_backend: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    sampling_config: Optional["SamplingConfig"] = None,
 ) -> "Glacis":
     """
     Create a Glacis client (online or offline).
@@ -188,6 +188,9 @@ def create_glacis_client(
         glacis_api_key: API key (required for online)
         glacis_base_url: Base URL for Glacis API
         debug: Enable debug logging
+        storage_backend: Storage backend type ("sqlite" or "json")
+        storage_path: Storage path override
+        sampling_config: Sampling configuration (l1_rate, l2_rate)
 
     Returns:
         Configured Glacis client
@@ -197,6 +200,14 @@ def create_glacis_client(
     """
     from glacis import Glacis
 
+    extra_kwargs: dict[str, Any] = {}
+    if storage_backend:
+        extra_kwargs["storage_backend"] = storage_backend
+    if storage_path:
+        extra_kwargs["storage_path"] = Path(storage_path)
+    if sampling_config:
+        extra_kwargs["sampling_config"] = sampling_config
+
     if offline:
         if not signing_seed:
             raise ValueError("signing_seed is required for offline mode")
@@ -204,6 +215,7 @@ def create_glacis_client(
             mode="offline",
             signing_seed=signing_seed,
             debug=debug,
+            **extra_kwargs,
         )
     else:
         if not glacis_api_key:
@@ -212,12 +224,15 @@ def create_glacis_client(
             api_key=glacis_api_key,
             base_url=glacis_base_url,
             debug=debug,
+            **extra_kwargs,
         )
 
 
 def create_controls_runner(
     cfg: "GlacisConfig",
     debug: bool,
+    input_controls: Optional[list["BaseControl"]] = None,
+    output_controls: Optional[list["BaseControl"]] = None,
 ) -> Optional["ControlsRunner"]:
     """
     Create controls runner if any control is enabled.
@@ -225,209 +240,247 @@ def create_controls_runner(
     Args:
         cfg: Glacis configuration
         debug: Enable debug logging
+        input_controls: Custom controls for input stage
+        output_controls: Custom controls for output stage
 
     Returns:
         ControlsRunner if any control is enabled, None otherwise
     """
-    if cfg.controls.pii_phi.enabled or cfg.controls.jailbreak.enabled:
-        from glacis.controls import ControlsRunner
-        return ControlsRunner(cfg.controls, debug=debug)
-    return None
+    input_cfg = cfg.controls.input
+    output_cfg = cfg.controls.output
+
+    has_builtin = (
+        input_cfg.pii_phi.enabled
+        or input_cfg.word_filter.enabled
+        or input_cfg.jailbreak.enabled
+        or output_cfg.pii_phi.enabled
+        or output_cfg.word_filter.enabled
+        or output_cfg.jailbreak.enabled
+    )
+    has_custom = bool(input_controls or output_controls)
+
+    if not has_builtin and not has_custom:
+        return None
+
+    from glacis.controls import ControlsRunner
+
+    return ControlsRunner(
+        input_config=input_cfg,
+        output_config=output_cfg,
+        input_controls=input_controls,
+        output_controls=output_controls,
+        debug=debug,
+    )
 
 
 def store_evidence(
-    receipt: Union["AttestReceipt", "OfflineAttestReceipt"],
+    receipt: "Attestation",
     service_id: str,
     operation_type: str,
     input_data: dict[str, Any],
     output_data: dict[str, Any],
-    control_plane_results: Optional["ControlPlaneAttestation"],
-    metadata: dict[str, Any],
-    debug: bool,
+    control_plane_results: Any = None,
+    metadata: Optional[dict[str, Any]] = None,
+    debug: bool = False,
+    storage_backend: Optional[str] = None,
+    storage_path: Optional[str] = None,
 ) -> None:
     """
     Store attestation evidence locally for audit trail.
 
     Args:
-        receipt: Attestation receipt
+        receipt: Attestation
         service_id: Service identifier
         operation_type: Type of operation
-        input_data: Input payload
-        output_data: Output payload
-        control_plane_results: Control plane attestation
+        input_data: Input payload (original, pre-controls)
+        output_data: Output payload (effective, post-controls)
+        control_plane_results: Control plane results (dict or typed model)
         metadata: Additional metadata
         debug: Enable debug logging
+        storage_backend: Backend type override ("sqlite" or "json")
+        storage_path: Storage path override
     """
-    from glacis.models import OfflineAttestReceipt
-    from glacis.storage import ReceiptStorage
+    from glacis.storage import create_storage
 
-    storage = ReceiptStorage()
-    attestation_hash = (
-        receipt.payload_hash
-        if isinstance(receipt, OfflineAttestReceipt)
-        else receipt.attestation_hash
+    storage = create_storage(
+        backend=storage_backend or "sqlite",
+        path=Path(storage_path) if storage_path else None,
     )
+
+    sampling_level = "L0"
+    if receipt.sampling_decision:
+        sampling_level = receipt.sampling_decision.level
+
     storage.store_evidence(
-        attestation_id=receipt.attestation_id,
-        attestation_hash=attestation_hash,
-        mode="offline" if isinstance(receipt, OfflineAttestReceipt) else "online",
+        attestation_id=receipt.id,
+        attestation_hash=receipt.evidence_hash,
+        mode="offline" if receipt.is_offline else "online",
         service_id=service_id,
         operation_type=operation_type,
-        timestamp=receipt.timestamp,
+        timestamp=receipt.timestamp or 0,
         input_data=input_data,
         output_data=output_data,
         control_plane_results=control_plane_results,
         metadata=metadata,
+        sampling_level=sampling_level,
     )
     if debug:
-        print(f"[glacis] Attestation created: {receipt.attestation_id}")
+        print(f"[glacis] Attestation created: {receipt.id}")
 
 
-__all__ = [
-    "GlacisBlockedError",
-    "get_last_receipt",
-    "set_last_receipt",
-    "get_evidence",
-    "suppress_noisy_loggers",
-    "initialize_config",
-    "create_glacis_client",
-    "create_controls_runner",
-    "store_evidence",
-    "NOISY_LOGGERS",
-    "ControlResultsAccumulator",
-    "process_text_for_controls",
-    "create_control_plane_attestation_from_accumulator",
-    "handle_blocked_request",
-]
+# ---------------------------------------------------------------------------
+# Generic Control Results Accumulator
+# ---------------------------------------------------------------------------
 
+def _map_control_type(control_type: str) -> str:
+    """Map a control_type string to a ControlType enum value.
 
-# --- Shared Control Execution Logic ---
+    Known types pass through; unknown types map to "custom".
+    """
+    return control_type if control_type in _KNOWN_CONTROL_TYPES else "custom"
+
 
 class ControlResultsAccumulator:
-    """Accumulates results from multiple control execution runs."""
+    """Accumulates results from staged control pipeline runs.
+
+    Fully generic — no hardcoded control type handling. Works with any
+    control type (built-in or custom).
+    """
 
     def __init__(self) -> None:
-        self.pii_summary: Optional["PiiPhiSummary"] = None
-        self.jailbreak_summary: Optional["JailbreakSummary"] = None
         self.control_executions: list["ControlExecution"] = []
         self.should_block: bool = False
+        self.effective_input_text: Optional[str] = None
+        self.effective_output_text: Optional[str] = None
 
-    def update(self, results: list[Any]) -> None:
-        """Update accumulator with check results."""
-        from glacis.models import ControlExecution, JailbreakSummary, PiiPhiSummary
+    def update_from_stage(
+        self, stage_result: "StageResult", stage: Literal["input", "output"],
+    ) -> None:
+        """Update accumulator from a StageResult.
 
-        for result in results:
-            if result.control_type == "pii" and result.detected:
-                if self.pii_summary:
-                    self.pii_summary.categories = sorted(
-                        set(self.pii_summary.categories) | set(result.categories)
-                    )
-                    self.pii_summary.count += len(result.categories)
-                else:
-                    self.pii_summary = PiiPhiSummary(
-                        detected=True,
-                        action="redacted",
-                        categories=result.categories,
-                        count=len(result.categories),
-                    )
-                self.control_executions.append(
-                    ControlExecution(
-                        id="glacis-pii-redactor",
-                        type="pii",
-                        version="0.3.0",
-                        provider="glacis",
-                        latency_ms=result.latency_ms,
-                        status="flag",
-                    )
+        Creates ControlExecution entries for each ControlResult in the stage.
+        Direct mapping — result.action becomes ControlExecution.status.
+
+        Args:
+            stage_result: Result from ControlsRunner.run_input/run_output.
+            stage: Which pipeline stage this came from.
+        """
+        from glacis.models import ControlExecution
+
+        for result in stage_result.results:
+            self.control_executions.append(
+                ControlExecution(
+                    id=f"glacis-{stage}-{result.control_type}",
+                    type=cast("ControlType", _map_control_type(result.control_type)),
+                    version=SDK_VERSION,
+                    provider=result.metadata.get("provider", "glacis"),
+                    latency_ms=result.latency_ms,
+                    status=result.action,
+                    score=result.score,
+                    stage=stage,
                 )
+            )
 
-            elif result.control_type == "jailbreak":
-                if not self.jailbreak_summary or (result.score or 0) > self.jailbreak_summary.score:
-                    self.jailbreak_summary = JailbreakSummary(
-                        detected=result.detected,
-                        score=result.score or 0.0,
-                        action=result.action,
-                        categories=result.categories,
-                        backend=result.metadata.get("backend", ""),
-                    )
-                self.control_executions.append(
-                    ControlExecution(
-                        id="glacis-jailbreak-detector",
-                        type="jailbreak",
-                        version="0.3.0",
-                        provider="glacis",
-                        latency_ms=result.latency_ms,
-                        status=result.action if result.detected else "pass",
-                    )
-                )
-                if result.action == "block":
-                    self.should_block = True
+        if stage_result.should_block:
+            self.should_block = True
+
+        # Track effective text per stage
+        if stage == "input":
+            self.effective_input_text = stage_result.effective_text
+        else:
+            self.effective_output_text = stage_result.effective_text
+
+    def get_blocking_control(self) -> Optional["ControlExecution"]:
+        """Find the first control result that caused a block.
+
+        Returns the ControlResult that triggered blocking, or None.
+        Used for error reporting.
+        """
+        # Check the original stage results stored in control_executions
+        for ce in self.control_executions:
+            if ce.status == "block":
+                return ce
+        return None
 
 
-def process_text_for_controls(
+# ---------------------------------------------------------------------------
+# Pipeline helper functions for provider integrations
+# ---------------------------------------------------------------------------
+
+def run_input_controls(
     runner: "ControlsRunner",
     text: str,
-    accumulator: ControlResultsAccumulator
+    accumulator: ControlResultsAccumulator,
 ) -> str:
-    """Run controls on text, update accumulator, and return (potentially redacted) text."""
-    results = runner.run(text)
-    accumulator.update(results)
-    final_text = runner.get_final_text(results) or text
-    return final_text
+    """Run input controls and update accumulator.
+
+    Args:
+        runner: ControlsRunner with configured controls.
+        text: Original input text.
+        accumulator: Accumulator to update with results.
+
+    Returns:
+        The original text (controls are scan-only).
+    """
+    stage_result = runner.run_input(text)
+    accumulator.update_from_stage(stage_result, "input")
+    return stage_result.effective_text
 
 
-def create_control_plane_attestation_from_accumulator(
+def run_output_controls(
+    runner: "ControlsRunner",
+    text: str,
+    accumulator: ControlResultsAccumulator,
+) -> str:
+    """Run output controls and update accumulator.
+
+    Args:
+        runner: ControlsRunner with configured controls.
+        text: LLM response text.
+        accumulator: Accumulator to update with results.
+
+    Returns:
+        The original text (controls are scan-only).
+    """
+    stage_result = runner.run_output(text)
+    accumulator.update_from_stage(stage_result, "output")
+    return stage_result.effective_text
+
+
+def create_control_plane_results(
     accumulator: ControlResultsAccumulator,
     cfg: "GlacisConfig",
     model: str,
     provider: str,
-    endpoint: str,
-) -> Any:
-    """Create ControlPlaneAttestation from accumulated results."""
+    system_prompt_hash: Optional[str] = None,
+    temperature: Optional[float] = None,
+) -> "ControlPlaneResults":
+    """Create ControlPlaneResults from accumulated results."""
     from glacis.models import (
-        ControlPlaneAttestation,
+        ControlPlaneResults,
         Determination,
         ModelInfo,
         PolicyContext,
-        PolicyScope,
-        SafetyScores,
-        SamplingDecision,
-        SamplingMetadata,
     )
 
-    action: Literal["forwarded", "redacted", "blocked"]
-    trigger: Optional[str]
-    if accumulator.pii_summary:
-        action, trigger = "redacted", "pii"
-    elif accumulator.jailbreak_summary and accumulator.jailbreak_summary.detected:
-        action = "blocked" if accumulator.jailbreak_summary.action == "block" else "forwarded"
-        trigger = "jailbreak"
-    else:
-        action, trigger = "forwarded", None
+    action: Literal["forwarded", "blocked"]
+    action = "blocked" if accumulator.should_block else "forwarded"
 
-    return ControlPlaneAttestation(
+    return ControlPlaneResults(
         policy=PolicyContext(
             id=cfg.policy.id,
             version=cfg.policy.version,
-            model=ModelInfo(model_id=model, provider=provider),
-            scope=PolicyScope(
-                tenant_id=cfg.policy.tenant_id,
-                endpoint=endpoint,
+            model=ModelInfo(
+                model_id=model,
+                provider=provider,
+                system_prompt_hash=system_prompt_hash,
+                temperature=temperature,
             ),
+            environment=cfg.policy.environment,
+            tags=cfg.policy.tags,
         ),
-        determination=Determination(action=action, trigger=trigger, confidence=1.0),
+        determination=Determination(action=action),
         controls=accumulator.control_executions,
-        safety=SafetyScores(
-            overall_risk=accumulator.jailbreak_summary.score
-            if accumulator.jailbreak_summary
-            else 0.0
-        ),
-        pii_phi=accumulator.pii_summary,
-        jailbreak=accumulator.jailbreak_summary,
-        sampling=SamplingMetadata(
-            level="L0",
-            decision=SamplingDecision(sampled=True, reason="forced", rate=1.0),
-        ),
     )
 
 
@@ -438,11 +491,28 @@ def handle_blocked_request(
     control_plane_results: Any,
     provider: str,
     model: str,
-    jailbreak_score: float,
+    blocking_control_type: str,
+    blocking_score: Optional[float],
     debug: bool,
+    storage_backend: Optional[str] = None,
+    storage_path: Optional[str] = None,
 ) -> None:
-    """Attest a blocked request and raise GlacisBlockedError."""
-    output_data = {"blocked": True, "reason": "jailbreak_detected"}
+    """Attest a blocked request and raise GlacisBlockedError.
+
+    Args:
+        glacis_client: Glacis client for attestation.
+        service_id: Service identifier.
+        input_data: Original input data.
+        control_plane_results: Control plane results to include.
+        provider: LLM provider name.
+        model: LLM model name.
+        blocking_control_type: Type of control that caused the block.
+        blocking_score: Score from the blocking control (if applicable).
+        debug: Enable debug logging.
+        storage_backend: Evidence storage backend override.
+        storage_path: Evidence storage path override.
+    """
+    output_data = {"blocked": True, "reason": f"{blocking_control_type}_detected"}
     metadata = {"provider": provider, "model": model, "blocked": str(True)}
 
     try:
@@ -464,13 +534,35 @@ def handle_blocked_request(
             control_plane_results=control_plane_results,
             metadata=metadata,
             debug=debug,
+            storage_backend=storage_backend,
+            storage_path=storage_path,
         )
     except Exception as e:
         if debug:
             print(f"[glacis] Attestation failed: {e}")
 
+    score_str = f" (score={blocking_score:.2f})" if blocking_score is not None else ""
     raise GlacisBlockedError(
-        f"Jailbreak detected (score={jailbreak_score:.2f})",
-        control_type="jailbreak",
-        score=jailbreak_score,
+        f"Blocked by {blocking_control_type}{score_str}",
+        control_type=blocking_control_type,
+        score=blocking_score,
     )
+
+
+__all__ = [
+    "GlacisBlockedError",
+    "get_last_receipt",
+    "set_last_receipt",
+    "get_evidence",
+    "suppress_noisy_loggers",
+    "initialize_config",
+    "create_glacis_client",
+    "create_controls_runner",
+    "store_evidence",
+    "NOISY_LOGGERS",
+    "ControlResultsAccumulator",
+    "run_input_controls",
+    "run_output_controls",
+    "create_control_plane_results",
+    "handle_blocked_request",
+]

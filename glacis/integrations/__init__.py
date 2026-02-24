@@ -2,7 +2,7 @@
 GLACIS integrations for AI providers.
 
 These integrations provide drop-in wrappers that automatically attest
-all API calls to the GLACIS transparency log with optional PII/PHI redaction.
+all API calls to the GLACIS transparency log with optional PII/PHI detection.
 
 Available integrations:
 - OpenAI: `from glacis.integrations.openai import attested_openai`
@@ -15,7 +15,6 @@ Example (OpenAI):
     ...     openai_api_key="sk-xxx",
     ...     offline=True,
     ...     signing_seed=os.urandom(32),
-    ...     redaction="fast",  # Enable PII redaction
     ... )
     >>> response = client.chat.completions.create(
     ...     model="gpt-4o",
@@ -29,7 +28,6 @@ Example (Anthropic):
     ...     anthropic_api_key="sk-ant-xxx",
     ...     offline=True,
     ...     signing_seed=os.urandom(32),
-    ...     redaction="fast",
     ... )
     >>> response = client.messages.create(
     ...     model="claude-3-5-sonnet-20241022",
