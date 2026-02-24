@@ -195,7 +195,7 @@ class TestVerifyCommand:
 
         # Save to file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(receipt.model_dump(by_alias=True), f)
+            json.dump(receipt.model_dump(), f)
             temp_path = f.name
 
         try:
@@ -213,7 +213,7 @@ class TestVerifyCommand:
     def test_verify_command_online_receipt(
         self,
         httpx_mock: HTTPXMock,
-        sample_online_receipt_data: dict[str, Any],
+        sample_attestation_data: dict[str, Any],
         sample_verify_response: dict[str, Any],
         capsys,
     ):
@@ -221,13 +221,13 @@ class TestVerifyCommand:
         # Mock the verification endpoint
         httpx_mock.add_response(
             method="GET",
-            url=f"{DEFAULT_BASE_URL}/v1/verify/{sample_online_receipt_data['evidenceHash']}",
+            url=f"{DEFAULT_BASE_URL}/v1/verify/{sample_attestation_data['evidence_hash']}",
             json=sample_verify_response,
         )
 
         # Save receipt to file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(sample_online_receipt_data, f)
+            json.dump(sample_attestation_data, f)
             temp_path = f.name
 
         try:

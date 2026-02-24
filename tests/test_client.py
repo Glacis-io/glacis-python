@@ -43,7 +43,7 @@ class TestGlacisSync:
         assert hash1 == hash2
 
     def test_attest_sends_hash_not_payload(self, httpx_mock: HTTPXMock):
-        """Attest sends payload hash, not the actual payload."""
+        """Attest sends evidence hash, not the actual payload."""
         httpx_mock.add_response(
             method="POST",
             url="https://api.glacis.io/v1/attest",
@@ -51,8 +51,6 @@ class TestGlacisSync:
                 "attestationId": "att_test123",
                 "evidenceHash": "a" * 64,
                 "timestamp": 1704067200000,
-                "leafIndex": 42,
-                "treeSize": 100,
                 "samplingDecision": {"level": "L0"},
             },
         )
@@ -74,25 +72,22 @@ class TestGlacisSync:
         import json
 
         body = json.loads(request.content)
-        assert body["serviceId"] == "my-service"
-        assert body["operationType"] == "inference"
-        assert len(body["payloadHash"]) == 64  # SHA-256 hex
+        assert body["service_id"] == "my-service"
+        assert body["operation_type"] == "inference"
+        assert len(body["evidence_hash"]) == 64  # SHA-256 hex
 
         # Zero-egress: user data should NOT be in the request
         assert "input" not in body
         assert "output" not in body
         assert "prompt" not in body
-        # User metadata (model=gpt-4) not sent; no operational metadata without phase/correlation_id
-        assert "metadata" not in body
 
         # Verify response parsing
         assert receipt.id == "att_test123"
-        assert receipt.leaf_index == 42
         assert receipt.sampling_decision is not None
         assert receipt.sampling_decision.level == "L0"
 
-    def test_attest_sends_operational_metadata(self, httpx_mock: HTTPXMock):
-        """Attest sends phase/correlationId as operational metadata."""
+    def test_attest_sends_operation_id(self, httpx_mock: HTTPXMock):
+        """Attest sends operation_id and operation_sequence."""
         httpx_mock.add_response(
             method="POST",
             url="https://api.glacis.io/v1/attest",
@@ -100,9 +95,7 @@ class TestGlacisSync:
                 "attestationId": "att_test456",
                 "evidenceHash": "b" * 64,
                 "timestamp": 1704067200000,
-                "leafIndex": 1,
-                "treeSize": 10,
-                "samplingDecision": {"level": "L1", "sampleValue": "00ff" * 4},
+                "samplingDecision": {"level": "L1", "sampleValue": 255},
             },
         )
 
@@ -112,23 +105,18 @@ class TestGlacisSync:
                 operation_type="inference",
                 input={"prompt": "test"},
                 output={"response": "test"},
-                metadata={"model": "gpt-4"},  # User metadata - NOT sent
-                phase="input",
-                correlation_id="corr-123",
+                metadata={"model": "gpt-4"},
+                operation_id="op-123",
+                operation_sequence=0,
             )
 
         import json
 
         body = json.loads(httpx_mock.get_request().content)
 
-        # Operational metadata IS sent
-        assert "metadata" in body
-        assert body["metadata"]["phase"] == "input"
-        assert body["metadata"]["correlationId"] == "corr-123"
-        assert body["metadata"]["sequenceIndex"] == 0
-
-        # User metadata (model=gpt-4) is NOT in the operational metadata
-        assert "model" not in body["metadata"]
+        # operation_id and operation_sequence in request body
+        assert body["operation_id"] == "op-123"
+        assert body["operation_sequence"] == 0
 
         # User data still not sent (zero-egress)
         assert "input" not in body
@@ -136,7 +124,7 @@ class TestGlacisSync:
 
         # Sampling decision parsed
         assert receipt.sampling_decision.level == "L1"
-        assert receipt.sampling_decision.sample_value == "00ff" * 4
+        assert receipt.sampling_decision.sample_value == 255
 
     def test_attest_sends_control_plane_results_in_body(self, httpx_mock: HTTPXMock):
         """When control_plane_results is provided, it's sent in the request body."""
@@ -147,8 +135,6 @@ class TestGlacisSync:
                 "attestationId": "att_cpr_test",
                 "evidenceHash": "c" * 64,
                 "timestamp": 1704067200000,
-                "leafIndex": 1,
-                "treeSize": 10,
             },
         )
 
@@ -156,19 +142,17 @@ class TestGlacisSync:
             ControlPlaneResults,
             Determination,
             PolicyContext,
-            PolicyScope,
-            SafetyScores,
         )
 
         cpr = ControlPlaneResults(
             policy=PolicyContext(
                 id="policy-1",
                 version="1.0",
-                scope=PolicyScope(environment="production", tags=[]),
+                environment="production",
+                tags=[],
             ),
-            determination=Determination(action="forwarded", confidence=1.0),
+            determination=Determination(action="forwarded"),
             controls=[],
-            safety=SafetyScores(overall_risk=0.1),
         )
 
         with Glacis(api_key="glsk_live_test123") as glacis:
@@ -184,14 +168,13 @@ class TestGlacisSync:
 
         body = json.loads(httpx_mock.get_request().content)
 
-        # controlPlaneResults should be in the request body
-        assert "controlPlaneResults" in body
-        assert body["controlPlaneResults"]["schema_version"] == "1.0"
-        assert body["controlPlaneResults"]["determination"]["action"] == "forwarded"
+        # control_plane_results should be in the request body (snake_case)
+        assert "control_plane_results" in body
+        assert body["control_plane_results"]["determination"]["action"] == "forwarded"
 
-        # cprHash should be in the request body (separate from payloadHash)
-        assert "cprHash" in body
-        assert len(body["cprHash"]) == 64  # valid hex hash
+        # cpr_hash should be in the request body
+        assert "cpr_hash" in body
+        assert len(body["cpr_hash"]) == 64  # valid hex hash
 
         # User data still not sent (zero-egress)
         assert "input" not in body
@@ -199,7 +182,32 @@ class TestGlacisSync:
 
         # Receipt should have control_plane_results attached locally
         assert receipt.control_plane_results is not None
-        assert receipt.control_plane_results.determination.action == "forwarded"
+
+    def test_attest_sends_supersedes(self, httpx_mock: HTTPXMock):
+        """Attest sends supersedes parameter for revision chains."""
+        httpx_mock.add_response(
+            method="POST",
+            url="https://api.glacis.io/v1/attest",
+            json={
+                "attestationId": "att_v2",
+                "evidenceHash": "d" * 64,
+                "timestamp": 1704067200000,
+            },
+        )
+
+        with Glacis(api_key="glsk_live_test123") as glacis:
+            receipt = glacis.attest(
+                service_id="my-service",
+                operation_type="inference",
+                input={"prompt": "test"},
+                output={"response": "test"},
+                supersedes="att_v1",
+            )
+
+        import json
+
+        body = json.loads(httpx_mock.get_request().content)
+        assert body["supersedes"] == "att_v1"
 
     def test_verify_public_endpoint(self, httpx_mock: HTTPXMock):
         """Verify is a public endpoint (no auth header)."""
@@ -214,7 +222,7 @@ class TestGlacisSync:
                     "orgId": "org_xxx",
                     "serviceId": "my-service",
                     "operationType": "inference",
-                    "payloadHash": "abc123",
+                    "evidenceHash": "abc123",
                     "signature": "sig123",
                     "leafIndex": 42,
                     "leafHash": "hash123",
@@ -321,6 +329,23 @@ class TestGlacisSync:
         # Should only make one request (no retries)
         assert len(httpx_mock.get_requests()) == 1
 
+    def test_operation_context(self):
+        """OperationContext auto-generates ID and increments sequence."""
+        from glacis.client import OperationContext
+
+        op = OperationContext()
+        assert len(op.operation_id) == 36  # UUID format
+        assert op.next_sequence() == 0
+        assert op.next_sequence() == 1
+        assert op.next_sequence() == 2
+
+    def test_operation_context_explicit_id(self):
+        """OperationContext accepts explicit operation_id."""
+        from glacis.client import OperationContext
+
+        op = OperationContext(operation_id="my-custom-id")
+        assert op.operation_id == "my-custom-id"
+
 
 class TestGlacisAsync:
     """Tests for the asynchronous Glacis client."""
@@ -333,10 +358,8 @@ class TestGlacisAsync:
             url="https://api.glacis.io/v1/attest",
             json={
                 "attestationId": "att_async",
-                "evidenceHash": "a" * 64,  # Spec: evidenceHash
-                "timestamp": 1704067200000,  # Spec: Unix ms
-                "leafIndex": 1,
-                "treeSize": 1,
+                "evidenceHash": "a" * 64,
+                "timestamp": 1704067200000,
             },
         )
 
@@ -352,7 +375,7 @@ class TestGlacisAsync:
 
     @pytest.mark.asyncio
     async def test_async_attest_with_control_plane_results(self, httpx_mock: HTTPXMock):
-        """Async attest sends controlPlaneResults and includes in hash."""
+        """Async attest sends control_plane_results and includes cpr_hash."""
         httpx_mock.add_response(
             method="POST",
             url="https://api.glacis.io/v1/attest",
@@ -360,8 +383,6 @@ class TestGlacisAsync:
                 "attestationId": "att_async_cpr",
                 "evidenceHash": "d" * 64,
                 "timestamp": 1704067200000,
-                "leafIndex": 1,
-                "treeSize": 10,
             },
         )
 
@@ -369,19 +390,17 @@ class TestGlacisAsync:
             ControlPlaneResults,
             Determination,
             PolicyContext,
-            PolicyScope,
-            SafetyScores,
         )
 
         cpr = ControlPlaneResults(
             policy=PolicyContext(
                 id="policy-1",
                 version="1.0",
-                scope=PolicyScope(environment="production", tags=[]),
+                environment="production",
+                tags=[],
             ),
-            determination=Determination(action="forwarded", confidence=1.0),
+            determination=Determination(action="forwarded"),
             controls=[],
-            safety=SafetyScores(overall_risk=0.0),
         )
 
         async with AsyncGlacis(api_key="test") as glacis:
@@ -397,24 +416,23 @@ class TestGlacisAsync:
 
         body = json.loads(httpx_mock.get_request().content)
 
-        # controlPlaneResults should be in the request body
-        assert "controlPlaneResults" in body
-        assert body["controlPlaneResults"]["schema_version"] == "1.0"
+        # control_plane_results should be in the request body (snake_case)
+        assert "control_plane_results" in body
+        assert body["control_plane_results"]["determination"]["action"] == "forwarded"
 
-        # cprHash should be in the request body (separate from payloadHash)
-        assert "cprHash" in body
-        assert len(body["cprHash"]) == 64
+        # cpr_hash should be in the request body
+        assert "cpr_hash" in body
+        assert len(body["cpr_hash"]) == 64
 
         # Receipt should have control_plane_results attached locally
         assert receipt.control_plane_results is not None
-        assert receipt.control_plane_results.schema_version == "1.0"
 
-        # payloadHash sent to server is now I/O-only (CPR has its own cpr_hash)
+        # evidence_hash sent to server is I/O-only (CPR has its own cpr_hash)
         hash_io_only = glacis.hash({
             "input": {"data": "test"},
             "output": {"result": "ok"},
         })
-        assert body["payloadHash"] == hash_io_only
+        assert body["evidence_hash"] == hash_io_only
 
     @pytest.mark.asyncio
     async def test_async_verify(self, httpx_mock: HTTPXMock):
@@ -583,8 +601,6 @@ class TestGlacisAsync:
                 "attestationId": "att_retry",
                 "evidenceHash": "b" * 64,
                 "timestamp": 1704067200000,
-                "leafIndex": 5,
-                "treeSize": 10,
             },
         )
 

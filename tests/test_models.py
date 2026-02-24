@@ -8,7 +8,9 @@ import pytest
 from pydantic import ValidationError
 
 from glacis.models import (
+    Attestation,
     AttestReceipt,
+    ControlExecution,
     ControlPlaneResults,
     Determination,
     Evidence,
@@ -18,105 +20,111 @@ from glacis.models import (
     LogEntry,
     LogQueryResult,
     MerkleInclusionProof,
+    ModelInfo,
     OfflineAttestReceipt,
     OfflineVerifyResult,
-    SafetyScores,
+    PolicyContext,
+    Receipt,
+    Review,
+    SamplingDecision,
     SignedTreeHead,
     VerifyResult,
 )
 
 
-class TestAttestReceipt:
-    """Tests for AttestReceipt model."""
+class TestAttestation:
+    """Tests for unified Attestation model (v1.2)."""
 
-    def test_parse_from_camel_case(self, sample_online_receipt_data: dict[str, Any]):
-        """Parse receipt from camelCase JSON."""
-        receipt = AttestReceipt.model_validate(sample_online_receipt_data)
+    def test_parse_attestation(self, sample_attestation_data: dict[str, Any]):
+        """Parse attestation from snake_case data."""
+        att = Attestation.model_validate(sample_attestation_data)
 
-        assert receipt.id == "att_test123abc"
-        assert receipt.leaf_index == 42
-        assert receipt.tree_size == 100
+        assert att.id == "att_test123abc"
+        assert att.evidence_hash == "a" * 64
+        assert att.public_key == "d" * 64
+        assert att.signature == "c" * 128
+        assert att.timestamp == 1704110400000
 
-    def test_witness_status_witnessed(self):
-        """witness_status returns WITNESSED when receipt present."""
-        data = {
-            "attestationId": "att_test",
-            "evidenceHash": "a" * 64,  # Spec: evidenceHash
-            "timestamp": 1704067200000,  # Spec: Unix ms
-            "leafIndex": 1,
-            "treeSize": 1,
-            "receipt": {
-                "schema_version": "1.0",
-                "attestation_hash": "a" * 64,
-                "heartbeat_epoch": 1,
-                "binary_hash": "b" * 64,
-                "network_state_hash": "c" * 64,
-                "mono_counter": 1,
-                "wall_time_ns": "123456789",
-                "witness_signature": "sig",
-                "transparency_proofs": {
-                    "inclusion_proof": {
-                        "leaf_index": 1,
-                        "tree_size": 1,
-                        "hashes": [],
-                        "root_hash": "d" * 64,
-                    },
-                    "sth_curr": {
-                        "tree_size": 1,
-                        "timestamp": "2024-01-01T00:00:00Z",
-                        "root_hash": "d" * 64,
-                        "signature": "sig",
-                    },
-                    "sth_prev": {
-                        "tree_size": 0,
-                        "timestamp": "2024-01-01T00:00:00Z",
-                        "root_hash": "",
-                        "signature": "sig",
-                    },
-                },
-            },
-        }
-        receipt = AttestReceipt.model_validate(data)
-        assert receipt.witness_status == "WITNESSED"
+    def test_witness_status_online(self, sample_attestation_data: dict[str, Any]):
+        """Online attestation has WITNESSED status."""
+        att = Attestation.model_validate(sample_attestation_data)
+        assert att.witness_status == "WITNESSED"
 
-    def test_witness_status_unverified(self, sample_online_receipt_data: dict[str, Any]):
-        """witness_status returns UNVERIFIED when no receipt."""
-        receipt = AttestReceipt.model_validate(sample_online_receipt_data)
-        assert receipt.witness_status == "UNVERIFIED"
+    def test_witness_status_offline(self, sample_offline_attestation_data: dict[str, Any]):
+        """Offline attestation has UNVERIFIED status."""
+        att = Attestation.model_validate(sample_offline_attestation_data)
+        assert att.is_offline is True
+        assert att.witness_status == "UNVERIFIED"
 
-    def test_evidence_hash_field(self, sample_online_receipt_data: dict[str, Any]):
-        """evidence_hash (formerly attestation_hash) is accessible."""
-        receipt = AttestReceipt.model_validate(sample_online_receipt_data)
-        assert receipt.evidence_hash == "a" * 64
+    def test_operation_fields(self):
+        """Operation ID and sequence are tracked."""
+        att = Attestation(
+            id="att_test",
+            operation_id="op_123",
+            operation_sequence=5,
+            evidence_hash="a" * 64,
+        )
+        assert att.operation_id == "op_123"
+        assert att.operation_sequence == 5
+
+    def test_supersedes_field(self):
+        """supersedes links revision chains."""
+        att = Attestation(
+            id="att_v2",
+            supersedes="att_v1",
+            evidence_hash="a" * 64,
+        )
+        assert att.supersedes == "att_v1"
+
+    def test_control_plane_results_is_dict(self):
+        """CPR on Attestation is dict[str, Any] (generic on wire)."""
+        att = Attestation(
+            id="att_test",
+            evidence_hash="a" * 64,
+            control_plane_results={"schema_version": "1.0", "determination": {"action": "forwarded"}},
+        )
+        assert att.control_plane_results["schema_version"] == "1.0"
+
+    def test_defaults(self):
+        """Attestation defaults are sensible."""
+        att = Attestation(id="att_test")
+        assert att.operation_id == ""
+        assert att.operation_sequence == 0
+        assert att.is_offline is False
+        assert att.supersedes is None
+        assert att.cpr_hash is None
 
 
-class TestOfflineAttestReceipt:
-    """Tests for OfflineAttestReceipt model."""
+class TestReceipt:
+    """Tests for Receipt model (v1.2 — contains Attestation)."""
 
-    def test_parse_offline_receipt(self, sample_offline_receipt_data: dict[str, Any]):
-        """Parse offline receipt."""
-        receipt = OfflineAttestReceipt.model_validate(sample_offline_receipt_data)
+    def test_receipt_contains_attestation(self):
+        """Receipt wraps an Attestation."""
+        att = Attestation(id="att_test", evidence_hash="a" * 64)
+        receipt = Receipt(
+            attestation=att,
+            timestamp=1704067200000,
+            epoch_id="epoch_001",
+            attestation_hash="b" * 64,
+        )
+        assert receipt.attestation.id == "att_test"
+        assert receipt.timestamp == 1704067200000
 
-        assert receipt.id == "oatt_test123abc"
-        assert receipt.service_id == "test-service"
-        assert receipt.is_offline is True
-        assert receipt.witness_status == "UNVERIFIED"
 
-    def test_witness_status_always_unverified(self):
-        """Offline receipts always have UNVERIFIED status."""
-        data = {
-            "attestationId": "oatt_test",
-            "evidenceHash": "a" * 64,
-            "timestamp": 1704067200000,  # Unix ms
-            "serviceId": "test",
-            "operationType": "inference",
-            "payloadHash": "a" * 64,
-            "signature": "b" * 128,
-            "publicKey": "c" * 64,
-            "witnessStatus": "UNVERIFIED",
-        }
-        receipt = OfflineAttestReceipt.model_validate(data)
-        assert receipt.witness_status == "UNVERIFIED"
+class TestDeprecatedAliases:
+    """Tests for backward-compatible aliases."""
+
+    def test_attest_receipt_is_attestation(self):
+        """AttestReceipt is an alias for Attestation."""
+        assert AttestReceipt is Attestation
+
+    def test_offline_attest_receipt_is_attestation(self):
+        """OfflineAttestReceipt is an alias for Attestation."""
+        assert OfflineAttestReceipt is Attestation
+
+    def test_merkle_inclusion_proof_is_inclusion_proof(self):
+        """MerkleInclusionProof is an alias for InclusionProof."""
+        assert MerkleInclusionProof is InclusionProof
 
 
 class TestVerifyResult:
@@ -149,8 +157,8 @@ class TestOfflineVerifyResult:
         """Parse offline verification result."""
         data = {
             "valid": True,
-            "witnessStatus": "UNVERIFIED",
-            "signatureValid": True,
+            "witness_status": "UNVERIFIED",
+            "signature_valid": True,
         }
         result = OfflineVerifyResult.model_validate(data)
 
@@ -166,24 +174,45 @@ class TestControlPlaneResults:
         """Parse complete control plane results."""
         results = ControlPlaneResults.model_validate(sample_control_plane_data)
 
-        assert results.schema_version == "1.0"
         assert results.policy.id == "policy-001"
+        assert results.policy.model.model_id == "gpt-4"
+        assert results.policy.environment == "production"
+        assert results.policy.tags == ["healthcare", "hipaa"]
         assert results.determination.action == "forwarded"
         assert len(results.controls) == 1
-        assert results.safety.overall_risk == 0.1
+        assert results.controls[0].latency_ms == 15
 
-    def test_determination_confidence_bounds(self):
-        """Determination confidence must be 0-1."""
-        with pytest.raises(ValidationError):
-            Determination(action="forwarded", confidence=1.5)
+    def test_determination_action_only(self):
+        """Determination only has action field."""
+        det = Determination(action="forwarded")
+        dumped = det.model_dump()
+        assert dumped == {"action": "forwarded"}
 
-        with pytest.raises(ValidationError):
-            Determination(action="forwarded", confidence=-0.1)
+    def test_control_execution_score(self):
+        """ControlExecution can carry a numeric score."""
+        ce = ControlExecution(
+            id="jb", type="jailbreak", version="0.3.0",
+            provider="glacis", latency_ms=50, status="forward", score=0.02,
+        )
+        assert ce.score == 0.02
 
-    def test_safety_scores_bounds(self):
-        """Safety overall_risk must be 0-1."""
-        with pytest.raises(ValidationError):
-            SafetyScores(overall_risk=1.5, scores={})
+    def test_control_execution_score_optional(self):
+        """ControlExecution score defaults to None."""
+        ce = ControlExecution(
+            id="pii", type="pii", version="0.3.0",
+            provider="glacis", latency_ms=10, status="flag",
+        )
+        assert ce.score is None
+
+    def test_policy_context_flat_environment(self):
+        """PolicyContext has environment and tags directly (no scope)."""
+        pc = PolicyContext(
+            id="test", version="1.0",
+            model=ModelInfo(model_id="gpt-4", provider="openai"),
+            environment="staging", tags=["hipaa"],
+        )
+        assert pc.environment == "staging"
+        assert pc.tags == ["hipaa"]
 
 
 class TestEvidence:
@@ -192,19 +221,73 @@ class TestEvidence:
     def test_evidence_sample_probability_bounds(self):
         """Evidence sample_probability must be 0-1."""
         with pytest.raises(ValidationError):
-            Evidence(sample_probability=1.5, evidence_data={})
+            Evidence(sample_probability=1.5, data={})
 
         with pytest.raises(ValidationError):
-            Evidence(sample_probability=-0.1, evidence_data={})
+            Evidence(sample_probability=-0.1, data={})
 
     def test_evidence_with_data(self):
         """Evidence with data."""
         evidence = Evidence(
             sample_probability=0.5,
-            evidence_data={"key": "value"},
+            data={"key": "value"},
         )
         assert evidence.sample_probability == 0.5
-        assert evidence.evidence_data == {"key": "value"}
+        assert evidence.data == {"key": "value"}
+
+
+class TestReview:
+    """Tests for Review (L2) model (flattened from DeepInspection)."""
+
+    def test_review_fields(self):
+        """Review has all flattened fields."""
+        review = Review(
+            sample_probability=0.1,
+            judge_ids=["judge_1", "judge_2"],
+            conformity_score=0.3,
+            recommendation="uphold",
+            rationale="Looks good",
+        )
+        assert review.sample_probability == 0.1
+        assert len(review.judge_ids) == 2
+        assert review.recommendation == "uphold"
+
+    def test_review_recommendation_values(self):
+        """Review recommendation must be uphold/borderline/escalate."""
+        with pytest.raises(ValidationError):
+            Review(
+                sample_probability=0.1,
+                conformity_score=0.0,
+                recommendation="invalid",
+                rationale="",
+            )
+
+
+class TestSamplingDecision:
+    """Tests for SamplingDecision model (v1.2)."""
+
+    def test_sampling_decision_defaults(self):
+        """SamplingDecision defaults."""
+        sd = SamplingDecision(level="L0")
+        assert sd.level == "L0"
+        assert sd.sample_value == 0
+        assert sd.prf_tag == []
+
+    def test_sampling_decision_with_prf_tag(self):
+        """SamplingDecision with prf_tag (HMAC-SHA256 bytes)."""
+        sd = SamplingDecision(
+            level="L1",
+            sample_value=12345678,
+            prf_tag=[1, 2, 3, 4],
+        )
+        assert sd.level == "L1"
+        assert sd.sample_value == 12345678
+        assert sd.prf_tag == [1, 2, 3, 4]
+
+    def test_sample_value_is_int(self):
+        """sample_value is now int (was Optional[str] in v1.1)."""
+        sd = SamplingDecision(level="L0", sample_value=42)
+        assert isinstance(sd.sample_value, int)
 
 
 class TestLogEntry:
@@ -212,7 +295,6 @@ class TestLogEntry:
 
     def test_log_entry_optional_fields(self):
         """LogEntry handles optional fields."""
-        # Minimal data
         data = {"attestationId": "att_test123"}
         entry = LogEntry.model_validate(data)
 
@@ -230,7 +312,7 @@ class TestLogEntry:
             "orgName": "Test Org",
             "serviceId": "my-service",
             "operationType": "inference",
-            "payloadHash": "a" * 64,
+            "evidenceHash": "a" * 64,
             "leafIndex": 42,
         }
         entry = LogEntry.model_validate(data)
@@ -238,6 +320,7 @@ class TestLogEntry:
         assert entry.attestation_id == "att_test123"
         assert entry.org_name == "Test Org"
         assert entry.leaf_index == 42
+        assert entry.evidence_hash == "a" * 64
 
 
 class TestLogQueryResult:
@@ -294,13 +377,13 @@ class TestErrorModels:
 class TestMerkleProofs:
     """Tests for Merkle proof models."""
 
-    def test_inclusion_proof_camel_case(self):
-        """InclusionProof parses camelCase (API response format)."""
+    def test_inclusion_proof_snake_case(self):
+        """InclusionProof parses snake_case."""
         data = {
-            "leafIndex": 42,
-            "treeSize": 100,
+            "leaf_index": 42,
+            "tree_size": 100,
             "hashes": ["a" * 64, "b" * 64],
-            "rootHash": "c" * 64,
+            "root_hash": "c" * 64,
         }
         proof = InclusionProof.model_validate(data)
 
@@ -309,33 +392,28 @@ class TestMerkleProofs:
         assert proof.root_hash == "c" * 64
         assert len(proof.hashes) == 2
 
-    def test_inclusion_proof_snake_case(self):
-        """InclusionProof parses snake_case (receipt-service wire format)."""
-        data = {
-            "leaf_index": 18,
-            "tree_size": 19,
-            "hashes": ["a" * 64],
-            "root_hash": "d" * 64,
-        }
-        proof = InclusionProof.model_validate(data)
-
-        assert proof.leaf_index == 18
-        assert proof.tree_size == 19
-        assert proof.root_hash == "d" * 64
-
-    def test_merkle_inclusion_proof_backward_compat(self):
-        """MerkleInclusionProof is an alias for InclusionProof."""
-        assert MerkleInclusionProof is InclusionProof
-
     def test_signed_tree_head(self):
         """SignedTreeHead parsing."""
         data = {
-            "treeSize": 100,
+            "tree_size": 100,
             "timestamp": "2024-01-01T00:00:00Z",
-            "rootHash": "a" * 64,
+            "root_hash": "a" * 64,
             "signature": "sig123",
         }
         sth = SignedTreeHead.model_validate(data)
 
         assert sth.tree_size == 100
         assert sth.root_hash == "a" * 64
+
+    def test_signed_tree_head_with_public_key(self):
+        """SignedTreeHead with optional public_key."""
+        data = {
+            "tree_size": 100,
+            "timestamp": "2024-01-01T00:00:00Z",
+            "root_hash": "a" * 64,
+            "signature": "sig123",
+            "public_key": "d" * 64,
+        }
+        sth = SignedTreeHead.model_validate(data)
+
+        assert sth.public_key == "d" * 64

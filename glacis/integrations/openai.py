@@ -2,7 +2,7 @@
 GLACIS integration for OpenAI.
 
 Provides an attested OpenAI client wrapper that automatically:
-1. Runs enabled controls (PII/PHI redaction, jailbreak detection, etc.)
+1. Runs input/output controls (PII/PHI detection, jailbreak detection, word filter, etc.)
 2. Logs all completions to the GLACIS transparency log
 3. Creates control plane attestations
 
@@ -22,15 +22,20 @@ Example:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional
 
 from glacis.integrations.base import (
+    ControlResultsAccumulator,
     GlacisBlockedError,
+    create_control_plane_results,
     create_controls_runner,
     create_glacis_client,
     get_evidence,
     get_last_receipt,
+    handle_blocked_request,
     initialize_config,
+    run_input_controls,
+    run_output_controls,
     set_last_receipt,
     store_evidence,
     suppress_noisy_loggers,
@@ -38,6 +43,8 @@ from glacis.integrations.base import (
 
 if TYPE_CHECKING:
     from openai import OpenAI
+
+    from glacis.controls.base import BaseControl
 
 
 def attested_openai(
@@ -48,12 +55,13 @@ def attested_openai(
     debug: bool = False,
     offline: Optional[bool] = None,
     signing_seed: Optional[bytes] = None,
-    redaction: Union[bool, Literal["fast", "full"], None] = None,
     config: Optional[str] = None,
+    input_controls: Optional[list["BaseControl"]] = None,
+    output_controls: Optional[list["BaseControl"]] = None,
     **openai_kwargs: Any,
 ) -> "OpenAI":
     """
-    Create an attested OpenAI client with controls (PII redaction, jailbreak detection).
+    Create an attested OpenAI client with controls.
 
     Args:
         glacis_api_key: GLACIS API key (required for online mode)
@@ -63,8 +71,9 @@ def attested_openai(
         debug: Enable debug logging
         offline: Enable offline mode (local signing, no server)
         signing_seed: 32-byte Ed25519 signing seed (required for offline mode)
-        redaction: PII/PHI redaction mode - "fast", "full", True, False, or None
         config: Path to glacis.yaml config file
+        input_controls: Custom controls for input stage
+        output_controls: Custom controls for output stage
         **openai_kwargs: Additional arguments passed to OpenAI client
 
     Returns:
@@ -84,11 +93,9 @@ def attested_openai(
             "Install it with: pip install glacis[openai]"
         )
 
-
     # Initialize config and determine modes
     cfg, effective_offline, effective_service_id = initialize_config(
         config_path=config,
-        redaction=redaction,
         offline=offline,
         glacis_api_key=glacis_api_key,
         default_service_id="openai",
@@ -96,13 +103,23 @@ def attested_openai(
     )
 
     # Create controls runner and Glacis client
-    controls_runner = create_controls_runner(cfg, debug)
+    controls_runner = create_controls_runner(
+        cfg, debug,
+        input_controls=input_controls,
+        output_controls=output_controls,
+    )
+    _storage_backend = cfg.evidence_storage.backend
+    _storage_path = cfg.evidence_storage.path
+    _output_block_action = cfg.controls.output_block_action
     glacis = create_glacis_client(
         offline=effective_offline,
         signing_seed=signing_seed,
         glacis_api_key=glacis_api_key,
         glacis_base_url=glacis_base_url,
         debug=debug,
+        storage_backend=_storage_backend,
+        storage_path=_storage_path,
+        sampling_config=cfg.sampling,
     )
 
     # Create the OpenAI client
@@ -116,58 +133,82 @@ def attested_openai(
     original_create = client.chat.completions.create
 
     def attested_create(*args: Any, **kwargs: Any) -> Any:
-        if kwargs.get("stream", False):
-            raise NotImplementedError(
-                "Streaming is not currently supported with attested_openai. "
-                "Use stream=False for now."
-            )
-
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", "unknown")
 
-        # Run controls if enabled
-        if controls_runner:
-            from glacis.integrations.base import (
-                ControlResultsAccumulator,
-                create_control_plane_attestation_from_accumulator,
-                handle_blocked_request,
-                process_text_for_controls,
-            )
+        accumulator = ControlResultsAccumulator()
 
-            accumulator = ControlResultsAccumulator()
-            processed_messages = []
-
-            # Find the last user message index (the new message to check)
-            last_user_idx = -1
-            for i, msg in enumerate(messages):
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    last_user_idx = i
-
-            for i, msg in enumerate(messages):
-                role = msg.get("role", "") if isinstance(msg, dict) else ""
-                # Only run controls on the LAST user message (the new one)
+        # --- Input controls ---
+        if controls_runner and controls_runner.has_input_controls:
+            # Find last user message text and run controls
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
                 if (
                     isinstance(msg, dict)
+                    and msg.get("role") == "user"
                     and isinstance(msg.get("content"), str)
-                    and role == "user"
-                    and i == last_user_idx
                 ):
-                    content = msg["content"]
-                    final_text = process_text_for_controls(controls_runner, content, accumulator)
-                    processed_messages.append({**msg, "content": final_text})
-                else:
-                    processed_messages.append(msg)
+                    run_input_controls(
+                        controls_runner, msg["content"], accumulator,
+                    )
+                    break
 
-            kwargs["messages"] = processed_messages
-            messages = processed_messages
+        # Extract system prompt hash and temperature for CPR
+        from glacis.crypto import hash_payload
+        system_prompt = None
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system_prompt = msg.get("content", "")
+                break
+        system_prompt_hash = hash_payload(system_prompt) if system_prompt else None
+        temperature = kwargs.get("temperature")
 
-            # Build control plane attestation
-            control_plane_results = create_control_plane_attestation_from_accumulator(
-                accumulator, cfg, model, "openai"
+        # Check if input controls want to block
+        if accumulator.should_block:
+            control_plane_results = create_control_plane_results(
+                accumulator, cfg, model, "openai",
+                system_prompt_hash=system_prompt_hash,
+                temperature=temperature,
+            )
+            blocking = accumulator.get_blocking_control()
+            handle_blocked_request(
+                glacis_client=glacis,
+                service_id=effective_service_id,
+                input_data={"model": model, "messages": messages},
+                control_plane_results=control_plane_results,
+                provider="openai",
+                model=model,
+                blocking_control_type=blocking.type if blocking else "unknown",
+                blocking_score=blocking.score if blocking else None,
+                debug=debug,
+                storage_backend=_storage_backend,
+                storage_path=_storage_path,
             )
 
-            # Check if we need to block BEFORE making the API call
-            if accumulator.should_block:
+        # Make the API call
+        response = original_create(*args, **kwargs)
+
+        # --- Output controls ---
+        response_text = None
+        if response.choices:
+            response_text = response.choices[0].message.content
+
+        if controls_runner and controls_runner.has_output_controls and response_text:
+            run_output_controls(
+                controls_runner, response_text, accumulator,
+            )
+
+        # Build control plane results (includes both input + output controls)
+        control_plane_results = create_control_plane_results(
+            accumulator, cfg, model, "openai",
+            system_prompt_hash=system_prompt_hash,
+            temperature=temperature,
+        )
+
+        # Handle output blocking
+        if accumulator.should_block and controls_runner and controls_runner.has_output_controls:
+            if _output_block_action == "block":
+                blocking = accumulator.get_blocking_control()
                 handle_blocked_request(
                     glacis_client=glacis,
                     service_id=effective_service_id,
@@ -175,22 +216,24 @@ def attested_openai(
                     control_plane_results=control_plane_results,
                     provider="openai",
                     model=model,
-                    jailbreak_score=accumulator._jailbreak_score,
+                    blocking_control_type=blocking.type if blocking else "unknown",
+                    blocking_score=blocking.score if blocking else None,
                     debug=debug,
+                    storage_backend=_storage_backend,
+                    storage_path=_storage_path,
                 )
-        else:
-            control_plane_results = None
+            # "forward" mode: continue, determination will show "blocked" in attestation
 
-        # Make the API call (only if not blocked)
-        response = original_create(*args, **kwargs)
-
-        # Build input/output data
+        # Build input/output data for evidence
         input_data = {"model": model, "messages": messages}
         output_data = {
             "model": response.model,
             "choices": [
                 {
-                    "message": {"role": c.message.role, "content": c.message.content},
+                    "message": {
+                        "role": c.message.role,
+                        "content": c.message.content,
+                    },
                     "finish_reason": c.finish_reason,
                 }
                 for c in response.choices
@@ -202,6 +245,8 @@ def attested_openai(
             } if response.usage else None,
         }
 
+        metadata: dict[str, Any] = {"provider": "openai", "model": model}
+
         # Attest and store
         try:
             receipt = glacis.attest(
@@ -209,7 +254,7 @@ def attested_openai(
                 operation_type="completion",
                 input=input_data,
                 output=output_data,
-                metadata={"provider": "openai", "model": model},
+                metadata=metadata,
                 control_plane_results=control_plane_results,
             )
             set_last_receipt(receipt)
@@ -220,8 +265,10 @@ def attested_openai(
                 input_data=input_data,
                 output_data=output_data,
                 control_plane_results=control_plane_results,
-                metadata={"provider": "openai", "model": model},
+                metadata=metadata,
                 debug=debug,
+                storage_backend=_storage_backend,
+                storage_path=_storage_path,
             )
         except Exception as e:
             if debug:
