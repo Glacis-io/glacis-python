@@ -370,8 +370,13 @@ class Glacis:
                 "input": input_data,
                 "output": output_data,
             }
+            _prob = (
+                self._sampling_config.l2_rate
+                if attestation.sampling_decision.level == "L2"
+                else self._sampling_config.l1_rate
+            )
             attestation.evidence = Evidence(
-                sample_probability=0.0,
+                sample_probability=_prob,
                 data=ev_data,
             )
             self._debug(
@@ -935,7 +940,7 @@ class AsyncGlacis:
         if cpr_dict:
             attestation.control_plane_results = cpr_dict
 
-        # L1/L2 Evidence
+        # L1/L2 Evidence (online: server determines sampling, probability unknown)
         if (
             attestation.sampling_decision
             and attestation.sampling_decision.level in ("L1", "L2")

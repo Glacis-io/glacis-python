@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 # SDK version used in ControlExecution records
-SDK_VERSION = "0.4.0"
+SDK_VERSION = "0.5.0"
 
 # Known control types that map directly to ControlType enum
 _KNOWN_CONTROL_TYPES = frozenset({
@@ -370,7 +370,7 @@ class ControlResultsAccumulator:
         for result in stage_result.results:
             self.control_executions.append(
                 ControlExecution(
-                    id=f"glacis-{result.control_type}",
+                    id=f"glacis-{stage}-{result.control_type}",
                     type=cast("ControlType", _map_control_type(result.control_type)),
                     version=SDK_VERSION,
                     provider=result.metadata.get("provider", "glacis"),

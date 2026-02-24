@@ -221,7 +221,7 @@ class TestVerifyCommand:
         # Mock the verification endpoint
         httpx_mock.add_response(
             method="GET",
-            url=f"{DEFAULT_BASE_URL}/v1/verify/{sample_attestation_data['evidence_hash']}",
+            url=f"{DEFAULT_BASE_URL}/v1/verify/{sample_attestation_data['id']}",
             json=sample_verify_response,
         )
 

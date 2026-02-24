@@ -1,6 +1,6 @@
 [project]
 name = "glacis"
-version = "0.3.0"
+version = "0.5.0"
 description = "GLACIS SDK for Python - AI Compliance Attestation"
 readme = "README.md"
 requires-python = ">=3.9"

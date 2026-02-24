@@ -23,9 +23,9 @@ from glacis.models import (
 DEFAULT_BASE_URL = "https://api.glacis.io"
 
 
-def verify_online(attestation_hash: str, base_url: str) -> VerifyResult:
+def verify_online(attestation_id: str, base_url: str) -> VerifyResult:
     """Verify an online attestation via direct HTTP call."""
-    url = f"{base_url}/v1/verify/{attestation_hash}"
+    url = f"{base_url}/v1/verify/{attestation_id}"
 
     try:
         response = httpx.get(url, timeout=30.0)
@@ -109,7 +109,7 @@ def verify_command(args: argparse.Namespace) -> None:
         receipt_type = "Offline"
     else:
         receipt = Attestation.model_validate(data)
-        result = verify_online(receipt.evidence_hash, args.base_url)
+        result = verify_online(receipt.id, args.base_url)
         receipt_type = "Online"
 
     # Output
