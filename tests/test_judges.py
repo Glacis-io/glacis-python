@@ -13,7 +13,7 @@ Covers:
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -675,7 +675,7 @@ class TestAnthropicJudge:
 class TestShouldReview:
     """Test the deterministic L1 sampling gate on Glacis client."""
 
-    def _make_glacis(self, seed: bytes | None = None) -> Glacis:
+    def _make_glacis(self, seed: "Optional[bytes]" = None) -> Glacis:
         """Create an offline Glacis client."""
         return Glacis(mode="offline", signing_seed=seed or bytes(32))
 
