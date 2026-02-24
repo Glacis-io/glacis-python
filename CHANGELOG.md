@@ -14,13 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Config format**: v1.3 nested structure (`controls.input.pii_phi` instead of `controls.pii_phi`)
 - **Streaming removed**: Deferred to future release
 - **Redaction removed**: PII control now detects but does not rewrite text
-- **Storage format**: JSONL (`receipts.jsonl` + `evidence.jsonl`) replaces SQLite
+- **Storage**: Added JSONL backend as alternative to SQLite (default unchanged)
 
 ### Added
 - Word filter control (case-insensitive term matching, configurable per-stage)
 - LLM Judge framework (`BaseJudge`, `JudgeRunner`, `JudgesConfig`)
 - Sampling config with `l1_rate` / `l2_rate` (nested L2⊂L1)
-- JSONL evidence storage (append-only `receipts.jsonl` + `evidence.jsonl`)
+- JSONL storage backend option (append-only `receipts.jsonl` + `evidence.jsonl`)
 - `decompose()` for batch → per-item attestations with shared `operation_id`
 - `should_review()` deterministic HMAC-SHA256 sampling gate
 - Custom controls interface (`BaseControl`)

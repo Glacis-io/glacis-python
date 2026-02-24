@@ -184,7 +184,7 @@ print(evidence["output"])                 # Original output
 print(evidence["control_plane_results"])  # PII/jailbreak results
 ```
 
-Evidence is stored locally in JSONL format (`receipts.jsonl` + `evidence.jsonl`).
+Evidence is stored locally using SQLite (default) or JSONL backends.
 
 ## Online vs Offline Mode
 

@@ -45,7 +45,7 @@ def main():
     print()
 
     # Receipts are stored locally
-    print("Receipts are stored locally in JSONL format")
+    print("Receipts are stored locally (SQLite by default, JSONL optional)")
     print()
     print("To get witnessed attestations with Merkle proofs,")
     print("use online mode with an API key from https://glacis.io")
