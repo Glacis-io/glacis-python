@@ -11,9 +11,7 @@ Covers:
 - Edge cases
 """
 
-import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -22,8 +20,18 @@ import pytest
 from pydantic import ValidationError
 
 from glacis import Glacis
-from glacis.judges import BaseJudge, JudgeRunner, JudgeVerdict, JudgesConfig, ReviewResult
+from glacis.judges import BaseJudge, JudgeRunner, JudgesConfig, JudgeVerdict, ReviewResult
 from glacis.models import Attestation, Review, SamplingDecision
+
+
+def _has_judges_module() -> bool:
+    """Check if the judges/ demo package is available."""
+    try:
+        import judges.qa_explain_judge  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 # =============================================================================
@@ -306,6 +314,10 @@ class TestJudgeRunner:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not _has_judges_module(),
+    reason="judges/ demo package not installed",
+)
 class TestPromptBuilding:
     """Test _build_prompt helper."""
 
@@ -345,7 +357,7 @@ class TestPromptBuilding:
         assert SCORING_RUBRIC not in prompt
 
     def test_default_rubric_used_when_none(self):
-        from judges.qa_explain_judge import SCORING_RUBRIC, _build_prompt
+        from judges.qa_explain_judge import _build_prompt
 
         prompt = _build_prompt(
             {"question": "Q?", "answer": "A."},
@@ -355,6 +367,10 @@ class TestPromptBuilding:
         assert "INCORRECT" in prompt  # Part of the default rubric
 
 
+@pytest.mark.skipif(
+    not _has_judges_module(),
+    reason="judges/ demo package not installed",
+)
 class TestVerdictParsing:
     """Test _parse_verdict helper."""
 
@@ -420,6 +436,10 @@ class TestVerdictParsing:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not _has_judges_module(),
+    reason="judges/ demo package not installed",
+)
 class TestOpenAIJudge:
     """Test OpenAIJudge with mocked OpenAI client."""
 
@@ -536,6 +556,10 @@ class TestOpenAIJudge:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not _has_judges_module(),
+    reason="judges/ demo package not installed",
+)
 class TestAnthropicJudge:
     """Test AnthropicJudge with mocked Anthropic client."""
 
@@ -1051,6 +1075,7 @@ class TestEdgeCases:
 
     def test_long_reference_document(self, sample_qa_pair):
         """A very long reference document should not break prompt building."""
+        pytest.importorskip("judges.qa_explain_judge")
         from judges.qa_explain_judge import _build_prompt
 
         long_ref = "A" * 10_000
@@ -1069,6 +1094,7 @@ class TestEdgeCases:
 
     def test_missing_keys_in_item(self):
         """Item without question/answer keys should still work."""
+        pytest.importorskip("judges.qa_explain_judge")
         from judges.qa_explain_judge import _build_prompt
 
         prompt = _build_prompt({}, reference=None, rubric=None)
