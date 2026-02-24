@@ -85,5 +85,8 @@ dmypy.json
 .env.*.local
 examples/.env
 
+# PraxisPro demo (customer-specific, not part of SDK)
+/judges/
+
 # Claude Code
 .claude/
