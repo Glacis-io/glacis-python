@@ -3,13 +3,13 @@ GLACIS Judge Framework — Abstract base class and data models for LLM judges.
 
 Judges evaluate items against reference data and produce scored verdicts.
 Multiple judges can run in parallel, and their scores are aggregated into
-a ReviewResult. The framework is use-case agnostic — it works for
+a Review. The framework is use-case agnostic — it works for
 fact-checking (L1, 0-3 scale) and conformity review (L2, 0-1 scale).
 
 Thresholds are configurable via JudgesConfig. Without explicit config,
 defaults match the L1 fact-checking scale (max_score=3, uphold>=2, etc.).
 
-The ReviewResult is then attested via glacis.attest() to create an auditable
+The Review is then attested via glacis.attest() to create an auditable
 review record linked to the original attestation by operation_id.
 
 Example:
@@ -57,7 +57,7 @@ class JudgeVerdict(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ReviewResult(BaseModel):
+class Review(BaseModel):
     """Aggregated result from running all judges on one item.
 
     Attributes:
@@ -73,6 +73,24 @@ class ReviewResult(BaseModel):
     max_score: float = 3.0
     consensus: bool
     recommendation: Literal["uphold", "borderline", "escalate"]
+
+    def to_wire_review(self, sample_probability: float) -> dict[str, Any]:
+        """Convert to a dict matching the glacis.models.Review wire format.
+
+        Args:
+            sample_probability: Probability this item was sampled (0.0-1.0).
+
+        Returns:
+            Dict with conformity_score, judge_ids, recommendation, rationale.
+        """
+        conformity = self.final_score / self.max_score if self.max_score > 0 else 0.0
+        return {
+            "sample_probability": sample_probability,
+            "judge_ids": [v.judge_id for v in self.verdicts],
+            "conformity_score": round(min(max(conformity, 0.0), 1.0), 4),
+            "recommendation": self.recommendation,
+            "rationale": "; ".join(v.rationale for v in self.verdicts),
+        }
 
 
 class BaseJudge(ABC):
@@ -158,7 +176,7 @@ class JudgeRunner:
         item: dict[str, Any],
         reference: Optional[str] = None,
         rubric: Optional[str] = None,
-    ) -> ReviewResult:
+    ) -> Review:
         """Run all judges on the item and aggregate results.
 
         If a judge raises an exception, it is caught and recorded as a
@@ -170,7 +188,7 @@ class JudgeRunner:
             rubric: Optional scoring rubric override.
 
         Returns:
-            ReviewResult with aggregated scores and recommendation.
+            Review with aggregated scores and recommendation.
         """
         verdicts: list[JudgeVerdict] = []
 
@@ -205,7 +223,7 @@ class JudgeRunner:
         else:
             recommendation = "escalate"
 
-        return ReviewResult(
+        return Review(
             verdicts=verdicts,
             final_score=round(final_score, self._config.score_precision),
             max_score=self._config.max_score,

@@ -11,9 +11,9 @@ export default defineConfig({
         src: './src/assets/glacis-logo.png',
         alt: 'GLACIS Logo',
       },
-      social: {
-        github: 'https://github.com/Glacis-io/glacis-python',
-      },
+      social: [
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/Glacis-io/glacis-python' },
+      ],
       editLink: {
         baseUrl: 'https://github.com/Glacis-io/glacis-python/edit/main/docs/',
       },

@@ -59,15 +59,15 @@ glacis = Glacis(
 
 ## Deterministic Sampling
 
-Sampling decisions are deterministic and auditor-reproducible. Given the same `evidence_hash` + `signing_seed` + sampling rates, the SDK always produces the same decision.
+Sampling decisions are deterministic and auditor-reproducible. Given the same `evidence_hash` + `policy_key` (or `signing_seed`) + sampling rates, the SDK always produces the same decision.
 
 The algorithm:
 
-1. Compute an HMAC-SHA256 tag over the `evidence_hash` using the `signing_seed` as key
+1. Compute `HMAC-SHA256(policy_key, "sample:v1" || evidence_hash_bytes)` — the `policy_key` is used as the HMAC key (falls back to `signing_seed` if not provided), the message is the domain separator `"sample:v1"` concatenated with the raw evidence hash bytes
 2. Extract the first 8 bytes as a big-endian `uint64` value (`sample_value`)
-3. Compare `sample_value` against thresholds derived from `l1_rate` and `l2_rate`
+3. Compare `sample_value` against thresholds derived from `l1_rate` and `l2_rate` (using `math.floor`)
 
-This means an auditor with access to the signing seed can independently verify that sampling decisions were correctly applied.
+This means an auditor with access to the policy key (or signing seed) can independently verify that sampling decisions were correctly applied.
 
 ## should_review()
 
@@ -104,7 +104,7 @@ decision = glacis.should_review(receipt, sampling_rate=0.5)
 </Aside>
 
 <Aside type="note">
-  `should_review()` requires offline mode (it uses the `signing_seed` for HMAC computation).
+  `should_review()` requires offline mode (it uses the `policy_key` or `signing_seed` for HMAC computation).
 </Aside>
 
 ## SamplingDecision Reference

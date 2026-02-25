@@ -17,7 +17,7 @@ Three fields on `Attestation` enable batch operations:
 | `operation_sequence` | `int` | Ordinal position within the operation (0-based) |
 | `supersedes` | `str \| None` | Attestation ID this replaces (for revision chains) |
 
-When you call `attest()` without specifying an `operation_id`, a new UUID is auto-generated. The `operation_sequence` defaults to `0`.
+When you call `attest()` without specifying an `operation_id`, a new UUID is auto-generated in offline mode. In online mode, the field is omitted from the request and the server assigns it. The `operation_sequence` defaults to `0`.
 
 ## OperationContext
 

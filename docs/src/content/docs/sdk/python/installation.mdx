@@ -85,9 +85,9 @@ Install extras to enable provider integrations, controls, and more:
 1. Visit [glacis.io](https://glacis.io) and sign up
 2. Create an organization
 3. Generate an API key (`glsk_live_...`)
-4. Set the environment variable:
-   ```bash
-   export GLACIS_API_KEY=glsk_live_your_key_here
+4. Pass the key to the SDK when creating a client:
+   ```python
+   glacis = Glacis(api_key="glsk_live_your_key_here")
    ```
 </Steps>
 

@@ -2,7 +2,7 @@
 Comprehensive tests for the GLACIS LLM Judge Pipeline.
 
 Covers:
-- JudgeVerdict / ReviewResult model validation
+- JudgeVerdict / Review model validation
 - JudgeRunner aggregation, consensus, and error handling
 - OpenAIJudge / AnthropicJudge (mocked API calls)
 - should_review() L1 sampling gate
@@ -20,8 +20,8 @@ import pytest
 from pydantic import ValidationError
 
 from glacis import Glacis
-from glacis.judges import BaseJudge, JudgeRunner, JudgesConfig, JudgeVerdict, ReviewResult
-from glacis.models import Attestation, Review, SamplingDecision
+from glacis.judges import BaseJudge, JudgeRunner, JudgesConfig, JudgeVerdict, Review
+from glacis.models import Attestation, Review as WireReview, SamplingDecision
 
 
 def _has_judges_module() -> bool:
@@ -121,15 +121,15 @@ class TestJudgeVerdict:
 
 
 # =============================================================================
-# ReviewResult model tests
+# Review model tests
 # =============================================================================
 
 
-class TestReviewResult:
-    """Test ReviewResult model and recommendation logic."""
+class TestReview:
+    """Test Review model and recommendation logic."""
 
-    def _make_result(self, scores: list[float], threshold: float = 1.0) -> ReviewResult:
-        """Helper to build ReviewResult from raw scores."""
+    def _make_result(self, scores: list[float], threshold: float = 1.0) -> Review:
+        """Helper to build Review from raw scores."""
         verdicts = [
             JudgeVerdict(judge_id=f"j{i}", score=s, rationale="test")
             for i, s in enumerate(scores)
@@ -147,7 +147,7 @@ class TestReviewResult:
         else:
             rec = "escalate"
 
-        return ReviewResult(
+        return Review(
             verdicts=verdicts,
             final_score=round(final, 4),
             consensus=consensus,
@@ -1110,8 +1110,8 @@ class TestEdgeCases:
         assert d["latency_ms"] == 42
 
     def test_review_result_serializes_to_dict(self):
-        """ReviewResult.model_dump() should produce a clean dict for attestation."""
-        result = ReviewResult(
+        """Review.model_dump() should produce a clean dict for attestation."""
+        result = Review(
             verdicts=[
                 JudgeVerdict(judge_id="j1", score=2.5, rationale="good"),
                 JudgeVerdict(judge_id="j2", score=3.0, rationale="great"),
@@ -1239,7 +1239,7 @@ class TestJudgeRunnerWithConfig:
         assert result.final_score == 1.67
 
     def test_config_max_score_in_result(self, sample_qa_pair):
-        """ReviewResult.max_score should come from config."""
+        """Review.max_score should come from config."""
         cfg = JudgesConfig(max_score=1.0)
         runner = JudgeRunner(judges=[StubJudge("a", 0.8)], config=cfg)
         result = runner.run(sample_qa_pair)
@@ -1345,7 +1345,7 @@ class TestConformityScoreRename:
     """Test that Review model uses conformity_score (not nonconformity_score)."""
 
     def test_review_has_conformity_score(self):
-        review = Review(
+        review = WireReview(
             sample_probability=0.1,
             judge_ids=["j1"],
             conformity_score=0.8,
@@ -1356,4 +1356,4 @@ class TestConformityScoreRename:
 
     def test_review_no_nonconformity_score(self):
         """The old nonconformity_score field should not exist."""
-        assert not hasattr(Review, "nonconformity_score")
+        assert not hasattr(WireReview, "nonconformity_score")

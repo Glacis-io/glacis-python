@@ -170,6 +170,7 @@ class Glacis:
         max_delay: float = DEFAULT_MAX_DELAY,
         mode: Literal["online", "offline"] = "online",
         signing_seed: Optional[bytes] = None,
+        policy_key: Optional[bytes] = None,
         db_path: Optional[Path] = None,
         storage_backend: str = "sqlite",
         storage_path: Optional[Path] = None,
@@ -184,6 +185,9 @@ class Glacis:
         self.base_delay = base_delay
         self.max_delay = max_delay
 
+        if policy_key is not None and len(policy_key) != 32:
+            raise ValueError("policy_key must be exactly 32 bytes")
+
         if self.mode == GlacisMode.ONLINE:
             if not api_key:
                 raise ValueError("api_key is required for online mode")
@@ -191,6 +195,7 @@ class Glacis:
             self._client: Optional[httpx.Client] = httpx.Client(timeout=timeout)
             self._storage: Optional["StorageBackend"] = None
             self._signing_seed: Optional[bytes] = None
+            self._policy_key: Optional[bytes] = policy_key
             self._public_key: Optional[str] = None
             self._ed25519: Optional["Ed25519Runtime"] = None
         else:
@@ -202,6 +207,7 @@ class Glacis:
 
             self.api_key = ""  # Not used in offline mode
             self._signing_seed = signing_seed
+            self._policy_key = policy_key
             self._client = None  # No HTTP client needed
 
             # Initialize Ed25519 runtime and derive public key
@@ -511,9 +517,10 @@ class Glacis:
     ) -> SamplingDecision:
         """Deterministic sampling decision using nested L1/L2 tiers.
 
-        Given the same evidence_hash + sampling_rate + signing_seed, always
-        returns the same decision. Uses HMAC-SHA256 to produce a
-        deterministic, auditor-reproducible tag.
+        Uses HMAC-SHA256 with domain separator per spec v1.2:
+          prf_tag = HMAC-SHA256(policy_key, "sample:v1" || evidence_hash_bytes)
+
+        If policy_key was not provided, falls back to signing_seed.
 
         Tier logic (nested — L2 implies L1):
         - L2 if sample_value <= l2_rate threshold (deep inspection)
@@ -530,19 +537,22 @@ class Glacis:
         """
         import hashlib
         import hmac
+        import math
         import struct
 
-        if not self._signing_seed:
-            raise ValueError("should_review requires signing_seed (offline mode)")
+        key = self._policy_key or self._signing_seed
+        if not key:
+            raise ValueError(
+                "should_review requires policy_key or signing_seed (offline mode)"
+            )
 
         l1_rate = sampling_rate if sampling_rate is not None else self._sampling_config.l1_rate
         l2_rate = self._sampling_config.l2_rate
 
-        tag = hmac.new(
-            self._signing_seed,
-            attestation.evidence_hash.encode(),
-            hashlib.sha256,
-        ).digest()
+        # Spec v1.2: HMAC-SHA256(policy_key, "sample:v1" || evidence_hash_bytes)
+        evidence_bytes = bytes.fromhex(attestation.evidence_hash)
+        message = b"sample:v1" + evidence_bytes
+        tag = hmac.new(key, message, hashlib.sha256).digest()
         sample_value = struct.unpack(">Q", tag[:8])[0]
 
         # Nested sampling: L2 ⊂ L1
@@ -550,7 +560,7 @@ class Glacis:
             if l2_rate >= 1.0:
                 level = "L2"
             else:
-                l2_threshold = int(l2_rate * ((2**64) - 1))
+                l2_threshold = math.floor(l2_rate * ((2**64) - 1))
                 if sample_value <= l2_threshold:
                     level = "L2"
                 elif l1_rate >= 1.0:
@@ -558,14 +568,14 @@ class Glacis:
                 elif l1_rate <= 0.0:
                     level = "L0"
                 else:
-                    l1_threshold = int(l1_rate * ((2**64) - 1))
+                    l1_threshold = math.floor(l1_rate * ((2**64) - 1))
                     level = "L1" if sample_value <= l1_threshold else "L0"
         elif l1_rate >= 1.0:
             level = "L1"
         elif l1_rate <= 0.0:
             level = "L0"
         else:
-            l1_threshold = int(l1_rate * ((2**64) - 1))
+            l1_threshold = math.floor(l1_rate * ((2**64) - 1))
             level = "L1" if sample_value <= l1_threshold else "L0"
 
         return SamplingDecision(

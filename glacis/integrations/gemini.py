@@ -27,17 +27,16 @@ from typing import TYPE_CHECKING, Any, Optional
 from glacis.integrations.base import (
     ControlResultsAccumulator,
     GlacisBlockedError,
+    attest_and_store,
+    build_metadata,
+    check_input_block,
+    check_output_block,
     create_control_plane_results,
-    create_controls_runner,
-    create_glacis_client,
     get_evidence,
     get_last_receipt,
-    handle_blocked_request,
-    initialize_config,
     run_input_controls,
     run_output_controls,
-    set_last_receipt,
-    store_evidence,
+    setup_integration,
     suppress_noisy_loggers,
 )
 
@@ -55,9 +54,11 @@ def attested_gemini(
     debug: bool = False,
     offline: Optional[bool] = None,
     signing_seed: Optional[bytes] = None,
+    policy_key: Optional[bytes] = None,
     config: Optional[str] = None,
     input_controls: Optional[list["BaseControl"]] = None,
     output_controls: Optional[list["BaseControl"]] = None,
+    metadata: Optional[dict[str, str]] = None,
     **gemini_kwargs: Any,
 ) -> "Client":
     """
@@ -71,9 +72,12 @@ def attested_gemini(
         debug: Enable debug logging
         offline: Enable offline mode (local signing, no server)
         signing_seed: 32-byte Ed25519 signing seed (required for offline mode)
+        policy_key: 32-byte HMAC key for sampling (falls back to signing_seed)
         config: Path to glacis.yaml config file
         input_controls: Custom controls for input stage
         output_controls: Custom controls for output stage
+        metadata: Custom metadata to include in every attestation (string values only).
+            Merged with provider defaults. Cannot override 'provider' or 'model'.
         **gemini_kwargs: Additional arguments passed to genai.Client
 
     Returns:
@@ -93,33 +97,19 @@ def attested_gemini(
             "Install it with: pip install glacis[gemini]"
         )
 
-    # Initialize config and determine modes
-    cfg, effective_offline, effective_service_id = initialize_config(
-        config_path=config,
+    ctx = setup_integration(
+        config=config,
         offline=offline,
         glacis_api_key=glacis_api_key,
+        glacis_base_url=glacis_base_url,
         default_service_id="gemini",
         service_id=service_id,
-    )
-
-    # Create controls runner and Glacis client
-    controls_runner = create_controls_runner(
-        cfg, debug,
+        debug=debug,
+        signing_seed=signing_seed,
+        policy_key=policy_key,
         input_controls=input_controls,
         output_controls=output_controls,
-    )
-    _storage_backend = cfg.evidence_storage.backend
-    _storage_path = cfg.evidence_storage.path
-    _output_block_action = cfg.controls.output_block_action
-    glacis = create_glacis_client(
-        offline=effective_offline,
-        signing_seed=signing_seed,
-        glacis_api_key=glacis_api_key,
-        glacis_base_url=glacis_base_url,
-        debug=debug,
-        storage_backend=_storage_backend,
-        storage_path=_storage_path,
-        sampling_config=cfg.sampling,
+        metadata=metadata,
     )
 
     # Create the Gemini client
@@ -148,11 +138,11 @@ def attested_gemini(
         accumulator = ControlResultsAccumulator()
 
         # --- Input controls ---
-        if controls_runner and controls_runner.has_input_controls:
+        if ctx.controls_runner and ctx.controls_runner.has_input_controls:
             # Extract user text from contents
             user_text = _extract_user_text(contents)
             if user_text:
-                run_input_controls(controls_runner, user_text, accumulator)
+                run_input_controls(ctx.controls_runner, user_text, accumulator)
 
         # Extract system prompt hash and temperature for CPR
         from glacis.crypto import hash_payload
@@ -168,71 +158,7 @@ def attested_gemini(
             elif hasattr(config_param, "temperature"):
                 _temperature = config_param.temperature  # type: ignore[union-attr]
 
-        # Check if input controls want to block
-        if accumulator.should_block:
-            control_plane_results = create_control_plane_results(
-                accumulator, cfg, model, "gemini",
-                system_prompt_hash=_sys_prompt_hash,
-                temperature=_temperature,
-            )
-            blocking = accumulator.get_blocking_control()
-            handle_blocked_request(
-                glacis_client=glacis,
-                service_id=effective_service_id,
-                input_data={
-                    "model": model,
-                    "contents": _serialize_contents(contents),
-                },
-                control_plane_results=control_plane_results,
-                provider="gemini",
-                model=model,
-                blocking_control_type=blocking.type if blocking else "unknown",
-                blocking_score=blocking.score if blocking else None,
-                debug=debug,
-                storage_backend=_storage_backend,
-                storage_path=_storage_path,
-            )
-
-        # Make the API call
-        response = original_generate_content(*args, **kwargs)
-
-        # --- Output controls ---
-        response_text = _extract_response_text(response)
-
-        if controls_runner and controls_runner.has_output_controls and response_text:
-            run_output_controls(
-                controls_runner, response_text, accumulator,
-            )
-
-        # Build control plane results
-        control_plane_results = create_control_plane_results(
-            accumulator, cfg, model, "gemini",
-            system_prompt_hash=_sys_prompt_hash,
-            temperature=_temperature,
-        )
-
-        # Handle output blocking
-        if accumulator.should_block and controls_runner and controls_runner.has_output_controls:
-            if _output_block_action == "block":
-                blocking = accumulator.get_blocking_control()
-                handle_blocked_request(
-                    glacis_client=glacis,
-                    service_id=effective_service_id,
-                    input_data={
-                        "model": model,
-                        "contents": _serialize_contents(contents),
-                    },
-                    control_plane_results=control_plane_results,
-                    provider="gemini",
-                    model=model,
-                    blocking_control_type=blocking.type if blocking else "unknown",
-                    blocking_score=blocking.score if blocking else None,
-                    debug=debug,
-                    storage_backend=_storage_backend,
-                    storage_path=_storage_path,
-                )
-
-        # Build input/output data
+        # Build input data (reused for blocking + attestation)
         input_data: dict[str, Any] = {
             "model": model,
             "contents": _serialize_contents(contents),
@@ -244,6 +170,36 @@ def attested_gemini(
                 else str(system_instruction)
             )
 
+        # Check if input controls want to block
+        check_input_block(
+            ctx, accumulator, model, "gemini", input_data,
+            _sys_prompt_hash, _temperature,
+        )
+
+        # Make the API call
+        response = original_generate_content(*args, **kwargs)
+
+        # --- Output controls ---
+        response_text = _extract_response_text(response)
+
+        if ctx.controls_runner and ctx.controls_runner.has_output_controls and response_text:
+            run_output_controls(
+                ctx.controls_runner, response_text, accumulator,
+            )
+
+        # Build control plane results
+        control_plane_results = create_control_plane_results(
+            accumulator, ctx.cfg, model, "gemini",
+            system_prompt_hash=_sys_prompt_hash,
+            temperature=_temperature,
+        )
+
+        # Handle output blocking
+        check_output_block(
+            ctx, accumulator, model, "gemini", input_data, control_plane_results,
+        )
+
+        # Build output data for evidence
         output_data: dict[str, Any] = {
             "model_version": response.model_version,
             "candidates": [],
@@ -284,34 +240,10 @@ def attested_gemini(
                 ),
             }
 
-        metadata: dict[str, Any] = {"provider": "gemini", "model": model}
+        md = build_metadata("gemini", model, ctx.custom_metadata)
 
         # Attest and store
-        try:
-            receipt = glacis.attest(
-                service_id=effective_service_id,
-                operation_type="completion",
-                input=input_data,
-                output=output_data,
-                metadata=metadata,
-                control_plane_results=control_plane_results,
-            )
-            set_last_receipt(receipt)
-            store_evidence(
-                receipt=receipt,
-                service_id=effective_service_id,
-                operation_type="completion",
-                input_data=input_data,
-                output_data=output_data,
-                control_plane_results=control_plane_results,
-                metadata=metadata,
-                debug=debug,
-                storage_backend=_storage_backend,
-                storage_path=_storage_path,
-            )
-        except Exception as e:
-            if debug:
-                print(f"[glacis] Attestation failed: {e}")
+        attest_and_store(ctx, input_data, output_data, md, control_plane_results)
 
         return response
 

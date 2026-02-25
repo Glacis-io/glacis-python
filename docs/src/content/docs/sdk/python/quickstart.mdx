@@ -46,17 +46,11 @@ print(f"Witness status: {receipt.witness_status}")  # WITNESSED
    pip install glacis
    ```
 
-2. **Set your API key**
-   ```bash
-   export GLACIS_API_KEY=glsk_live_your_key_here
-   ```
-
-3. **Create an attestation**
+2. **Create an attestation**
    ```python
    from glacis import Glacis
-   import os
 
-   glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
+   glacis = Glacis(api_key="glsk_live_your_key_here")
 
    # Attest any AI interaction
    receipt = glacis.attest(
@@ -104,8 +98,8 @@ Each call to `attest()` returns an `Attestation` object with these fields:
 | `evidence_hash` | `str` | SHA-256 hash of your input/output (hex-encoded, 64 chars) |
 | `service_id` | `str` | Service identifier you provided |
 | `operation_type` | `str` | Operation type you provided |
-| `witness_status` | `str` | `"WITNESSED"` (online) or `"UNVERIFIED"` (offline) |
-| `signature` | `str` | Ed25519 signature (base64-encoded) |
+| `witness_status` | `str` (property) | `"WITNESSED"` (online) or `"UNVERIFIED"` (offline). Computed property -- not included in `model_dump()` output. |
+| `signature` | `str` | Ed25519 signature (hex-encoded) |
 | `public_key` | `str` | Ed25519 public key (hex-encoded) |
 | `timestamp` | `int \| None` | Unix timestamp in milliseconds |
 

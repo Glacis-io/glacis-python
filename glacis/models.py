@@ -1,7 +1,7 @@
 """
-Pydantic models for the GLACIS API (v1.2 spec).
+Pydantic models for the GLACIS API (v1.3 spec).
 
-These models match the glacis-specification-v1.2 schemas.
+These models match the glacis-specification-v1.3 schemas.
 Wire format is snake_case throughout.
 """
 
@@ -33,6 +33,12 @@ class GlacisConfig(BaseModel):
 # ==============================================================================
 
 
+# SignedTreeHead and InclusionProof keep camelCase aliases because they are
+# embedded in API response DTOs (VerifyResult, LogQueryResult) where the
+# Notary API sends camelCase JSON. The spec wire format is snake_case, but
+# these models serve double duty as API deserialization targets.
+
+
 class SignedTreeHead(BaseModel):
     """Cryptographic commitment to Merkle tree state."""
 
@@ -44,7 +50,7 @@ class SignedTreeHead(BaseModel):
     public_key: Optional[str] = Field(
         alias="publicKey", default=None, description="Ed25519 public key (hex)"
     )
-    signature: str = Field(description="Ed25519 signature (base64-encoded)")
+    signature: str = Field(description="Ed25519 signature (hex-encoded)")
 
 
 class InclusionProof(BaseModel):
@@ -164,7 +170,7 @@ class Evidence(BaseModel):
 
 
 class Review(BaseModel):
-    """L2 Attestation - Deep review record (v1.2 spec).
+    """L2 Attestation - Deep review record (v1.3 spec).
 
     Flattened from the previous Review + DeepInspection structure.
     """
@@ -286,7 +292,7 @@ class Attestation(BaseModel):
     evidence: Optional[Evidence] = Field(default=None, description="L1 sampled evidence")
     review: Optional[Review] = Field(default=None, description="L2 deep review")
     public_key: str = Field(default="", description="Arbiter Ed25519 public key (hex)")
-    signature: str = Field(default="", description="Arbiter Ed25519 signature (base64)")
+    signature: str = Field(default="", description="Arbiter Ed25519 signature (hex)")
     sampling_decision: Optional[SamplingDecision] = Field(default=None)
 
     # SDK convenience (not on wire)
@@ -353,6 +359,11 @@ class LogQueryParams(BaseModel):
     end: Optional[str] = Field(default=None, description="End timestamp (ISO 8601)")
     limit: Optional[int] = Field(default=50, ge=1, le=1000)
     cursor: Optional[str] = Field(default=None, description="Pagination cursor")
+
+
+# Note: LogEntry, LogQueryResult, AttestationEntry, OrgInfo, Verification keep
+# camelCase aliases because they deserialize from the existing Notary API which
+# sends camelCase JSON. These are API response DTOs, not spec wire-format models.
 
 
 class LogEntry(BaseModel):
