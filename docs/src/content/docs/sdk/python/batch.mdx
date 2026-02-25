@@ -1,0 +1,163 @@
+---
+title: Batch Operations
+description: Group related attestations with operation IDs, decompose batch results into individual items, and create revision chains.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Glacis supports batch operations where multiple attestations are linked together. This is useful for scenarios like batch processing, decomposing results into individual items, and creating revision chains.
+
+## Overview
+
+Three fields on `Attestation` enable batch operations:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `operation_id` | `str` | UUID linking all attestations in the same operation |
+| `operation_sequence` | `int` | Ordinal position within the operation (0-based) |
+| `supersedes` | `str \| None` | Attestation ID this replaces (for revision chains) |
+
+When you call `attest()` without specifying an `operation_id`, a new UUID is auto-generated. The `operation_sequence` defaults to `0`.
+
+## OperationContext
+
+Use `glacis.operation()` to create an `OperationContext` that manages the `operation_id` and auto-increments the sequence number:
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+op = glacis.operation()
+
+# First attestation: sequence 0
+r1 = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "Step 1"},
+    output={"response": "Result 1"},
+    operation_id=op.operation_id,
+    operation_sequence=op.next_sequence(),  # 0
+)
+
+# Second attestation: sequence 1
+r2 = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "Step 2"},
+    output={"response": "Result 2"},
+    operation_id=op.operation_id,
+    operation_sequence=op.next_sequence(),  # 1
+)
+
+print(r1.operation_id == r2.operation_id)  # True
+print(r1.operation_sequence)               # 0
+print(r2.operation_sequence)               # 1
+```
+
+You can also provide an explicit `operation_id`:
+
+```python
+op = glacis.operation(operation_id="my-custom-operation-id")
+```
+
+## Decompose
+
+The `decompose()` method breaks a batch attestation into individual item attestations. All decomposed items share the parent's `operation_id`, with incrementing `operation_sequence` values starting after the parent's sequence.
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+# Create a batch attestation
+batch_receipt = glacis.attest(
+    service_id="my-service",
+    operation_type="batch",
+    input={"source": "knowledge-base.pdf"},
+    output={"qa_pairs": [
+        {"question": "What is X?", "answer": "X is..."},
+        {"question": "How does Y work?", "answer": "Y works by..."},
+        {"question": "Why use Z?", "answer": "Z is useful for..."},
+    ]},
+)
+
+# Decompose into individual item attestations
+items = [
+    {"question": "What is X?", "answer": "X is..."},
+    {"question": "How does Y work?", "answer": "Y works by..."},
+    {"question": "Why use Z?", "answer": "Z is useful for..."},
+]
+
+item_receipts = glacis.decompose(
+    attestation=batch_receipt,
+    items=items,
+    operation_type="item",
+    source_data={"source": "knowledge-base.pdf"},
+)
+
+# All items share the same operation_id
+for r in item_receipts:
+    print(f"{r.id}: op={r.operation_id}, seq={r.operation_sequence}")
+```
+
+### decompose() Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `attestation` | `Attestation` | (required) | Parent batch attestation |
+| `items` | `list[dict]` | (required) | Individual items to attest |
+| `operation_type` | `str` | `"item"` | Operation type for each decomposed item |
+| `source_data` | `Any` | `None` | Shared input data for all items. When falsy (`None`, `{}`, etc.), defaults to `{"parent_attestation_id": attestation.id}` |
+
+### Sequence Numbering
+
+Decomposed items start their sequence at `parent.operation_sequence + 1`:
+
+| Attestation | `operation_sequence` |
+|-------------|---------------------|
+| Parent (batch) | `0` |
+| Item 1 | `1` |
+| Item 2 | `2` |
+| Item 3 | `3` |
+
+## Revision Chains with supersedes
+
+Use the `supersedes` parameter to create revision chains, linking a new attestation to the one it replaces:
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+# Original attestation
+original = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "Explain quantum computing"},
+    output={"response": "Quantum computing uses qubits..."},
+)
+
+# Revised attestation (supersedes the original)
+revised = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "Explain quantum computing"},
+    output={"response": "Quantum computing leverages quantum mechanics..."},
+    supersedes=original.id,
+)
+
+print(f"Original: {original.id}")
+print(f"Revised: {revised.id}")
+print(f"Supersedes: {revised.supersedes}")  # original.id
+```
+
+This creates an auditable revision history where you can trace from any attestation back through its predecessors.
+
+## See Also
+
+- [API Reference](/sdk/python/api/) -- `Attestation`, `OperationContext` models
+- [Offline Mode](/sdk/python/offline/) -- using batch operations in offline mode

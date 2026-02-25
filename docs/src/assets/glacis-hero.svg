@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" fill="none">
+  <defs>
+    <linearGradient id="hero-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#1e40af" stop-opacity="0.1"/>
+    </linearGradient>
+    <linearGradient id="shield-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background pattern -->
+  <rect width="400" height="300" fill="url(#hero-gradient)"/>
+
+  <!-- Grid pattern -->
+  <g stroke="#2563eb" stroke-opacity="0.1" stroke-width="1">
+    <line x1="0" y1="50" x2="400" y2="50"/>
+    <line x1="0" y1="100" x2="400" y2="100"/>
+    <line x1="0" y1="150" x2="400" y2="150"/>
+    <line x1="0" y1="200" x2="400" y2="200"/>
+    <line x1="0" y1="250" x2="400" y2="250"/>
+    <line x1="50" y1="0" x2="50" y2="300"/>
+    <line x1="100" y1="0" x2="100" y2="300"/>
+    <line x1="150" y1="0" x2="150" y2="300"/>
+    <line x1="200" y1="0" x2="200" y2="300"/>
+    <line x1="250" y1="0" x2="250" y2="300"/>
+    <line x1="300" y1="0" x2="300" y2="300"/>
+    <line x1="350" y1="0" x2="350" y2="300"/>
+  </g>
+
+  <!-- Central shield -->
+  <g transform="translate(150, 80)">
+    <path d="M50 0 L100 15 L100 60 C100 100 75 120 50 130 C25 120 0 100 0 60 L0 15 Z"
+          fill="url(#shield-gradient)" opacity="0.9"/>
+    <path d="M35 55 L45 65 L70 40"
+          stroke="white" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- Connection lines -->
+  <g stroke="#2563eb" stroke-width="2" stroke-dasharray="5,5" opacity="0.4">
+    <!-- Left connections -->
+    <line x1="50" y1="100" x2="150" y2="130"/>
+    <line x1="50" y1="200" x2="150" y2="170"/>
+    <!-- Right connections -->
+    <line x1="250" y1="130" x2="350" y2="100"/>
+    <line x1="250" y1="170" x2="350" y2="200"/>
+  </g>
+
+  <!-- Node circles -->
+  <g fill="#2563eb">
+    <!-- Left nodes -->
+    <circle cx="50" cy="100" r="8" opacity="0.6"/>
+    <circle cx="50" cy="200" r="8" opacity="0.6"/>
+    <!-- Right nodes -->
+    <circle cx="350" cy="100" r="8" opacity="0.6"/>
+    <circle cx="350" cy="200" r="8" opacity="0.6"/>
+  </g>
+
+  <!-- Labels -->
+  <g fill="#1e293b" font-family="system-ui, sans-serif" font-size="10">
+    <text x="30" y="85" text-anchor="middle">Your App</text>
+    <text x="30" y="215" text-anchor="middle">Python SDK</text>
+    <text x="370" y="85" text-anchor="middle">Witness</text>
+    <text x="370" y="215" text-anchor="middle">Receipt</text>
+  </g>
+
+  <!-- Attestation flow indicator -->
+  <g transform="translate(160, 230)">
+    <rect x="0" y="0" width="80" height="25" rx="12" fill="#2563eb" opacity="0.1"/>
+    <text x="40" y="17" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#2563eb" font-weight="600">
+      Zero-Egress
+    </text>
+  </g>
+</svg>

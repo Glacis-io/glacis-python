@@ -1,0 +1,1023 @@
+---
+title: API Reference
+description: Complete API reference for the Glacis Python SDK.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Glacis Client
+
+### Constructor
+
+```python
+from glacis import Glacis
+
+# Online mode (default)
+glacis = Glacis(api_key="glsk_live_...")
+
+# Offline mode
+glacis = Glacis(mode="offline", signing_seed=my_32_byte_seed)
+
+# Offline with sampling config
+from glacis.config import SamplingConfig
+glacis = Glacis(
+    mode="offline",
+    signing_seed=my_32_byte_seed,
+    storage_backend="sqlite",
+    sampling_config=SamplingConfig(l1_rate=0.1, l2_rate=0.01),
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `api_key` | `Optional[str]` | Online | API key (`glsk_live_...`). Required for online mode. |
+| `base_url` | `str` | No | API base URL. Default: `https://api.glacis.io` |
+| `debug` | `bool` | No | Enable debug logging. Default: `False` |
+| `timeout` | `float` | No | Request timeout in seconds. Default: `30.0` |
+| `max_retries` | `int` | No | Maximum retries for transient errors. Default: `3` |
+| `base_delay` | `float` | No | Base delay (seconds) for exponential backoff. Default: `1.0` |
+| `max_delay` | `float` | No | Maximum delay (seconds) for backoff. Default: `30.0` |
+| `mode` | `Literal["online", "offline"]` | No | Operating mode. Default: `"online"` |
+| `signing_seed` | `Optional[bytes]` | Offline | 32-byte Ed25519 seed. Required for offline mode. |
+| `db_path` | `Optional[Path]` | No | SQLite database path for offline receipts. Default: `~/.glacis/glacis.db` |
+| `storage_backend` | `str` | No | Storage backend type: `"sqlite"` or `"json"`. Default: `"sqlite"` |
+| `storage_path` | `Optional[Path]` | No | Base path for storage. Overrides `db_path`. |
+| `sampling_config` | `Optional[SamplingConfig]` | No | Sampling configuration (`l1_rate`, `l2_rate`). Default: `l1_rate=1.0`, `l2_rate=0.0` |
+
+The client supports context manager usage:
+
+```python
+with Glacis(api_key="glsk_live_...") as glacis:
+    attestation = glacis.attest(...)
+```
+
+---
+
+### glacis.attest()
+
+Create an attestation for an AI operation. Input and output are hashed locally using RFC 8785 canonical JSON + SHA-256. Only the hash is sent to the server -- the actual data never leaves your infrastructure.
+
+```python
+attestation = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "Hello"},
+    output={"response": "Hi there"},
+    metadata={"model": "gpt-4", "temperature": "0.7"},
+    control_plane_results=cpr,
+    operation_id="op-uuid",
+    operation_sequence=0,
+    supersedes="att_previous_id",
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `service_id` | `str` | Yes | Identifier for your service |
+| `operation_type` | `str` | Yes | Type of operation (e.g., `"inference"`, `"embedding"`, `"completion"`, `"classification"`) |
+| `input` | `Any` | Yes | Input data (hashed locally, never sent to the server) |
+| `output` | `Any` | Yes | Output data (hashed locally, never sent to the server) |
+| `metadata` | `Optional[dict[str, str]]` | No | Additional metadata (stored locally for evidence) |
+| `control_plane_results` | `Optional[ControlPlaneResults \| dict]` | No | Control plane results (typed model or dict) |
+| `operation_id` | `Optional[str]` | No | UUID linking attestations in the same operation |
+| `operation_sequence` | `Optional[int]` | No | Ordinal sequence within the operation |
+| `supersedes` | `Optional[str]` | No | Attestation ID this replaces (revision chains) |
+
+**Returns:** [`Attestation`](#attestation)
+
+**Raises:**
+- `GlacisApiError` on API errors (online mode)
+- `GlacisRateLimitError` when rate limited (online mode)
+
+---
+
+### glacis.verify()
+
+Verify an attestation. For online attestations, calls the server API. For offline attestations, verifies the Ed25519 signature locally.
+
+```python
+# Verify with an Attestation object
+result = glacis.verify(attestation)
+
+# Verify with an attestation ID string
+result = glacis.verify("att_abc123")
+
+# Online verification
+if isinstance(result, VerifyResult):
+    print(result.valid)
+    print(result.verification.signature_valid)
+
+# Offline verification
+if isinstance(result, OfflineVerifyResult):
+    print(result.valid)
+    print(result.signature_valid)
+    print(result.witness_status)  # "UNVERIFIED"
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `receipt` | `str \| Attestation` | Yes | Attestation ID string or `Attestation` object |
+
+**Returns:** [`VerifyResult`](#verifyresult) (online) or [`OfflineVerifyResult`](#offlineverifyresult) (offline)
+
+---
+
+### glacis.decompose()
+
+Decompose a batch attestation into individual item attestations. All decomposed items share the same `operation_id` as the parent, with incrementing `operation_sequence` starting after the parent's sequence.
+
+```python
+parent = glacis.attest(
+    service_id="my-service",
+    operation_type="batch",
+    input={"document": "..."},
+    output={"items": [item1, item2, item3]},
+)
+
+children = glacis.decompose(
+    attestation=parent,
+    items=[item1, item2, item3],
+    operation_type="qa_pair",
+    source_data={"document": "..."},
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `attestation` | `Attestation` | Yes | The parent batch attestation |
+| `items` | `list[dict[str, Any]]` | Yes | Individual items to attest |
+| `operation_type` | `str` | No | Operation type for decomposed items. Default: `"item"` |
+| `source_data` | `Any` | No | Shared input data for all items. When falsy (`None`, `{}`, etc.), defaults to `{"parent_attestation_id": attestation.id}` |
+
+**Returns:** `list[Attestation]`
+
+---
+
+### glacis.should_review()
+
+Deterministic sampling decision using nested L1/L2 tiers. Given the same `evidence_hash` + `signing_seed`, always returns the same decision. Uses HMAC-SHA256 to produce a deterministic, auditor-reproducible tag.
+
+Tier logic (nested -- L2 implies L1):
+- **L2** if `sample_value` ≤ `l2_rate` threshold (deep inspection)
+- **L1** if `sample_value` ≤ `l1_rate` threshold (evidence collection)
+- **L0** otherwise (control plane results only)
+
+```python
+decision = glacis.should_review(attestation, sampling_rate=0.1)
+print(decision.level)         # "L0", "L1", or "L2"
+print(decision.sample_value)  # uint64 derived from HMAC
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `attestation` | `Attestation` | Yes | The attestation to evaluate for sampling |
+| `sampling_rate` | `Optional[float]` | No | Explicit L1 probability override (0.0-1.0). If `None`, uses `l1_rate` from sampling config. |
+
+**Returns:** [`SamplingDecision`](#samplingdecision)
+
+**Raises:** `ValueError` if called without `signing_seed` (requires offline mode)
+
+---
+
+### glacis.query_log()
+
+Query the public transparency log with optional filters and pagination.
+
+```python
+result = glacis.query_log(
+    service_id="my-service",
+    start="2025-01-01T00:00:00Z",
+    end="2025-12-31T23:59:59Z",
+    limit=100,
+)
+
+for entry in result.entries:
+    print(entry.attestation_id, entry.evidence_hash)
+
+if result.has_more:
+    next_page = glacis.query_log(cursor=result.next_cursor)
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `org_id` | `Optional[str]` | No | Filter by organization ID |
+| `service_id` | `Optional[str]` | No | Filter by service ID |
+| `start` | `Optional[str]` | No | Start timestamp (ISO 8601) |
+| `end` | `Optional[str]` | No | End timestamp (ISO 8601) |
+| `limit` | `Optional[int]` | No | Maximum results. Default: 50, max: 1000 |
+| `cursor` | `Optional[str]` | No | Pagination cursor from previous result |
+| `operation_id` | `Optional[str]` | No | Filter by operation ID |
+
+**Returns:** [`LogQueryResult`](#logqueryresult)
+
+---
+
+### glacis.get_tree_head()
+
+Get the current signed tree head. This is a public endpoint that does not require authentication.
+
+```python
+tree_head = glacis.get_tree_head()
+print(tree_head.tree_size, tree_head.root_hash)
+```
+
+**Returns:** [`TreeHeadResponse`](#treeheadresponse)
+
+---
+
+### glacis.operation()
+
+Create an `OperationContext` for grouping related attestations under the same `operation_id` with auto-incrementing sequence numbers.
+
+```python
+op = glacis.operation()
+
+r1 = glacis.attest(
+    service_id="my-service",
+    operation_type="step-1",
+    input=data_in,
+    output=data_out,
+    operation_id=op.operation_id,
+    operation_sequence=op.next_sequence(),  # 0
+)
+
+r2 = glacis.attest(
+    service_id="my-service",
+    operation_type="step-2",
+    input=data_in_2,
+    output=data_out_2,
+    operation_id=op.operation_id,
+    operation_sequence=op.next_sequence(),  # 1
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `operation_id` | `Optional[str]` | No | Explicit operation ID. Default: auto-generated UUID |
+
+**Returns:** [`OperationContext`](#operationcontext)
+
+---
+
+### glacis.hash()
+
+Hash a payload using RFC 8785 canonical JSON + SHA-256. Produces identical hashes across Python, TypeScript, and Rust runtimes.
+
+```python
+h = glacis.hash({"b": 2, "a": 1})
+# Equivalent to hash_payload({"b": 2, "a": 1})
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `payload` | `Any` | Yes | Any JSON-serializable value |
+
+**Returns:** `str` -- hex-encoded SHA-256 hash (64 characters)
+
+---
+
+### glacis.get_last_receipt()
+
+Get the most recent offline attestation from local storage. Only available in offline mode.
+
+```python
+last = glacis.get_last_receipt()
+if last:
+    print(last.id, last.evidence_hash)
+```
+
+**Returns:** `Optional[Attestation]`
+
+**Raises:** `RuntimeError` if called in online mode
+
+---
+
+## AsyncGlacis
+
+Asynchronous version of the Glacis client for use with `asyncio`. Supports online mode only.
+
+```python
+from glacis import AsyncGlacis
+
+async with AsyncGlacis(api_key="glsk_live_...") as glacis:
+    attestation = await glacis.attest(
+        service_id="my-service",
+        operation_type="inference",
+        input={"prompt": "Hello"},
+        output={"response": "Hi there"},
+    )
+
+    result = await glacis.verify(attestation.id)
+    entries = await glacis.query_log(service_id="my-service")
+    tree_head = await glacis.get_tree_head()
+```
+
+**Constructor parameters:** `api_key` (`str`, **required**), `base_url`, `debug`, `timeout`, `max_retries`, `base_delay`, `max_delay` (same types and defaults as `Glacis` for the remaining parameters).
+
+**Async methods** (must be `await`ed):
+
+| Method | Signature |
+|--------|-----------|
+| `attest()` | Same parameters as `Glacis.attest()`. Returns `Attestation`. |
+| `verify()` | Accepts `str` (attestation ID). Returns `VerifyResult`. |
+| `query_log()` | Same parameters as `Glacis.query_log()`. Returns `LogQueryResult`. |
+| `get_tree_head()` | No parameters. Returns `TreeHeadResponse`. |
+
+**Synchronous methods** (no `await`):
+
+| Method | Description |
+|--------|-------------|
+| `hash(payload)` | RFC 8785 + SHA-256. Returns `str`. |
+
+<Aside type="note">
+  `AsyncGlacis` is online-only. The following `Glacis` methods are not available on `AsyncGlacis`: `decompose`, `should_review`, `operation`, `get_last_receipt`. Note that `decompose` works in both online and offline mode on the synchronous `Glacis` client; `should_review` requires offline mode (uses the `signing_seed` for HMAC).
+</Aside>
+
+---
+
+## OperationContext
+
+Tracks `operation_id` and auto-increments `operation_sequence` for grouping related attestations.
+
+```python
+from glacis import OperationContext
+
+op = OperationContext()               # auto-generated UUID
+op = OperationContext("my-custom-id") # explicit ID
+
+op.operation_id     # str — the operation ID
+op.next_sequence()  # 0
+op.next_sequence()  # 1
+op.next_sequence()  # 2
+```
+
+| Attribute / Method | Type | Description |
+|--------------------|------|-------------|
+| `operation_id` | `str` | The operation ID (UUID or custom string) |
+| `next_sequence()` | `int` | Returns the next sequence number (starts at 0, auto-increments) |
+
+---
+
+## Models
+
+All models are Pydantic `BaseModel` subclasses importable from `glacis.models`.
+
+```python
+from glacis.models import (
+    Attestation,
+    Receipt,
+    VerifyResult,
+    OfflineVerifyResult,
+    Evidence,
+    Review,
+    SamplingDecision,
+    ControlPlaneResults,
+    PolicyContext,
+    ModelInfo,
+    Determination,
+    ControlExecution,
+    InclusionProof,
+    SignedTreeHead,
+    TransparencyProofs,
+    LogQueryResult,
+    LogEntry,
+    TreeHeadResponse,
+    GlacisApiError,
+    GlacisRateLimitError,
+)
+```
+
+### Attestation
+
+Unified attestation model. Returned by `glacis.attest()`.
+
+```python
+class Attestation(BaseModel):
+    id: str
+    operation_id: str
+    operation_sequence: int
+    service_id: str
+    operation_type: str
+    evidence_hash: str
+    cpr_hash: Optional[str]
+    supersedes: Optional[str]
+    control_plane_results: Optional[dict[str, Any]]
+    evidence: Optional[Evidence]
+    review: Optional[Review]
+    public_key: str
+    signature: str
+    sampling_decision: Optional[SamplingDecision]
+    is_offline: bool
+    timestamp: Optional[int]
+
+    @property
+    def witness_status(self) -> str: ...  # "WITNESSED" or "UNVERIFIED"
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Attestation ID (`att_xxx` online, `oatt_xxx` offline) |
+| `operation_id` | `str` | UUID linking attestations in the same operation |
+| `operation_sequence` | `int` | Ordinal sequence within the operation |
+| `service_id` | `str` | Service identifier |
+| `operation_type` | `str` | Type of operation |
+| `evidence_hash` | `str` | SHA-256 of canonical JSON `{"input": ..., "output": ...}` |
+| `cpr_hash` | `Optional[str]` | SHA-256 of canonical JSON control plane results |
+| `supersedes` | `Optional[str]` | Attestation ID this replaces (revision chains) |
+| `control_plane_results` | `Optional[dict[str, Any]]` | Control plane results (dict on wire) |
+| `evidence` | `Optional[Evidence]` | L1 sampled evidence payload |
+| `review` | `Optional[Review]` | L2 deep review record |
+| `public_key` | `str` | Arbiter Ed25519 public key (hex) |
+| `signature` | `str` | Arbiter Ed25519 signature (base64) |
+| `sampling_decision` | `Optional[SamplingDecision]` | Server-assigned sampling tier |
+| `is_offline` | `bool` | Whether this is an offline attestation |
+| `timestamp` | `Optional[int]` | Unix timestamp in milliseconds |
+| `witness_status` | `str` (property) | `"WITNESSED"` if online, `"UNVERIFIED"` if offline |
+
+---
+
+### Receipt
+
+Notary receipt wrapping an `Attestation` with transparency proofs.
+
+```python
+class Receipt(BaseModel):
+    schema_version: str
+    attestation: Attestation
+    timestamp: int
+    epoch_id: str
+    heartbeat_epoch: int
+    attestation_hash: str
+    binary_hash: str
+    network_state_hash: str
+    mono_counter: int
+    wall_time_ns: str
+    transparency_proofs: Optional[TransparencyProofs]
+    public_key: str
+    signature: str
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `str` | Schema version. Default: `"1.0"` |
+| `attestation` | `Attestation` | The attestation this receipt covers |
+| `timestamp` | `int` | Unix epoch timestamp in milliseconds |
+| `epoch_id` | `str` | Epoch identifier |
+| `heartbeat_epoch` | `int` | Heartbeat epoch counter |
+| `attestation_hash` | `str` | SHA-256 of canonical attestation |
+| `binary_hash` | `str` | Hash of the notary binary |
+| `network_state_hash` | `str` | Hash of the network state |
+| `mono_counter` | `int` | Monotonic counter |
+| `wall_time_ns` | `str` | Wall clock time in nanoseconds |
+| `transparency_proofs` | `Optional[TransparencyProofs]` | RFC 6962 transparency proofs |
+| `public_key` | `str` | Notary Ed25519 public key |
+| `signature` | `str` | Notary Ed25519 signature |
+
+---
+
+### VerifyResult
+
+Result of verifying an online attestation. Returned by `glacis.verify()` for online attestations.
+
+```python
+class VerifyResult(BaseModel):
+    valid: bool
+    attestation: Optional[AttestationEntry]
+    org: Optional[OrgInfo]
+    verification: Optional[Verification]
+    proof: Optional[InclusionProof]
+    tree_head: Optional[SignedTreeHead]
+    error: Optional[str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `valid` | `bool` | Overall validity of the attestation |
+| `attestation` | `Optional[AttestationEntry]` | The attestation entry from the log |
+| `org` | `Optional[OrgInfo]` | Organization information |
+| `verification` | `Optional[Verification]` | Verification details (contains `signature_valid`, `proof_valid`) |
+| `proof` | `Optional[InclusionProof]` | Merkle inclusion proof |
+| `tree_head` | `Optional[SignedTreeHead]` | Signed tree head at verification time |
+| `error` | `Optional[str]` | Error message if invalid |
+
+Access signature and proof validity through the nested `verification` object:
+
+```python
+result = glacis.verify("att_abc123")
+if result.valid:
+    print(result.verification.signature_valid)  # bool
+    print(result.verification.proof_valid)       # bool
+```
+
+---
+
+### OfflineVerifyResult
+
+Result of verifying an offline attestation. Returned by `glacis.verify()` for offline attestations.
+
+```python
+class OfflineVerifyResult(BaseModel):
+    valid: bool
+    witness_status: Literal["UNVERIFIED"]
+    signature_valid: bool
+    attestation: Optional[Attestation]
+    error: Optional[str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `valid` | `bool` | Whether the signature is valid |
+| `witness_status` | `Literal["UNVERIFIED"]` | Always `"UNVERIFIED"` for offline attestations |
+| `signature_valid` | `bool` | Whether the Ed25519 signature is valid |
+| `attestation` | `Optional[Attestation]` | The verified attestation |
+| `error` | `Optional[str]` | Error message if invalid |
+
+---
+
+### Evidence
+
+L1 sampled evidence payload attached to attestations when sampled at L1 or L2 tier.
+
+```python
+class Evidence(BaseModel):
+    sample_probability: float  # 0.0 - 1.0
+    data: dict[str, Any]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sample_probability` | `float` | Probability this evidence was sampled (0.0-1.0) |
+| `data` | `dict[str, Any]` | The evidence payload (typically `{"input": ..., "output": ...}`) |
+
+---
+
+### Review
+
+L2 deep review record.
+
+```python
+class Review(BaseModel):
+    sample_probability: float
+    judge_ids: list[str]
+    conformity_score: float
+    recommendation: Literal["uphold", "borderline", "escalate"]
+    rationale: str
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sample_probability` | `float` | Probability this item was sampled for review (0.0-1.0) |
+| `judge_ids` | `list[str]` | IDs of judges that evaluated this item |
+| `conformity_score` | `float` | Aggregate conformity score (0.0-1.0) |
+| `recommendation` | `Literal["uphold", "borderline", "escalate"]` | Derived action |
+| `rationale` | `str` | Explanation for the recommendation |
+
+---
+
+### SamplingDecision
+
+Deterministic, auditor-reproducible sampling tier assignment.
+
+```python
+class SamplingDecision(BaseModel):
+    level: str                # "L0", "L1", or "L2"
+    sample_value: int         # uint64 from HMAC-SHA256
+    prf_tag: list[int]        # Full HMAC-SHA256 tag bytes
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `level` | `str` | Sampling tier: `"L0"`, `"L1"`, or `"L2"` |
+| `sample_value` | `int` | First 8 bytes of `prf_tag` as big-endian uint64 |
+| `prf_tag` | `list[int]` | Full HMAC-SHA256 tag over the evidence hash |
+
+---
+
+### ControlPlaneResults
+
+Control plane results. Accepted by `glacis.attest()` as a typed model or plain dict.
+
+```python
+class ControlPlaneResults(BaseModel):
+    policy: PolicyContext
+    determination: Determination
+    controls: list[ControlExecution]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `policy` | `PolicyContext` | Policy metadata |
+| `determination` | `Determination` | Whether the request was forwarded or blocked |
+| `controls` | `list[ControlExecution]` | Records of individual control executions |
+
+---
+
+### PolicyContext
+
+```python
+class PolicyContext(BaseModel):
+    id: str
+    version: str
+    model: Optional[ModelInfo]
+    environment: str          # Default: "development"
+    tags: list[str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Policy identifier |
+| `version` | `str` | Policy version |
+| `model` | `Optional[ModelInfo]` | Model information |
+| `environment` | `str` | Environment (e.g., `"production"`, `"staging"`) |
+| `tags` | `list[str]` | Custom tags |
+
+---
+
+### ModelInfo
+
+```python
+class ModelInfo(BaseModel):
+    model_id: str
+    provider: str
+    system_prompt_hash: Optional[str]
+    temperature: Optional[float]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_id` | `str` | Model identifier |
+| `provider` | `str` | Provider name (e.g., `"openai"`, `"anthropic"`) |
+| `system_prompt_hash` | `Optional[str]` | SHA-256 hash of the system prompt |
+| `temperature` | `Optional[float]` | Temperature setting |
+
+---
+
+### Determination
+
+```python
+class Determination(BaseModel):
+    action: Literal["forwarded", "blocked"]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | `Literal["forwarded", "blocked"]` | Whether the request was forwarded or blocked |
+
+---
+
+### ControlExecution
+
+Record of an individual control execution in the pipeline.
+
+```python
+class ControlExecution(BaseModel):
+    id: str
+    type: ControlType
+    version: str
+    provider: str
+    latency_ms: int
+    status: ControlStatus
+    score: Optional[float]
+    result_hash: Optional[str]
+    stage: Literal["input", "output"]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Control execution identifier |
+| `type` | `ControlType` | Control type (see below) |
+| `version` | `str` | Control version |
+| `provider` | `str` | Control provider |
+| `latency_ms` | `int` | Processing time in milliseconds |
+| `status` | `ControlStatus` | Status: `"forward"`, `"flag"`, `"block"`, or `"error"` |
+| `score` | `Optional[float]` | Numeric score (e.g., jailbreak probability) |
+| `result_hash` | `Optional[str]` | Hash of the control result |
+| `stage` | `Literal["input", "output"]` | Pipeline stage. Default: `"input"` |
+
+**Type aliases:**
+
+```python
+ControlType = Literal[
+    "content_safety", "pii", "jailbreak", "topic",
+    "prompt_security", "grounding", "word_filter", "custom",
+]
+
+ControlStatus = Literal["forward", "flag", "block", "error"]
+```
+
+---
+
+### InclusionProof
+
+RFC 6962 Merkle inclusion proof.
+
+```python
+class InclusionProof(BaseModel):
+    leaf_index: int
+    tree_size: int
+    hashes: list[str]
+    root_hash: Optional[str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `leaf_index` | `int` | Leaf index in tree (0-based) |
+| `tree_size` | `int` | Tree size when proof was generated |
+| `hashes` | `list[str]` | Sibling hashes (hex-encoded) |
+| `root_hash` | `Optional[str]` | Root hash (hex-encoded) |
+
+---
+
+### SignedTreeHead
+
+Cryptographic commitment to Merkle tree state.
+
+```python
+class SignedTreeHead(BaseModel):
+    tree_size: int
+    timestamp: str
+    root_hash: str
+    public_key: Optional[str]
+    signature: str
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tree_size` | `int` | Total number of leaves |
+| `timestamp` | `str` | ISO 8601 timestamp when signed |
+| `root_hash` | `str` | Root hash (hex-encoded) |
+| `public_key` | `Optional[str]` | Ed25519 public key (hex) |
+| `signature` | `str` | Ed25519 signature (base64-encoded) |
+
+---
+
+### TransparencyProofs
+
+RFC 6962 transparency proof structure.
+
+```python
+class TransparencyProofs(BaseModel):
+    inclusion_proof: InclusionProof
+    sth_curr: SignedTreeHead
+    sth_prev: SignedTreeHead
+    consistency_path: list[str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `inclusion_proof` | `InclusionProof` | Merkle inclusion proof |
+| `sth_curr` | `SignedTreeHead` | Current signed tree head |
+| `sth_prev` | `SignedTreeHead` | Previous signed tree head |
+| `consistency_path` | `list[str]` | Consistency proof hashes |
+
+---
+
+### LogQueryResult
+
+Paginated result from `glacis.query_log()`.
+
+```python
+class LogQueryResult(BaseModel):
+    entries: list[LogEntry]
+    has_more: bool
+    next_cursor: Optional[str]
+    count: int
+    tree_head: Optional[SignedTreeHead]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entries` | `list[LogEntry]` | Log entries |
+| `has_more` | `bool` | Whether more results exist |
+| `next_cursor` | `Optional[str]` | Cursor for the next page |
+| `count` | `int` | Number of entries returned |
+| `tree_head` | `Optional[SignedTreeHead]` | Current tree head |
+
+---
+
+### LogEntry
+
+Individual log entry in query results.
+
+```python
+class LogEntry(BaseModel):
+    attestation_id: str
+    entry_id: Optional[str]
+    timestamp: Optional[str]
+    org_id: Optional[str]
+    org_name: Optional[str]
+    service_id: Optional[str]
+    operation_type: Optional[str]
+    evidence_hash: Optional[str]
+    signature: Optional[str]
+    leaf_index: Optional[int]
+    leaf_hash: Optional[str]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attestation_id` | `str` | Attestation ID |
+| `entry_id` | `Optional[str]` | Log entry ID |
+| `timestamp` | `Optional[str]` | Timestamp (ISO 8601) |
+| `org_id` | `Optional[str]` | Organization ID |
+| `org_name` | `Optional[str]` | Organization name |
+| `service_id` | `Optional[str]` | Service ID |
+| `operation_type` | `Optional[str]` | Operation type |
+| `evidence_hash` | `Optional[str]` | Evidence hash |
+| `signature` | `Optional[str]` | Signature |
+| `leaf_index` | `Optional[int]` | Leaf index in the Merkle tree |
+| `leaf_hash` | `Optional[str]` | Leaf hash |
+
+---
+
+### TreeHeadResponse
+
+Response from `glacis.get_tree_head()`.
+
+```python
+class TreeHeadResponse(BaseModel):
+    tree_size: int
+    root_hash: str
+    timestamp: str
+    signature: str
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tree_size` | `int` | Total number of leaves |
+| `root_hash` | `str` | Merkle root hash (hex-encoded) |
+| `timestamp` | `str` | ISO 8601 timestamp |
+| `signature` | `str` | Ed25519 signature |
+
+---
+
+### GlacisMode
+
+Operating mode enum for the Glacis client.
+
+```python
+from glacis import GlacisMode
+
+class GlacisMode(str, Enum):
+    ONLINE = "online"
+    OFFLINE = "offline"
+```
+
+---
+
+## Crypto Utilities
+
+Importable from `glacis.crypto`.
+
+### hash_payload()
+
+Hash a payload using RFC 8785 canonical JSON + SHA-256. This is the primary hashing function for the transparency log. Produces identical hashes across Python, TypeScript, and Rust runtimes.
+
+```python
+from glacis.crypto import hash_payload
+
+# Key order does not matter — canonical JSON sorts keys
+hash1 = hash_payload({"b": 2, "a": 1})
+hash2 = hash_payload({"a": 1, "b": 2})
+assert hash1 == hash2
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `data` | `Any` | Yes | Any JSON-serializable value |
+
+**Returns:** `str` -- hex-encoded SHA-256 hash (64 characters)
+
+### canonical_json()
+
+Serialize data to RFC 8785 canonical JSON. Deterministic JSON that is identical across all runtimes.
+
+```python
+from glacis.crypto import canonical_json
+
+canonical_json({"b": 2, "a": 1})
+# '{"a":1,"b":2}'
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `data` | `Any` | Yes | Any JSON-serializable value |
+
+**Returns:** `str` -- canonical JSON string
+
+**Raises:** `ValueError` if data contains non-serializable values (`NaN`, `Infinity`)
+
+<Aside type="note">
+  RFC 8785 ensures that the same logical JSON object produces the same hash across Python, TypeScript, and Rust implementations.
+</Aside>
+
+---
+
+## Exceptions
+
+### GlacisApiError
+
+Error from the Glacis API. Base class for API-related exceptions.
+
+```python
+from glacis.models import GlacisApiError
+
+try:
+    attestation = glacis.attest(...)
+except GlacisApiError as e:
+    print(e.status)    # HTTP status code (int)
+    print(e.code)      # Error code string (Optional[str])
+    print(e.details)   # Error details dict (Optional[dict])
+```
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `status` | `int` | HTTP status code |
+| `code` | `Optional[str]` | Error code string |
+| `details` | `Optional[dict[str, Any]]` | Error details |
+
+---
+
+### GlacisRateLimitError
+
+Subclass of `GlacisApiError` raised when the API returns HTTP 429.
+
+```python
+from glacis.models import GlacisRateLimitError
+
+try:
+    attestation = glacis.attest(...)
+except GlacisRateLimitError as e:
+    print(e.retry_after_ms)  # Retry delay in milliseconds (Optional[int])
+```
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `retry_after_ms` | `Optional[int]` | Suggested retry delay in milliseconds |
+
+---
+
+### GlacisBlockedError
+
+Raised when a control blocks the request. Available from integrations.
+
+```python
+from glacis.integrations.base import GlacisBlockedError
+
+try:
+    response = wrapped_client.chat.completions.create(...)
+except GlacisBlockedError as e:
+    print(e.control_type)  # e.g., "jailbreak"
+    print(e.score)         # e.g., 0.95
+```
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `control_type` | `str` | Type of control that caused the block |
+| `score` | `Optional[float]` | Confidence score from the blocking control |
+
+---
+
+### CryptoError
+
+Error from cryptographic operations (e.g., missing PyNaCl dependency).
+
+```python
+from glacis.crypto import CryptoError
+
+try:
+    from glacis.crypto import get_ed25519_runtime
+    runtime = get_ed25519_runtime()
+except CryptoError as e:
+    print(e)  # "PyNaCl not installed. Install with: pip install pynacl"
+```
+
+---
+
+## Constants
+
+```python
+from glacis import __version__
+
+print(__version__)  # "0.5.0"
+```

@@ -1,0 +1,193 @@
+---
+title: Sampling & Evidence
+description: Configure L0/L1/L2 attestation tiers for control plane results, evidence collection, and deep inspection with deterministic sampling.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Glacis uses a three-tier sampling model to balance observability with cost and storage. Every attestation is assigned a tier that determines how much data is collected and retained.
+
+## Overview
+
+| Tier | Name | What is captured | When |
+|------|------|-----------------|------|
+| **L0** | Control plane | Control results, policy metadata, hashes | Always |
+| **L1** | Evidence collection | L0 + full input/output payloads stored locally | Sampled at `l1_rate` |
+| **L2** | Deep inspection | L1 + eligible for judge evaluation | Sampled at `l2_rate` (implies L1) |
+
+- **L0** runs on every attestation. Only hashes leave your infrastructure.
+- **L1** retains the full input and output locally for audit. The data never leaves your environment.
+- **L2** is a subset of L1. Every L2 attestation also gets L1 evidence collection, and is flagged for judge evaluation. Judges must be run separately using `JudgeRunner` -- they are not invoked automatically by the sampling tier.
+
+## Configuration
+
+Configure sampling rates in `glacis.yaml`:
+
+```yaml
+version: "1.3"
+sampling:
+  l1_rate: 1.0   # Probability of L1 evidence collection (0.0-1.0)
+  l2_rate: 0.0   # Probability of L2 deep inspection (0.0-1.0)
+```
+
+**Defaults:** `l1_rate=1.0` (retain evidence for every request), `l2_rate=0.0` (no deep inspection).
+
+<Aside type="caution">
+  `l2_rate` must be less than or equal to `l1_rate`. L2 is a strict subset of L1 -- you cannot run deep inspection without first collecting evidence.
+</Aside>
+
+### SamplingConfig Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `l1_rate` | `float` | `1.0` | Probability of L1 evidence collection (0.0 to 1.0) |
+| `l2_rate` | `float` | `0.0` | Probability of L2 deep inspection (0.0 to 1.0, must be ≤ `l1_rate`) |
+
+You can also pass `SamplingConfig` directly to the Glacis client:
+
+```python
+import os
+from glacis import Glacis
+from glacis.config import SamplingConfig
+
+glacis = Glacis(
+    mode="offline",
+    signing_seed=os.urandom(32),
+    sampling_config=SamplingConfig(l1_rate=0.1, l2_rate=0.01),
+)
+```
+
+## Deterministic Sampling
+
+Sampling decisions are deterministic and auditor-reproducible. Given the same `evidence_hash` + `signing_seed` + sampling rates, the SDK always produces the same decision.
+
+The algorithm:
+
+1. Compute an HMAC-SHA256 tag over the `evidence_hash` using the `signing_seed` as key
+2. Extract the first 8 bytes as a big-endian `uint64` value (`sample_value`)
+3. Compare `sample_value` against thresholds derived from `l1_rate` and `l2_rate`
+
+This means an auditor with access to the signing seed can independently verify that sampling decisions were correctly applied.
+
+## should_review()
+
+Use the `should_review()` method to manually check whether an attestation should receive L1/L2 treatment:
+
+```python
+import os
+from glacis import Glacis
+
+seed = os.urandom(32)
+glacis = Glacis(mode="offline", signing_seed=seed)
+
+receipt = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "What is AI?"},
+    output={"response": "AI is..."},
+)
+
+decision = glacis.should_review(receipt)
+print(f"Level: {decision.level}")           # "L0", "L1", or "L2"
+print(f"Sample value: {decision.sample_value}")
+```
+
+You can override the L1 rate for a specific check:
+
+```python
+# Check at 50% sampling rate regardless of configured l1_rate
+decision = glacis.should_review(receipt, sampling_rate=0.5)
+```
+
+<Aside type="caution">
+  The `sampling_rate` parameter only overrides the L1 threshold. The L2 rate is always taken from the configured `l2_rate`. This means passing `sampling_rate=0.0` will prevent L1 promotion but a request can still be promoted to L2 if `l2_rate > 0` in your config.
+</Aside>
+
+<Aside type="note">
+  `should_review()` requires offline mode (it uses the `signing_seed` for HMAC computation).
+</Aside>
+
+## SamplingDecision Reference
+
+The `SamplingDecision` model returned by `should_review()`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `level` | `str` | Sampling tier: `"L0"`, `"L1"`, or `"L2"` |
+| `sample_value` | `int` | First 8 bytes of HMAC tag as big-endian uint64 |
+| `prf_tag` | `list[int]` | Full HMAC-SHA256 tag (32 bytes as int list) |
+
+## Evidence Model
+
+When an attestation is promoted to L1 or above, an `Evidence` object is attached:
+
+```python
+receipt = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "Hello"},
+    output={"response": "Hi!"},
+)
+
+if receipt.evidence:
+    print(f"Sample probability: {receipt.evidence.sample_probability}")
+    print(f"Data: {receipt.evidence.data}")
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sample_probability` | `float` | Probability this evidence was sampled (0.0-1.0) |
+| `data` | `dict` | The evidence payload (typically `{"input": ..., "output": ...}`) |
+
+## How Evidence Gets Stored
+
+When using integration wrappers (OpenAI, Anthropic, Gemini), evidence is stored automatically. The integration calls `store_evidence()` after each attestation, persisting the full input, output, and control plane results to local storage.
+
+Evidence is stored alongside receipts in the configured storage backend (SQLite or JSONL). See [Storage Backends](/sdk/python/storage/) for details on storage location and configuration.
+
+The stored evidence record includes:
+
+| Field | Description |
+|-------|-------------|
+| `attestation_id` | Links evidence to its attestation |
+| `attestation_hash` | The evidence_hash that was attested |
+| `mode` | `"online"` or `"offline"` |
+| `service_id` | Service identifier |
+| `operation_type` | Type of operation |
+| `timestamp` | Unix timestamp in milliseconds |
+| `input` | Full input data |
+| `output` | Full output data |
+| `control_plane_results` | Control results (if any) |
+| `metadata` | Additional metadata |
+| `sampling_level` | `"L0"`, `"L1"`, or `"L2"` |
+
+## Retrieving Evidence
+
+Retrieve stored evidence using the `get_evidence()` helper from the integrations module:
+
+```python
+from glacis.integrations.base import get_evidence
+
+evidence = get_evidence("att_abc123")
+if evidence:
+    print(f"Input: {evidence['input']}")
+    print(f"Output: {evidence['output']}")
+    print(f"Level: {evidence['sampling_level']}")
+```
+
+You can override the storage backend and path:
+
+```python
+evidence = get_evidence(
+    "oatt_abc123",
+    storage_backend="json",
+    storage_path="/path/to/storage",
+)
+```
+
+## See Also
+
+- [Configuration](/sdk/python/configuration/) -- full `glacis.yaml` reference with sampling section
+- [Storage Backends](/sdk/python/storage/) -- where evidence is persisted
+- [Judges Framework](/sdk/python/judges/) -- L2 judge evaluation pipeline
+- [Controls](/sdk/python/controls/) -- how control plane results are generated

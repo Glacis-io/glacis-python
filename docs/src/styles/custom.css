@@ -1,0 +1,634 @@
+/* GLACIS Documentation - Aligned with glacis.io Design System */
+
+/* ========================================
+   FONTS
+   ======================================== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Primary Brand Colors - Indigo/Purple Gradient Palette */
+  --sl-color-accent-low: #312e81;
+  --sl-color-accent: #6366f1;
+  --sl-color-accent-high: #a5b4fc;
+
+  /* Extended palette */
+  --glacis-indigo: #6366f1;
+  --glacis-purple: #8b5cf6;
+  --glacis-violet: #a855f7;
+  --glacis-success: #10b981;
+  --glacis-warm: #f59e0b;
+  --glacis-rose: #f43f5e;
+
+  /* Gradients */
+  --glacis-gradient-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  --glacis-gradient-subtle: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+
+  /* Deep dark backgrounds */
+  --sl-color-black: #0a0f1a;
+  --sl-color-gray-6: #0d1320;
+  --sl-color-gray-5: #141c2b;
+  --sl-color-gray-4: #1a2332;
+  --sl-color-gray-3: #475569;
+  --sl-color-gray-2: #64748b;
+  --sl-color-gray-1: #94a3b8;
+  --sl-color-white: #f8fafc;
+
+  /* Text colors */
+  --sl-color-text: #f8fafc;
+  --sl-color-text-accent: #a5b4fc;
+
+  /* Typography */
+  --sl-font-system: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --sl-font-system-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --__sl-font-display: 'Outfit', system-ui, sans-serif;
+
+  /* Effects */
+  --glacis-glow-primary: rgba(99, 102, 241, 0.4);
+  --glacis-glow-secondary: rgba(139, 92, 246, 0.3);
+  --glacis-border-subtle: rgba(148, 163, 184, 0.08);
+  --glacis-border-medium: rgba(148, 163, 184, 0.15);
+  --glacis-border-accent: rgba(99, 102, 241, 0.3);
+}
+
+/* Light mode overrides - keep it dark-first like glacis.io */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e0e7ff;
+  --sl-color-accent: #6366f1;
+  --sl-color-accent-high: #4338ca;
+
+  --sl-color-black: #f8fafc;
+  --sl-color-gray-6: #f1f5f9;
+  --sl-color-gray-5: #e2e8f0;
+  --sl-color-gray-4: #cbd5e1;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-2: #64748b;
+  --sl-color-gray-1: #475569;
+  --sl-color-white: #0f172a;
+
+  /* Text colors for light mode */
+  --sl-color-text: #1e293b;
+  --sl-color-text-accent: #4338ca;
+}
+
+/* ========================================
+   GLOBAL STYLES
+   ======================================== */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Display font for headings */
+h1, h2, h3 {
+  font-family: var(--__sl-font-display);
+  letter-spacing: -0.02em;
+}
+
+/* ========================================
+   HEADER ENHANCEMENTS
+   ======================================== */
+header.header {
+  background: rgba(10, 15, 26, 0.8) !important;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--glacis-border-subtle);
+}
+
+:root[data-theme='light'] header.header {
+  background: rgba(248, 250, 252, 0.9) !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* Site title styling */
+.site-title {
+  font-family: var(--__sl-font-display) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em;
+}
+
+/* ========================================
+   SIDEBAR ENHANCEMENTS
+   ======================================== */
+nav.sidebar {
+  padding-top: 1rem;
+}
+
+.sidebar-content {
+  background: transparent;
+}
+
+/* Sidebar link styling */
+nav.sidebar a {
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+nav.sidebar a:hover {
+  background: var(--glacis-gradient-subtle);
+}
+
+nav.sidebar a[aria-current="page"] {
+  background: var(--glacis-gradient-subtle);
+  border-left: 2px solid var(--glacis-indigo);
+}
+
+/* ========================================
+   CONTENT AREA
+   ======================================== */
+.content-panel {
+  background: transparent;
+}
+
+/* Main content styling */
+.sl-markdown-content {
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.sl-markdown-content h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--sl-color-white) 0%, var(--sl-color-gray-1) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 1.5rem;
+}
+
+:root[data-theme='light'] .sl-markdown-content h1 {
+  background: linear-gradient(135deg, #0f172a 0%, #475569 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.sl-markdown-content h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--glacis-border-subtle);
+}
+
+.sl-markdown-content h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+/* ========================================
+   CODE BLOCKS - Premium Styling
+   ======================================== */
+.expressive-code {
+  border-radius: 12px !important;
+  overflow: hidden;
+  border: 1px solid var(--glacis-border-medium) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+.expressive-code .frame {
+  background: rgba(13, 19, 32, 0.95) !important;
+}
+
+.expressive-code .frame.has-title .header {
+  background: rgba(20, 28, 43, 0.8) !important;
+  border-bottom: 1px solid var(--glacis-border-subtle);
+}
+
+/* Inline code */
+.sl-markdown-content :not(pre) > code {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 6px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.875em;
+  color: var(--sl-color-accent-high);
+}
+
+:root[data-theme='light'] .sl-markdown-content :not(pre) > code {
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--glacis-indigo);
+}
+
+/* ========================================
+   CARDS - Glassmorphism Style
+   ======================================== */
+.sl-card,
+.card {
+  background: rgba(20, 28, 43, 0.6) !important;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 16px !important;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.sl-card::before,
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.08) 0%, transparent 50%);
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+
+.sl-card:hover,
+.card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(99, 102, 241, 0.2) !important;
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3), 0 0 40px rgba(99, 102, 241, 0.1);
+}
+
+.sl-card:hover::before,
+.card:hover::before {
+  opacity: 1;
+}
+
+:root[data-theme='light'] .sl-card,
+:root[data-theme='light'] .card {
+  background: rgba(255, 255, 255, 0.8) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+
+:root[data-theme='light'] .sl-card:hover,
+:root[data-theme='light'] .card:hover {
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1), 0 0 40px rgba(99, 102, 241, 0.08);
+}
+
+/* ========================================
+   LINK CARDS
+   ======================================== */
+.sl-link-card {
+  background: rgba(20, 28, 43, 0.5) !important;
+  backdrop-filter: blur(15px);
+  border: 1px solid var(--glacis-border-subtle) !important;
+  border-radius: 12px !important;
+  transition: all 0.3s ease;
+}
+
+.sl-link-card:hover {
+  border-color: var(--glacis-indigo) !important;
+  background: rgba(99, 102, 241, 0.08) !important;
+  transform: translateX(4px);
+}
+
+:root[data-theme='light'] .sl-link-card {
+  background: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* ========================================
+   CALLOUTS / ASIDES - Enhanced
+   ======================================== */
+.starlight-aside {
+  border-radius: 12px !important;
+  border-left-width: 3px !important;
+  background: rgba(20, 28, 43, 0.5) !important;
+  backdrop-filter: blur(10px);
+}
+
+.starlight-aside--note {
+  border-left-color: var(--glacis-indigo) !important;
+}
+
+.starlight-aside--tip {
+  border-left-color: var(--glacis-success) !important;
+}
+
+.starlight-aside--caution {
+  border-left-color: var(--glacis-warm) !important;
+}
+
+.starlight-aside--danger {
+  border-left-color: var(--glacis-rose) !important;
+}
+
+:root[data-theme='light'] .starlight-aside {
+  background: rgba(248, 250, 252, 0.8) !important;
+}
+
+/* ========================================
+   BADGES - Gradient Style
+   ======================================== */
+.badge,
+.sl-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 100px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: var(--sl-font-system-mono);
+}
+
+.badge-primary {
+  background: var(--glacis-gradient-primary);
+  color: white;
+}
+
+.badge-success {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+}
+
+.badge-warning {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+}
+
+/* ========================================
+   BUTTONS - Glacis Style
+   ======================================== */
+.sl-link-button,
+button.primary,
+a.primary {
+  background: var(--glacis-gradient-primary) !important;
+  border: none !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.3);
+  transition: all 0.2s ease;
+}
+
+.sl-link-button:hover,
+button.primary:hover,
+a.primary:hover {
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+  transform: translateY(-1px);
+}
+
+/* Secondary buttons */
+button.secondary,
+a.secondary {
+  background: transparent !important;
+  border: 1px solid var(--glacis-border-medium) !important;
+  border-radius: 8px !important;
+  transition: all 0.2s ease;
+}
+
+button.secondary:hover,
+a.secondary:hover {
+  border-color: var(--glacis-indigo) !important;
+  background: rgba(99, 102, 241, 0.1) !important;
+}
+
+/* ========================================
+   TABLES - Clean Modern Style
+   ======================================== */
+.sl-markdown-content table {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--glacis-border-subtle);
+}
+
+.sl-markdown-content th {
+  background: rgba(20, 28, 43, 0.8);
+  font-family: var(--sl-font-system-mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--sl-color-gray-1);
+}
+
+.sl-markdown-content td {
+  border-color: var(--glacis-border-subtle);
+}
+
+.sl-markdown-content tr:hover td {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+:root[data-theme='light'] .sl-markdown-content th {
+  background: rgba(241, 245, 249, 0.9);
+}
+
+/* ========================================
+   SEARCH - Enhanced
+   ======================================== */
+.search-input,
+[data-pagefind-ui] input {
+  background: rgba(20, 28, 43, 0.8) !important;
+  border: 1px solid var(--glacis-border-medium) !important;
+  border-radius: 10px !important;
+  transition: all 0.2s ease;
+}
+
+.search-input:focus,
+[data-pagefind-ui] input:focus {
+  border-color: var(--glacis-indigo) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+  outline: none;
+}
+
+:root[data-theme='light'] .search-input,
+:root[data-theme='light'] [data-pagefind-ui] input {
+  background: rgba(255, 255, 255, 0.9) !important;
+}
+
+/* ========================================
+   TABLE OF CONTENTS
+   ======================================== */
+.right-sidebar {
+  padding-top: 1rem;
+}
+
+.right-sidebar-panel {
+  background: transparent;
+}
+
+starlight-toc a {
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+starlight-toc a:hover {
+  background: var(--glacis-gradient-subtle);
+}
+
+starlight-toc a[aria-current="true"] {
+  background: var(--glacis-gradient-subtle);
+  color: var(--glacis-indigo);
+}
+
+/* ========================================
+   PAGINATION
+   ======================================== */
+.pagination-links a {
+  background: rgba(20, 28, 43, 0.5) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--glacis-border-subtle) !important;
+  border-radius: 12px !important;
+  transition: all 0.3s ease;
+}
+
+.pagination-links a:hover {
+  border-color: var(--glacis-indigo) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme='light'] .pagination-links a {
+  background: rgba(255, 255, 255, 0.8) !important;
+}
+
+/* ========================================
+   CUSTOM COMPONENTS
+   ======================================== */
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  background: rgba(20, 28, 43, 0.6);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 1.5rem;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.feature-card:hover {
+  border-color: rgba(99, 102, 241, 0.2);
+  transform: translateY(-4px);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme='light'] .feature-card {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* Architecture diagram container */
+.architecture-diagram {
+  background: rgba(13, 19, 32, 0.95);
+  border: 1px solid var(--glacis-border-medium);
+  border-radius: 12px;
+  padding: 1.5rem;
+  overflow-x: auto;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+:root[data-theme='light'] .architecture-diagram {
+  background: rgba(248, 250, 252, 0.95);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+/* API endpoint styling */
+.api-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  background: rgba(13, 19, 32, 0.9);
+  border: 1px solid var(--glacis-border-subtle);
+  border-radius: 10px;
+  font-family: var(--sl-font-system-mono);
+  font-size: 0.875rem;
+  margin: 0.75rem 0;
+}
+
+.api-method {
+  padding: 0.25rem 0.625rem;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.api-method-get { background: linear-gradient(135deg, #10b981, #059669); color: white; }
+.api-method-post { background: var(--glacis-gradient-primary); color: white; }
+.api-method-put { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
+.api-method-delete { background: linear-gradient(135deg, #f43f5e, #dc2626); color: white; }
+
+:root[data-theme='light'] .api-endpoint {
+  background: rgba(248, 250, 252, 0.95);
+}
+
+/* ========================================
+   SCROLLBAR STYLING
+   ======================================== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(20, 28, 43, 0.5);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.5);
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+/* ========================================
+   SELECTION STYLING
+   ======================================== */
+::selection {
+  background: rgba(99, 102, 241, 0.3);
+  color: var(--sl-color-white);
+}
+
+:root[data-theme='light'] ::selection {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--sl-color-black);
+}
+
+/* ========================================
+   RESPONSIVE ADJUSTMENTS
+   ======================================== */
+@media (max-width: 768px) {
+  .sl-markdown-content h1 {
+    font-size: 1.75rem;
+  }
+
+  .sl-markdown-content h2 {
+    font-size: 1.25rem;
+  }
+
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ========================================
+   REDUCED MOTION
+   ======================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

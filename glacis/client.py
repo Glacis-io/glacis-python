@@ -517,7 +517,7 @@ class Glacis:
 
         Tier logic (nested — L2 implies L1):
         - L2 if sample_value <= l2_rate threshold (deep inspection)
-        - L1 if sample_value <= l1_rate threshold (evidence collection / judge review)
+        - L1 if sample_value <= l1_rate threshold (evidence collection)
         - L0 otherwise (control plane results only)
 
         Args:

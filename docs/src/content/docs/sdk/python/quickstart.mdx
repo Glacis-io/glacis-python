@@ -1,0 +1,170 @@
+---
+title: Quickstart
+description: Get started with the Glacis Python SDK in under 5 minutes. Create your first cryptographic attestation for AI operations.
+---
+
+import { Steps, Tabs, TabItem, Aside, Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Create your first cryptographic attestation in under 5 minutes.
+
+<Aside type="tip" title="Get your API key">
+  To use witnessed attestations, you need an API key. **[Request access on glacis.io](https://glacis.io/#contact)**
+
+  Want to start coding right away? Use [offline mode](#no-api-key-use-offline-mode) for local development -- no API key required.
+</Aside>
+
+## The Basics
+
+The simplest working example with online (server-witnessed) mode:
+
+```python
+from glacis import Glacis
+
+glacis = Glacis(api_key="glsk_live_...")
+
+receipt = glacis.attest(
+    service_id="my-ai-app",
+    operation_type="inference",
+    input={"prompt": "What is the capital of France?"},  # Hashed locally
+    output={"response": "Paris is the capital of France."},  # Never sent
+)
+
+print(f"Attestation ID: {receipt.id}")           # att_xxx...
+print(f"Witness status: {receipt.witness_status}")  # WITNESSED
+```
+
+<Aside type="note">
+  **Zero-egress design**: Your prompts and responses are hashed locally using SHA-256. Only the cryptographic commitment is transmitted -- your data never leaves your environment.
+</Aside>
+
+## Step-by-Step
+
+<Steps>
+
+1. **Install the SDK**
+   ```bash
+   pip install glacis
+   ```
+
+2. **Set your API key**
+   ```bash
+   export GLACIS_API_KEY=glsk_live_your_key_here
+   ```
+
+3. **Create an attestation**
+   ```python
+   from glacis import Glacis
+   import os
+
+   glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
+
+   # Attest any AI interaction
+   receipt = glacis.attest(
+       service_id="my-service",
+       operation_type="inference",
+       input={"prompt": "Hello, world!"},
+       output={"response": "Hi there!"},
+       metadata={"model": "gpt-4", "temperature": "0.7"},
+   )
+
+   print(f"Attestation ID: {receipt.id}")
+   print(f"Evidence hash: {receipt.evidence_hash}")
+   ```
+
+4. **Verify the receipt**
+   ```python
+   result = glacis.verify(receipt)
+   print(f"Valid: {result.valid}")
+
+   if result.verification:
+       print(f"Signature valid: {result.verification.signature_valid}")
+       print(f"Merkle proof valid: {result.verification.proof_valid}")
+   ```
+
+5. **Save the receipt for later verification**
+   ```python
+   import json
+
+   with open("receipt.json", "w") as f:
+       json.dump(receipt.model_dump(), f, indent=2, default=str)
+
+   # Verify from the command line:
+   # python -m glacis verify receipt.json
+   ```
+
+</Steps>
+
+## What You Get
+
+Each call to `attest()` returns an `Attestation` object with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Unique identifier (`att_...` for online, `oatt_...` for offline) |
+| `evidence_hash` | `str` | SHA-256 hash of your input/output (hex-encoded, 64 chars) |
+| `service_id` | `str` | Service identifier you provided |
+| `operation_type` | `str` | Operation type you provided |
+| `witness_status` | `str` | `"WITNESSED"` (online) or `"UNVERIFIED"` (offline) |
+| `signature` | `str` | Ed25519 signature (base64-encoded) |
+| `public_key` | `str` | Ed25519 public key (hex-encoded) |
+| `timestamp` | `int \| None` | Unix timestamp in milliseconds |
+
+## No API Key? Use Offline Mode
+
+Start developing immediately without an API key. Offline mode signs attestations locally with Ed25519:
+
+```python
+from glacis import Glacis
+import os
+
+# Offline mode requires a 32-byte signing seed
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="dev-testing",
+    operation_type="inference",
+    input={"prompt": "test"},
+    output={"response": "result"},
+)
+
+print(f"Attestation ID: {receipt.id}")           # oatt_xxx...
+print(f"Witness status: {receipt.witness_status}")  # UNVERIFIED
+```
+
+Verify an offline receipt:
+
+```python
+result = glacis.verify(receipt)
+print(f"Valid: {result.valid}")                    # True
+print(f"Signature valid: {result.signature_valid}")  # True
+print(f"Witness status: {result.witness_status}")    # UNVERIFIED
+```
+
+<Aside type="note">
+  Offline receipts are self-signed with Ed25519 and marked `"UNVERIFIED"`. Offline receipts are stored locally in `~/.glacis/glacis.db` by default. Add an API key to get independent witnessing. [Learn more](/sdk/python/offline/)
+</Aside>
+
+## Next Steps
+
+<CardGrid>
+  <LinkCard
+    title="Configuration"
+    description="Set up glacis.yaml for controls, sampling, judges, and storage."
+    href="/sdk/python/configuration/"
+  />
+  <LinkCard
+    title="OpenAI Integration"
+    description="Auto-attest every OpenAI call with zero code changes."
+    href="/sdk/python/openai/"
+  />
+  <LinkCard
+    title="API Reference"
+    description="Complete SDK reference with all methods and options."
+    href="/sdk/python/api/"
+  />
+  <LinkCard
+    title="CLI Reference"
+    description="Verify receipts from the command line."
+    href="/sdk/python/cli/"
+  />
+</CardGrid>

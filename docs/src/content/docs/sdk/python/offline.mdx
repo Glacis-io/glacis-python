@@ -1,0 +1,226 @@
+---
+title: Offline Mode
+description: Use Glacis without an API key for local development, testing, and air-gapped environments. Full cryptographic functionality with self-signed receipts.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Offline mode provides full cryptographic attestation without requiring an API key. Perfect for development, testing, and air-gapped environments.
+
+## Quick Start
+
+```python
+import os
+from glacis import Glacis
+
+# No API key needed — just a 32-byte signing seed
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="local-dev",
+    operation_type="inference",
+    input={"prompt": "What is 2+2?"},
+    output={"response": "4"},
+)
+
+print(f"Receipt ID: {receipt.id}")               # oatt_xxx (offline attestation)
+print(f"Witness status: {receipt.witness_status}") # "UNVERIFIED"
+print(f"Signature: {receipt.signature[:32]}...")    # Ed25519 signature
+```
+
+<Aside type="caution">
+  The `signing_seed` is the **private key** used for Ed25519 signing. `os.urandom(32)` generates a **new random seed every time** it is called — this is fine for testing and demos, but in production you **must** persist the seed securely (e.g., via an environment variable or secrets manager) and reuse it across sessions. Without the original seed, offline receipts cannot be verified later.
+</Aside>
+
+## How It Works
+
+In offline mode, the SDK:
+
+1. **Generates a local Ed25519 keypair** from the `signing_seed` you provide
+2. **Hashes payloads using SHA-256** with RFC 8785 canonical JSON
+3. **Signs receipts locally** with the Ed25519 private key
+4. **Stores receipts** in a local SQLite database at `~/.glacis/glacis.db`
+
+<Aside type="note">
+  Offline receipts use the same cryptographic primitives as online mode (Ed25519, SHA-256, RFC 8785). The only difference is the absence of independent witness anchoring.
+</Aside>
+
+## Offline vs Online
+
+| Feature | Offline | Online |
+|---------|---------|--------|
+| API key required | No | Yes |
+| Signing seed required | Yes (32 bytes) | No |
+| Signing | Local Ed25519 | Glacis witness network |
+| Merkle proofs | No | Yes |
+| Transparency log | No | Yes |
+| Verification URL | No | Yes |
+| Witness status | `"UNVERIFIED"` | `"WITNESSED"` |
+
+## Providing Your Own Seed
+
+The `signing_seed` parameter is required for offline mode and must be exactly 32 bytes. You can generate one randomly or derive it deterministically for testing:
+
+```python
+import os
+from glacis import Glacis
+
+# Provide a cryptographically secure random seed (recommended for production)
+seed = os.urandom(32)
+glacis = Glacis(mode="offline", signing_seed=seed)
+
+# Or derive from a passphrase (for testing only!)
+import hashlib
+seed = hashlib.sha256(b"my-test-seed").digest()
+glacis = Glacis(mode="offline", signing_seed=seed)
+```
+
+<Aside type="caution">
+  Never use predictable seeds in production. For production offline use, generate a cryptographically secure random seed with `os.urandom(32)` and store it securely.
+</Aside>
+
+### Seed Persistence
+
+For production use, generate the seed **once** and store it in a secrets manager or environment variable. Reuse the same seed across sessions so you can always verify previously signed receipts.
+
+```python
+# Generate once, store securely:
+import os
+print(os.urandom(32).hex())
+```
+
+Then load it at runtime:
+
+```python
+import os
+from glacis import Glacis
+
+# Production: load seed from environment or secrets manager
+seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])
+
+glacis = Glacis(mode="offline", signing_seed=seed)
+```
+
+## Local Storage
+
+Offline receipts are stored in SQLite at `~/.glacis/glacis.db`. You can retrieve the most recent receipt using `get_last_receipt()`:
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+# Create a receipt
+receipt = glacis.attest(
+    service_id="local-dev",
+    operation_type="inference",
+    input={"prompt": "Hello"},
+    output={"response": "Hi!"},
+)
+
+# Retrieve the last receipt
+last = glacis.get_last_receipt()
+if last:
+    print(f"{last.id}: {last.timestamp}")
+```
+
+For more storage options including JSONL and custom paths, see [Storage Backends](/sdk/python/storage/).
+
+## Verifying Offline Receipts
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+# Create a receipt
+receipt = glacis.attest(
+    service_id="test",
+    operation_type="inference",
+    input={"prompt": "test"},
+    output={"response": "result"},
+)
+
+# Verify the signature
+result = glacis.verify(receipt)
+print(f"Signature valid: {result.signature_valid}")  # True
+print(f"Overall valid: {result.valid}")              # True
+```
+
+The `verify()` method returns an `OfflineVerifyResult` with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `valid` | `bool` | Whether the attestation is valid overall |
+| `witness_status` | `str` | Always `"UNVERIFIED"` for offline receipts |
+| `signature_valid` | `bool` | Whether the Ed25519 signature is valid |
+| `attestation` | `Attestation \| None` | The verified attestation object |
+| `error` | `str \| None` | Error message if verification failed |
+
+## CLI Verification
+
+<Aside type="caution">
+  CLI verification performs **structural validation only** -- it checks JSON format, required fields, and signature presence. It does **not** perform cryptographic signature verification. For full Ed25519 signature verification, use the `glacis.verify()` method in Python.
+</Aside>
+
+Verify offline receipts from the command line:
+
+```bash
+# Save receipt to file
+python -c "
+import os, json
+from glacis import Glacis
+
+glacis = Glacis(mode='offline', signing_seed=os.urandom(32))
+receipt = glacis.attest(
+    service_id='test',
+    operation_type='test',
+    input={'test': True},
+    output={'ok': True}
+)
+print(json.dumps(receipt.model_dump(), indent=2))
+" > receipt.json
+
+# Verify
+python -m glacis verify receipt.json
+```
+
+Output:
+```
+Receipt: oatt_abc123...
+Type: Offline
+
+Status: VALID
+  Signature: PASS
+```
+
+## When to Use Offline Mode
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Local development | Offline mode |
+| CI/CD testing | Offline mode |
+| Air-gapped environments | Offline mode |
+| Internal audits only | Offline mode (acceptable) |
+| External audits | Online mode (recommended) |
+| Customer due diligence | Online mode (required) |
+| Published research | Online mode (recommended) |
+
+## Upgrading to Online Mode
+
+When you need third-party verifiability:
+
+```python
+import os
+from glacis import Glacis
+
+# Before: offline
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+# After: online
+glacis = Glacis(api_key="glsk_live_...")
+```
+
+That's it. The `attest()` and `verify()` API is identical -- only the witness status changes from `"UNVERIFIED"` to `"WITNESSED"`.

@@ -1,0 +1,121 @@
+---
+title: Installation
+description: Install the Glacis Python SDK to add cryptographic attestation to your AI applications.
+---
+
+import { Tabs, TabItem, Aside, Steps, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+The Glacis Python SDK provides cryptographic attestation for AI systems. Install it to prove what your AI did, what data it saw, and what controls were active -- with zero data egress.
+
+## Requirements
+
+- Python 3.9 or higher
+- pip, poetry, or uv (Python package manager)
+
+## Install from PyPI
+
+<Tabs>
+  <TabItem label="pip">
+    ```bash
+    pip install glacis
+    ```
+  </TabItem>
+  <TabItem label="poetry">
+    ```bash
+    poetry add glacis
+    ```
+  </TabItem>
+  <TabItem label="uv">
+    ```bash
+    uv pip install glacis
+    ```
+  </TabItem>
+</Tabs>
+
+## Verify Installation
+
+```python
+import glacis
+
+print(glacis.__version__)  # 0.5.0
+```
+
+## Available Extras
+
+Install extras to enable provider integrations, controls, and more:
+
+<Tabs>
+  <TabItem label="pip">
+    ```bash
+    # Single extra
+    pip install glacis[openai]
+
+    # Multiple extras
+    pip install glacis[openai,anthropic]
+
+    # Everything
+    pip install glacis[all]
+    ```
+  </TabItem>
+  <TabItem label="poetry">
+    ```bash
+    poetry add "glacis[openai]"
+    ```
+  </TabItem>
+  <TabItem label="uv">
+    ```bash
+    uv pip install "glacis[openai]"
+    ```
+  </TabItem>
+</Tabs>
+
+| Extra | Includes | Use Case |
+|-------|----------|----------|
+| `openai` | OpenAI SDK (`openai>=1.0.0`) | Auto-attesting OpenAI wrapper |
+| `anthropic` | Anthropic SDK (`anthropic>=0.18.0`) | Auto-attesting Anthropic wrapper |
+| `gemini` | Google GenAI SDK (`google-genai>=1.0.0`) | Auto-attesting Gemini wrapper |
+| `redaction` | Presidio, spaCy, PyYAML | PII/PHI detection controls (scan-only, no text modification) |
+| `jailbreak` | Transformers, PyTorch, PyYAML | Jailbreak and prompt injection detection |
+| `controls` | `redaction` + `jailbreak` combined | All input/output controls |
+| `all` | All of the above + dev tools | Full SDK with every integration and control |
+
+## Getting an API Key
+
+<Steps>
+1. Visit [glacis.io](https://glacis.io) and sign up
+2. Create an organization
+3. Generate an API key (`glsk_live_...`)
+4. Set the environment variable:
+   ```bash
+   export GLACIS_API_KEY=glsk_live_your_key_here
+   ```
+</Steps>
+
+<Aside type="tip">
+  You can start with **offline mode** immediately -- no API key required. Upgrade to online mode when you need third-party verifiability.
+</Aside>
+
+## Next Steps
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="Create your first attestation in under 5 minutes."
+    href="/sdk/python/quickstart/"
+  />
+  <LinkCard
+    title="Configuration"
+    description="Set up glacis.yaml for controls, sampling, and storage."
+    href="/sdk/python/configuration/"
+  />
+  <LinkCard
+    title="OpenAI Integration"
+    description="Auto-attest every OpenAI call with zero code changes."
+    href="/sdk/python/openai/"
+  />
+  <LinkCard
+    title="CLI Reference"
+    description="Verify receipts from the command line."
+    href="/sdk/python/cli/"
+  />
+</CardGrid>

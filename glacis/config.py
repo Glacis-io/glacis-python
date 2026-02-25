@@ -42,7 +42,7 @@ Example glacis.yaml:
       service_id: "my-service"
     evidence_storage:
       backend: "sqlite"
-      path: "~/.glacis"
+      path: "~/.glacis/glacis.db"
 
 Usage:
     from glacis.config import load_config
@@ -192,8 +192,8 @@ class SamplingConfig(BaseModel):
 
     Controls the probability of promoting attestations to higher tiers:
     - L0: Control plane results only (always collected)
-    - L1: Evidence collection (input/output payloads, judge review)
-    - L2: Deep inspection (extended analysis)
+    - L1: Evidence collection (input/output payloads retained locally)
+    - L2: Deep inspection (flagged for judge evaluation, implies L1)
 
     Sampling is deterministic and auditor-reproducible via HMAC-SHA256.
     """
@@ -203,8 +203,8 @@ class SamplingConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description=(
-            "Probability of L1 sampling (evidence collection / judge review). "
-            "1.0 = review all."
+            "Probability of L1 sampling (evidence collection). "
+            "1.0 = collect all."
         ),
     )
     l2_rate: float = Field(
@@ -237,9 +237,10 @@ class EvidenceStorageConfig(BaseModel):
     path: Optional[str] = Field(
         default=None,
         description=(
-            "Storage path. For sqlite: .db file path. "
-            "For json: directory containing .jsonl files. "
-            "Default: ~/.glacis"
+            "Storage path. For sqlite: full .db file path "
+            "(default: ~/.glacis/glacis.db). "
+            "For json: directory containing .jsonl files "
+            "(default: ~/.glacis)."
         ),
     )
 

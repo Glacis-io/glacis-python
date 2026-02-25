@@ -1,0 +1,326 @@
+---
+title: Gemini Integration
+description: Auto-attest every Google Gemini API call. Cryptographic receipts for all content generation.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Glacis Gemini integration wraps the official Google GenAI client (`google.genai.Client`) to automatically create cryptographic attestations for every content generation call. Your data is hashed locally and never leaves your environment -- only hashes and metadata are sent to the Glacis transparency log.
+
+## Installation
+
+```bash
+pip install glacis[gemini]
+```
+
+This installs the `google-genai` package (the new Google GenAI SDK), not the legacy `google-generativeai` package.
+
+## Quick Start
+
+```python
+from glacis.integrations.gemini import attested_gemini, get_last_receipt
+
+client = attested_gemini(
+    glacis_api_key="glsk_live_...",
+    gemini_api_key="AIza..."
+)
+
+# Make a normal Gemini call -- attestation happens automatically
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Hello!"
+)
+
+print(response.text)
+
+# Get the attestation receipt
+receipt = get_last_receipt()
+print(f"Attested: {receipt.id}")
+print(f"Status: {receipt.witness_status}")
+```
+
+<Aside type="note">
+  The wrapped client has the exact same API as the official `google.genai.Client`. Just swap `genai.Client()` for `attested_gemini()`. The attested method is `client.models.generate_content()`.
+</Aside>
+
+<Aside type="note">
+  All calls through this integration are recorded with `operation_type="completion"`. For custom operation types, use `glacis.attest()` directly.
+</Aside>
+
+## What Gets Attested
+
+For each content generation call, Glacis captures:
+
+| Field | Treatment | Details |
+|-------|-----------|---------|
+| Request contents | Hashed | SHA-256, never sent to Glacis |
+| Response candidates | Hashed | SHA-256, never sent to Glacis |
+| System instruction | Hashed | SHA-256 hash included in control plane record |
+| Model name | Metadata | Sent as-is |
+| Temperature | Metadata | Included in control plane record (from config param) |
+| Token counts | Metadata | prompt, candidates, and total tokens |
+| Provider | Metadata | Always `"gemini"` |
+
+## Environment Variables
+
+<Tabs>
+  <TabItem label="Online">
+    ```bash
+    export GOOGLE_API_KEY=AIza...
+    ```
+
+    ```python
+    from glacis.integrations.gemini import attested_gemini
+
+    # Gemini key read from GOOGLE_API_KEY env var automatically
+    # Glacis API key must be passed explicitly
+    client = attested_gemini(glacis_api_key="glsk_live_...")
+    ```
+  </TabItem>
+  <TabItem label="Offline">
+    ```bash
+    export GOOGLE_API_KEY=AIza...
+    ```
+
+    ```python
+    import os
+    from glacis.integrations.gemini import attested_gemini
+
+    # No Glacis API key needed for offline mode
+    client = attested_gemini(
+        offline=True,
+        signing_seed=os.urandom(32),
+    )
+    ```
+  </TabItem>
+  <TabItem label="Explicit">
+    ```python
+    from glacis.integrations.gemini import attested_gemini
+
+    client = attested_gemini(
+        glacis_api_key="glsk_live_...",
+        gemini_api_key="AIza..."
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+## Accessing Receipts
+
+Use `get_last_receipt()` to retrieve the attestation from the most recent API call. Receipts are stored in **thread-local storage**, so each thread maintains its own last receipt independently.
+
+```python
+from glacis.integrations.gemini import get_last_receipt
+
+receipt = get_last_receipt()
+if receipt:
+    print(f"ID: {receipt.id}")
+    print(f"Evidence hash: {receipt.evidence_hash}")
+    print(f"Status: {receipt.witness_status}")  # "WITNESSED" or "UNVERIFIED"
+    print(f"Service: {receipt.service_id}")
+```
+
+<Aside type="caution">
+  `get_last_receipt()` returns the receipt for the **current thread only**. In multi-threaded applications, each thread tracks its own last receipt. Call `get_last_receipt()` immediately after the API call to avoid it being overwritten by a subsequent call.
+</Aside>
+
+## Offline Mode
+
+Offline mode creates locally-signed attestations without connecting to the Glacis server. This is useful for development, air-gapped environments, or when you want to defer attestation submission.
+
+Offline mode **requires** a `signing_seed` -- a 32-byte Ed25519 seed used for local signing:
+
+```python
+import os
+from glacis.integrations.gemini import attested_gemini, get_last_receipt
+
+client = attested_gemini(
+    offline=True,
+    signing_seed=os.urandom(32),
+    gemini_api_key="AIza..."
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Hello!"
+)
+
+receipt = get_last_receipt()
+print(f"Status: {receipt.witness_status}")  # "UNVERIFIED"
+```
+
+<Aside type="tip">
+  See the [Offline Mode](/sdk/python/offline) page for details on offline signing, seed management, and later submission.
+</Aside>
+
+## System Instructions
+
+System instructions are passed via the `config` parameter on `generate_content()` using `GenerateContentConfig`. The system instruction is hashed but never transmitted to Glacis:
+
+```python
+from google.genai.types import GenerateContentConfig
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="What is GDPR?",
+    config=GenerateContentConfig(
+        system_instruction="You are a helpful AI assistant specialized in compliance.",
+        temperature=0.7,
+    )
+)
+
+# System instruction hash is included in the attestation
+receipt = get_last_receipt()
+```
+
+The integration extracts `system_instruction` and `temperature` from the `config` parameter whether it is passed as a `GenerateContentConfig` object or as a plain dictionary.
+
+## Content Formats
+
+The Gemini integration supports all content formats accepted by `generate_content()`:
+
+```python
+# Simple string
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Hello!"
+)
+
+# List of strings
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=["Tell me about", "the capital of France"]
+)
+
+# Structured content with roles
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=[
+        {"role": "user", "parts": [{"text": "Hello!"}]},
+    ]
+)
+```
+
+## Using Controls
+
+Controls let you scan inputs and outputs for PII, jailbreak attempts, banned words, and more. Configure them via a `glacis.yaml` file:
+
+```python
+from glacis.integrations.gemini import attested_gemini, GlacisBlockedError
+
+client = attested_gemini(
+    config="glacis.yaml",
+    gemini_api_key="AIza..."
+)
+
+try:
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents="Hello!"
+    )
+    print(response.text)
+except GlacisBlockedError as e:
+    print(f"Blocked by {e.control_type} (score={e.score})")
+```
+
+You can also pass custom controls programmatically via the `input_controls` and `output_controls` parameters. See the `BaseControl` interface in `glacis.controls.base` for details on implementing custom controls.
+
+## Retrieving Evidence
+
+Evidence includes the full input, output, and control plane results that were attested. Evidence is stored **locally** and never sent to Glacis servers.
+
+```python
+from glacis.integrations.gemini import get_last_receipt, get_evidence
+
+receipt = get_last_receipt()
+if receipt:
+    evidence = get_evidence(receipt.id)
+    if evidence:
+        print(evidence["input"])    # Original request (model, contents, system_instruction)
+        print(evidence["output"])   # Full response (model_version, candidates, usage)
+```
+
+`get_evidence()` accepts optional `storage_backend` and `storage_path` parameters to override the default storage location:
+
+```python
+evidence = get_evidence(
+    receipt.id,
+    storage_backend="sqlite",
+    storage_path="/path/to/evidence.db"
+)
+```
+
+## `attested_gemini()` Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `glacis_api_key` | `Optional[str]` | `None` | Glacis API key. Required for online mode. Must be passed explicitly (no env var fallback). |
+| `gemini_api_key` | `Optional[str]` | `None` | Google Gemini API key. Falls back to `GOOGLE_API_KEY` env var. |
+| `glacis_base_url` | `str` | `"https://api.glacis.io"` | Glacis API base URL. |
+| `service_id` | `str` | `"gemini"` | Service identifier for attestations. |
+| `debug` | `bool` | `False` | Enable debug logging. |
+| `offline` | `Optional[bool]` | `None` | Enable offline mode. If `None`, inferred from config or presence of `glacis_api_key`. |
+| `signing_seed` | `Optional[bytes]` | `None` | 32-byte Ed25519 signing seed. **Required** when `offline=True`. |
+| `config` | `Optional[str]` | `None` | Path to `glacis.yaml` config file for controls, sampling, and policy settings. |
+| `input_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on input text before the LLM call. |
+| `output_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on output text after the LLM call. |
+| `**gemini_kwargs` | `Any` | -- | Additional keyword arguments passed directly to the `genai.Client()` constructor. |
+
+**Returns:** A wrapped `google.genai.Client`. The `client.models.generate_content()` method is intercepted to perform attestation automatically.
+
+**Raises:** `GlacisBlockedError` if a control blocks the request.
+
+## Full Example
+
+```python
+#!/usr/bin/env python3
+"""Complete example: Google Gemini with Glacis attestation."""
+import os
+from glacis.integrations.gemini import attested_gemini, get_last_receipt, get_evidence
+from google.genai.types import GenerateContentConfig
+
+def main():
+    # Create attested client (online mode — requires GLACIS_API_KEY)
+    client = attested_gemini(
+        glacis_api_key=os.environ["GLACIS_API_KEY"],
+    )
+
+    # Make a request with a system instruction
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents="What is ISO 42001?",
+        config=GenerateContentConfig(
+            system_instruction="You are a compliance expert.",
+            temperature=0.7,
+        )
+    )
+
+    print("Response:", response.text)
+    print()
+
+    # Get attestation receipt
+    receipt = get_last_receipt()
+    if receipt:
+        print("Attestation Details:")
+        print(f"  ID: {receipt.id}")
+        print(f"  Evidence hash: {receipt.evidence_hash}")
+        print(f"  Status: {receipt.witness_status}")
+        print(f"  Service: {receipt.service_id}")
+        print()
+
+        # Retrieve full evidence
+        evidence = get_evidence(receipt.id)
+        if evidence:
+            print("Evidence stored locally:")
+            print(f"  Input model: {evidence['input']['model']}")
+            print(f"  Total tokens: {(evidence['output'].get('usage') or {}).get('total_tokens')}")
+
+if __name__ == "__main__":
+    main()
+```
+
+## Streaming
+
+<Aside type="note">
+  Streaming is **not yet supported**. Streaming support for `generate_content()` is planned for a future release.
+</Aside>
