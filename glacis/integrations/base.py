@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 # SDK version used in ControlExecution records
-SDK_VERSION = "0.5.0"
+SDK_VERSION = "0.6.0"
 
 # Known control types that map directly to ControlType enum
 _KNOWN_CONTROL_TYPES = frozenset({
