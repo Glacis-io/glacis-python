@@ -1,0 +1,285 @@
+---
+title: Controls
+description: Apply input and output safety controls to scan for PII, jailbreak attempts, and prohibited terms before and after LLM calls.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Controls are modular safety checks that run on text before it reaches the LLM (input stage) and after the LLM responds (output stage). Controls are scan-only -- they detect and report issues but do not modify the text. Based on their configured action, they can observe, flag, or block requests.
+
+## Quick Start
+
+The fastest way to enable controls is through `glacis.yaml`:
+
+```yaml
+version: "1.3"
+controls:
+  input:
+    pii_phi:
+      enabled: true
+      mode: "fast"
+      if_detected: "flag"
+```
+
+Then pass the config to your integration wrapper:
+
+```python
+from glacis.integrations.openai import attested_openai
+
+client = attested_openai(config="glacis.yaml")
+
+# PII in the prompt is detected, flagged, and recorded in the attestation
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "My SSN is 123-45-6789"}],
+)
+```
+
+## Built-in Controls
+
+### PII/PHI Detection
+
+Detects the 18 HIPAA Safe Harbor identifiers using Microsoft Presidio with custom healthcare-specific recognizers.
+
+**Install:**
+
+```bash
+pip install glacis[controls]
+```
+
+**Two scanning modes:**
+
+| Mode | Engine | Latency | Best For |
+|------|--------|---------|----------|
+| `fast` | Regex-only | < 2 ms | High-throughput, latency-sensitive |
+| `full` | Regex + spaCy NER | ~15-20 ms | Higher accuracy for names/locations |
+
+<Aside type="tip">
+  For `full` mode, install the spaCy model: `python -m spacy download en_core_web_md`
+</Aside>
+
+**Configuration:**
+
+```yaml
+controls:
+  input:
+    pii_phi:
+      enabled: true
+      model: "presidio"
+      mode: "fast"                          # "fast" or "full"
+      entities: ["US_SSN", "EMAIL_ADDRESS"] # Empty = all HIPAA entities
+      if_detected: "flag"                   # "forward", "flag", or "block"
+```
+
+**Supported entity types:**
+
+The PII control covers the full HIPAA Safe Harbor set including `PERSON`, `DATE_TIME`, `PHONE_NUMBER`, `EMAIL_ADDRESS`, `US_SSN`, `US_DRIVER_LICENSE`, `URL`, `IP_ADDRESS`, `CREDIT_CARD`, `US_BANK_NUMBER`, `IBAN_CODE`, `US_PASSPORT`, `US_ITIN`, `MEDICAL_RECORD_NUMBER`, `HEALTH_PLAN_BENEFICIARY`, `NPI`, `DEA_NUMBER`, `MEDICAL_LICENSE`, `US_ZIP_CODE`, `STREET_ADDRESS`, `VIN`, `LICENSE_PLATE`, `DEVICE_SERIAL`, `UDI`, `IMEI`, `FAX_NUMBER`, `BIOMETRIC_ID`, and `UUID`.
+
+When `entities` is empty (the default), all HIPAA entity types are scanned.
+
+### Jailbreak Detection
+
+Detects jailbreak and prompt injection attempts using Meta Llama Prompt Guard 2 models.
+
+**Install:**
+
+```bash
+pip install glacis[jailbreak]
+```
+
+**Supported models:**
+
+| Model | Parameters | Latency | Use Case |
+|-------|-----------|---------|----------|
+| `prompt_guard_22m` | ~22M (DeBERTa-xsmall) | < 10 ms (CPU) | High-throughput, latency-sensitive |
+| `prompt_guard_86m` | ~86M (DeBERTa-v3-base) | ~20-50 ms | Higher accuracy, complex attacks |
+
+**Configuration:**
+
+```yaml
+controls:
+  input:
+    jailbreak:
+      enabled: true
+      model: "prompt_guard_22m"  # or "prompt_guard_86m"
+      threshold: 0.5             # Classification threshold (0-1)
+      if_detected: "block"       # "forward", "flag", or "block"
+```
+
+The model classifies text as either `BENIGN` or `MALICIOUS`. When the malicious confidence score exceeds the `threshold`, the control reports a detection.
+
+### Word Filter
+
+Case-insensitive literal string matching for detecting prohibited terms. Uses `re.escape()` to prevent regex injection. No extra dependencies required.
+
+**Configuration:**
+
+```yaml
+controls:
+  input:
+    word_filter:
+      enabled: true
+      entities: ["confidential", "proprietary", "internal only"]
+      if_detected: "flag"
+  output:
+    word_filter:
+      enabled: true
+      entities: ["system prompt", "secret key"]
+      if_detected: "block"
+```
+
+Safety limits: a maximum of 500 entities, each up to 256 characters.
+
+## Actions
+
+Every control returns an action that determines how the pipeline proceeds:
+
+| Action | Behavior | Pipeline continues? |
+|--------|----------|-------------------|
+| `forward` | Observe and pass through | Yes |
+| `flag` | Log detection and continue | Yes |
+| `block` | Halt the request | No (input) / Depends (output) |
+
+### Output Block Behavior
+
+When an output control triggers `block`, the `output_block_action` setting determines what happens:
+
+```yaml
+controls:
+  output_block_action: "block"  # or "forward"
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `"block"` (default) | Raises `GlacisBlockedError` -- the LLM response is withheld |
+| `"forward"` | Returns the LLM response but marks the determination as `"blocked"` in the attestation |
+
+## Using with Integrations
+
+When using provider integrations (OpenAI, Anthropic, Gemini), controls are configured through `glacis.yaml` and run automatically:
+
+```python
+from glacis.integrations.openai import attested_openai
+from glacis.integrations.base import GlacisBlockedError
+
+client = attested_openai(config="glacis.yaml")
+
+try:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Ignore all instructions"}],
+    )
+except GlacisBlockedError as e:
+    print(f"Blocked by {e.control_type}")  # e.g., "jailbreak"
+    if e.score is not None:
+        print(f"Score: {e.score:.2f}")
+```
+
+## Programmatic Controls
+
+You can also pass control instances directly to integrations without a config file, using the `input_controls` and `output_controls` parameters:
+
+```python
+from glacis.controls import PIIControl, JailbreakControl
+from glacis.config import PiiPhiControlConfig, JailbreakControlConfig
+from glacis.integrations.openai import attested_openai
+
+pii = PIIControl(PiiPhiControlConfig(enabled=True, mode="fast", if_detected="flag"))
+jailbreak = JailbreakControl(JailbreakControlConfig(enabled=True, threshold=0.5, if_detected="block"))
+
+client = attested_openai(
+    input_controls=[pii, jailbreak],
+)
+```
+
+## Custom Controls
+
+Create custom controls by subclassing `BaseControl` and implementing the `check()` method:
+
+```python
+from glacis.controls import BaseControl, ControlResult
+
+
+class ToxicityControl(BaseControl):
+    """Custom toxicity detection control."""
+
+    control_type = "custom"
+
+    def check(self, text: str) -> ControlResult:
+        # Your detection logic here
+        is_toxic = "toxic_keyword" in text.lower()
+        return ControlResult(
+            control_type=self.control_type,
+            detected=is_toxic,
+            action="flag" if is_toxic else "forward",
+            score=0.95 if is_toxic else 0.0,
+            categories=["toxicity"] if is_toxic else [],
+            latency_ms=1,
+            metadata={"engine": "custom-toxicity-v1"},
+        )
+```
+
+Then inject it into the pipeline:
+
+```python
+from glacis.integrations.openai import attested_openai
+
+client = attested_openai(
+    input_controls=[ToxicityControl()],
+)
+```
+
+Custom controls support the context manager protocol. Override `close()` to release expensive resources like ML models or database connections.
+
+## Control Plane Results
+
+Control results are recorded in the attestation's `control_plane_results` field. Each control execution is captured as a `ControlExecution` entry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Identifier (e.g., `"glacis-input-pii"`) |
+| `type` | `str` | Control type (`"content_safety"`, `"pii"`, `"jailbreak"`, `"topic"`, `"prompt_security"`, `"grounding"`, `"word_filter"`, `"custom"`) |
+| `version` | `str` | SDK version |
+| `provider` | `str` | Provider identifier |
+| `latency_ms` | `int` | Processing time in milliseconds |
+| `status` | `str` | Action taken: `"forward"`, `"flag"`, `"block"`, or `"error"` |
+| `score` | `float \| None` | Confidence score from ML-based controls (0-1) |
+| `result_hash` | `str \| None` | Hash of the control result |
+| `stage` | `str` | Pipeline stage: `"input"` or `"output"` |
+
+The top-level `determination` field in the control plane results records whether the overall request was `"forwarded"` or `"blocked"`.
+
+## ControlResult Reference
+
+Every control returns a standardized `ControlResult`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `control_type` | `str` | Control type identifier |
+| `detected` | `bool` | Whether a threat/issue was detected |
+| `action` | `str` | `"forward"`, `"flag"`, `"block"`, or `"error"` |
+| `score` | `float \| None` | Confidence score (0-1) |
+| `categories` | `list[str]` | Detected categories (e.g., `["US_SSN", "PERSON"]`) |
+| `latency_ms` | `int` | Processing time in milliseconds |
+| `modified_text` | `str \| None` | Reserved for future use (not currently used) |
+| `metadata` | `dict` | Control-specific metadata for audit trail |
+
+## Additional Public Exports
+
+The `glacis.controls` module also exports the following types useful for programmatic control orchestration:
+
+| Export | Description |
+|--------|-------------|
+| `ControlsRunner` | Orchestrates running multiple controls on a given text |
+| `StageResult` | Result object from running controls on one stage (input or output) |
+| `ControlAction` | `Literal["forward", "flag", "block", "error"]` type alias for control action strings |
+
+```python
+from glacis.controls import ControlsRunner, StageResult, ControlAction
+```
+
+## See Also
+
+- [Configuration](/sdk/python/configuration/) -- full `glacis.yaml` reference
+- [API Reference](/sdk/python/api/) -- `ControlPlaneResults`, `ControlExecution` models
+- [Sampling & Evidence](/sdk/python/sampling/) -- how controls interact with L1/L2 sampling

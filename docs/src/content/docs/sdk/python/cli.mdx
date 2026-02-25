@@ -1,0 +1,193 @@
+---
+title: CLI Reference
+description: Command-line tools for verifying Glacis attestation receipts.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Glacis CLI provides command-line tools for verifying attestation receipts. It is included automatically when you install the SDK.
+
+## Installation
+
+```bash
+pip install glacis
+```
+
+## Commands
+
+### Verify a Receipt
+
+Verify a receipt file and check its cryptographic validity:
+
+```bash
+python -m glacis verify receipt.json
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--base-url` | `https://api.glacis.io` | API base URL for online verification |
+
+**Example: specify a custom API endpoint:**
+
+```bash
+python -m glacis verify receipt.json --base-url https://api.staging.glacis.io
+```
+
+**Example output (valid online receipt):**
+```
+Receipt: att_abc123def456...
+Type: Online
+
+Status: VALID
+  Signature: PASS
+  Merkle proof: PASS
+```
+
+**Example output (valid offline receipt):**
+```
+Receipt: oatt_xyz789...
+Type: Offline
+
+Status: VALID
+  Signature: PASS
+```
+
+**Example output (invalid receipt):**
+```
+Receipt: att_abc123...
+Type: Online
+
+Status: INVALID
+  Error: Signature verification failed
+```
+
+## Receipt File Format
+
+The CLI expects a JSON file containing the attestation object. You can produce this file by calling `receipt.model_dump()` in your code.
+
+<Tabs>
+  <TabItem label="Online Receipt">
+    ```json
+    {
+      "id": "att_abc123...",
+      "operation_id": "550e8400-e29b-41d4-a716-446655440000",
+      "operation_sequence": 0,
+      "service_id": "my-service",
+      "operation_type": "inference",
+      "evidence_hash": "a1b2c3d4e5f6...",
+      "public_key": "ed25519pubkeyhex...",
+      "signature": "ed25519signaturebase64...",
+      "timestamp": 1706886000000,
+      "is_offline": false
+    }
+    ```
+  </TabItem>
+  <TabItem label="Offline Receipt">
+    ```json
+    {
+      "id": "oatt_xyz789...",
+      "operation_id": "550e8400-e29b-41d4-a716-446655440000",
+      "operation_sequence": 0,
+      "service_id": "local-dev",
+      "operation_type": "inference",
+      "evidence_hash": "a1b2c3d4e5f6...",
+      "public_key": "ed25519pubkeyhex...",
+      "signature": "ed25519signaturebase64...",
+      "timestamp": 1706886000000,
+      "is_offline": true
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Saving Receipts for CLI Verification
+
+```python
+from glacis import Glacis
+import json
+import os
+
+# Online mode
+glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
+
+receipt = glacis.attest(
+    service_id="my-service",
+    operation_type="inference",
+    input={"prompt": "test"},
+    output={"response": "result"},
+)
+
+# Save to file
+with open("receipt.json", "w") as f:
+    json.dump(receipt.model_dump(), f, indent=2, default=str)
+
+# Verify from command line:
+# python -m glacis verify receipt.json
+```
+
+For offline mode, make sure to include `signing_seed`:
+
+```python
+from glacis import Glacis
+import json
+import os
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="dev-testing",
+    operation_type="inference",
+    input={"prompt": "test"},
+    output={"response": "result"},
+)
+
+with open("receipt.json", "w") as f:
+    json.dump(receipt.model_dump(), f, indent=2, default=str)
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Receipt is valid |
+| `1` | Receipt is invalid, verification failed, file not found, or invalid JSON |
+
+## Use Cases
+
+### CI/CD Verification
+
+```yaml
+# .github/workflows/verify.yml
+- name: Verify attestation
+  run: |
+    python -m glacis verify receipt.json
+    if [ $? -ne 0 ]; then
+      echo "Attestation verification failed!"
+      exit 1
+    fi
+```
+
+### Batch Verification
+
+```bash
+#!/bin/bash
+for receipt in receipts/*.json; do
+    echo "Verifying $receipt..."
+    python -m glacis verify "$receipt"
+    if [ $? -ne 0 ]; then
+        echo "FAILED: $receipt"
+        exit 1
+    fi
+done
+echo "All receipts verified!"
+```
+
+<Aside type="tip">
+  For programmatic verification, use the SDK's `glacis.verify()` method instead of the CLI. The CLI is best suited for CI/CD pipelines and command-line workflows.
+</Aside>
+
+<Aside type="caution">
+  For offline receipts, `glacis verify` performs **structural validation only** -- it checks the receipt format and field presence (ID prefix, hash length, public key length, signature presence). It does **not** perform cryptographic Ed25519 signature verification. For full cryptographic verification of offline receipts, use `Glacis.verify(receipt)` programmatically with the original `signing_seed`.
+</Aside>

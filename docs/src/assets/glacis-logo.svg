@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" fill="none">
+  <defs>
+    <linearGradient id="glacis-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield icon -->
+  <path d="M15 5 L25 8 L25 18 C25 26 20 30 15 32 C10 30 5 26 5 18 L5 8 Z" fill="url(#glacis-gradient)"/>
+  <path d="M12 15 L14 17 L19 12" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- GLACIS text -->
+  <text x="35" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="700" fill="#1e293b">
+    GLACIS
+  </text>
+</svg>

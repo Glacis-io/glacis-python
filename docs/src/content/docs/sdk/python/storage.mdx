@@ -1,0 +1,274 @@
+---
+title: Storage Backends
+description: Configure local storage for attestation receipts and evidence using SQLite or JSONL backends.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Glacis stores attestation receipts and evidence locally. Two storage backends are available: SQLite (default) and JSONL. Both support the same interface for receipts and evidence, and the data never leaves your infrastructure.
+
+## Overview
+
+| Backend | Format | Files | Best For |
+|---------|--------|-------|----------|
+| **SQLite** (default) | Single database | `~/.glacis/glacis.db` | Production, queryable access, indexed lookups |
+| **JSONL** | Append-only text | `receipts.jsonl` + `evidence.jsonl` | Simple setups, log shipping, git-friendly |
+
+## SQLite (Default)
+
+The default backend stores all data in a single SQLite database at `~/.glacis/glacis.db`. It creates indexed tables for both receipts and evidence, supporting efficient queries by attestation ID, service ID, timestamp, and evidence hash.
+
+```python
+import os
+from glacis import Glacis
+
+# Uses SQLite at ~/.glacis/glacis.db by default
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+```
+
+The database schema is versioned and auto-migrates when the SDK is upgraded.
+
+## JSONL
+
+The JSONL backend stores receipts and evidence as append-only JSON Lines files:
+
+- `<base_dir>/receipts.jsonl` -- one attestation per line
+- `<base_dir>/evidence.jsonl` -- one evidence record per line
+
+Each line is a self-contained JSON object. For duplicate attestation IDs, the last occurrence wins on read.
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(
+    mode="offline",
+    signing_seed=os.urandom(32),
+    storage_backend="json",
+    storage_path="/path/to/storage",
+)
+```
+
+## Configuration
+
+### Via glacis.yaml
+
+```yaml
+version: "1.3"
+evidence_storage:
+  backend: "sqlite"     # "sqlite" or "json"
+  path: "~/.glacis/glacis.db"  # For sqlite: full .db file path; for json: directory path
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `str` | `"sqlite"` | Storage backend: `"sqlite"` or `"json"` |
+| `path` | `str \| None` | `None` | For SQLite: full `.db` file path (default: `~/.glacis/glacis.db`). For JSON: directory containing `.jsonl` files (default: `~/.glacis`) |
+
+### Via Constructor
+
+```python
+import os
+from pathlib import Path
+from glacis import Glacis
+
+# Custom SQLite path
+glacis = Glacis(
+    mode="offline",
+    signing_seed=os.urandom(32),
+    db_path=Path("/custom/path/glacis.db"),
+)
+
+# Or use storage_path (overrides db_path)
+glacis = Glacis(
+    mode="offline",
+    signing_seed=os.urandom(32),
+    storage_backend="json",
+    storage_path=Path("/custom/path"),
+)
+```
+
+### Using create_storage() Directly
+
+For direct access to a storage backend without creating a Glacis client:
+
+```python
+from pathlib import Path
+from glacis.storage import create_storage
+
+# Default SQLite — uses ~/.glacis/glacis.db
+storage = create_storage()
+
+# Custom SQLite — path must be the full .db file path
+storage = create_storage(backend="sqlite", path=Path("/custom/path/glacis.db"))
+
+# Custom JSONL — path is the directory for .jsonl files
+storage = create_storage(backend="json", path=Path("/custom/path"))
+```
+
+<Aside type="note">
+  Both `create_storage()`, the constructor's `db_path` parameter, and the `evidence_storage.path` in `glacis.yaml` expect the **full file path** for SQLite (e.g., `~/.glacis/glacis.db`). For JSONL, the path is a **directory** containing `.jsonl` files.
+</Aside>
+
+## Receipt Methods
+
+Both backends implement the same `StorageBackend` protocol for receipts:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `store_receipt` | `(receipt, input_preview?, output_preview?, metadata?)` | Store an attestation |
+| `get_receipt` | `(attestation_id) -> Attestation \| None` | Retrieve by ID |
+| `get_last_receipt` | `() -> Attestation \| None` | Get the most recently created attestation |
+| `query_receipts` | `(service_id?, start?, end?, limit=50) -> list[Attestation]` | Query with optional filters |
+| `count_receipts` | `(service_id?) -> int` | Count receipts, optionally filtered |
+| `delete_receipt` | `(attestation_id) -> bool` | Delete a receipt by ID |
+
+### Examples
+
+```python
+from glacis.storage import create_storage
+
+storage = create_storage()
+
+# Get the last receipt
+last = storage.get_last_receipt()
+
+# Look up by ID
+receipt = storage.get_receipt("oatt_abc123")
+
+# Query by service
+receipts = storage.query_receipts(service_id="my-service", limit=10)
+
+# Count all receipts
+total = storage.count_receipts()
+```
+
+## Evidence Methods
+
+Evidence methods store and retrieve the full input/output payloads for audit:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `store_evidence` | `(attestation_id, attestation_hash, mode, service_id, operation_type, timestamp, input_data, output_data, control_plane_results?, metadata?, sampling_level="L0")` | Store full evidence |
+| `get_evidence` | `(attestation_id) -> dict \| None` | Retrieve by attestation ID |
+| `get_evidence_by_hash` | `(attestation_hash) -> dict \| None` | Retrieve by evidence hash |
+| `query_evidence` | `(service_id?, mode?, start?, end?, limit=50) -> list[dict]` | Query with optional filters |
+| `count_evidence` | `(service_id?, mode?) -> int` | Count evidence records |
+
+### Examples
+
+```python
+from glacis.storage import create_storage
+
+storage = create_storage()
+
+# Retrieve evidence for an attestation
+evidence = storage.get_evidence("oatt_abc123")
+if evidence:
+    print(f"Input: {evidence['input']}")
+    print(f"Output: {evidence['output']}")
+    print(f"Level: {evidence['sampling_level']}")
+
+# Look up by hash
+evidence = storage.get_evidence_by_hash("a1b2c3d4...")
+
+# Query evidence for a service
+records = storage.query_evidence(service_id="my-service", mode="offline", limit=20)
+```
+
+<Aside type="note">
+  Evidence is intentionally append-only -- there is no `delete_evidence` method. This ensures a complete audit trail.
+</Aside>
+
+## StorageBackend Protocol
+
+To implement a custom storage backend, implement the `StorageBackend` protocol defined in `glacis/storage.py`. Your backend must implement all receipt and evidence methods listed above, plus a `close()` method.
+
+```python
+from typing import Any, Optional
+from glacis.storage import StorageBackend
+from glacis.models import Attestation
+
+
+class MyStorageBackend:
+    """Custom storage backend example."""
+
+    def store_receipt(
+        self,
+        receipt: Attestation,
+        input_preview: Optional[str] = None,
+        output_preview: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        # Store the receipt in your system
+        ...
+
+    def get_receipt(self, attestation_id: str) -> Optional[Attestation]:
+        ...
+
+    def get_last_receipt(self) -> Optional[Attestation]:
+        ...
+
+    def query_receipts(
+        self,
+        service_id: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[Attestation]:
+        ...
+
+    def count_receipts(self, service_id: Optional[str] = None) -> int:
+        ...
+
+    def delete_receipt(self, attestation_id: str) -> bool:
+        ...
+
+    def store_evidence(
+        self,
+        attestation_id: str,
+        attestation_hash: str,
+        mode: str,
+        service_id: str,
+        operation_type: str,
+        timestamp: int,
+        input_data: Any,
+        output_data: Any,
+        control_plane_results: Optional[Any] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        sampling_level: str = "L0",
+    ) -> None:
+        ...
+
+    def get_evidence(self, attestation_id: str) -> Optional[dict[str, Any]]:
+        ...
+
+    def get_evidence_by_hash(self, attestation_hash: str) -> Optional[dict[str, Any]]:
+        ...
+
+    def query_evidence(
+        self,
+        service_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    def count_evidence(
+        self, service_id: Optional[str] = None, mode: Optional[str] = None
+    ) -> int:
+        ...
+
+    def close(self) -> None:
+        ...
+```
+
+The `StorageBackend` protocol is `@runtime_checkable`, so you can verify your implementation with `isinstance(my_backend, StorageBackend)`.
+
+## See Also
+
+- [Configuration](/sdk/python/configuration/) -- `evidence_storage` section in `glacis.yaml`
+- [Offline Mode](/sdk/python/offline/) -- how offline receipts use local storage
+- [Sampling & Evidence](/sdk/python/sampling/) -- how evidence collection works

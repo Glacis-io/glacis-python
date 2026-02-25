@@ -1,0 +1,8 @@
+# GLACIS Documentation
+# https://docs.glacis.io
+
+User-agent: *
+Allow: /
+
+# Sitemaps
+Sitemap: https://docs.glacis.io/sitemap-index.xml

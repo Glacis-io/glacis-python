@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" fill="none">
+  <defs>
+    <linearGradient id="bg-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="shield-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg-gradient)"/>
+
+  <!-- Grid pattern -->
+  <g stroke="#2563eb" stroke-opacity="0.1" stroke-width="1">
+    <line x1="0" y1="100" x2="1200" y2="100"/>
+    <line x1="0" y1="200" x2="1200" y2="200"/>
+    <line x1="0" y1="300" x2="1200" y2="300"/>
+    <line x1="0" y1="400" x2="1200" y2="400"/>
+    <line x1="0" y1="500" x2="1200" y2="500"/>
+    <line x1="200" y1="0" x2="200" y2="630"/>
+    <line x1="400" y1="0" x2="400" y2="630"/>
+    <line x1="600" y1="0" x2="600" y2="630"/>
+    <line x1="800" y1="0" x2="800" y2="630"/>
+    <line x1="1000" y1="0" x2="1000" y2="630"/>
+  </g>
+
+  <!-- Shield icon -->
+  <g transform="translate(100, 180)">
+    <path d="M70 0 L140 20 L140 85 C140 145 105 175 70 190 C35 175 0 145 0 85 L0 20 Z"
+          fill="url(#shield-gradient)" opacity="0.9"/>
+    <path d="M50 80 L65 95 L100 55"
+          stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- GLACIS text -->
+  <text x="280" y="280" font-family="system-ui, -apple-system, sans-serif" font-size="72" font-weight="700" fill="white">
+    GLACIS
+  </text>
+
+  <!-- Tagline -->
+  <text x="280" y="340" font-family="system-ui, -apple-system, sans-serif" font-size="32" fill="#94a3b8">
+    AI Compliance Attestation Infrastructure
+  </text>
+
+  <!-- Subtext -->
+  <text x="280" y="400" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#64748b">
+    Cryptographic proof-of-compliance for ISO 42001
+  </text>
+
+  <!-- URL -->
+  <text x="280" y="480" font-family="system-ui, -apple-system, sans-serif" font-size="20" fill="#2563eb">
+    docs.glacis.io
+  </text>
+
+  <!-- Right side decoration -->
+  <g transform="translate(850, 200)">
+    <rect x="0" y="0" width="250" height="60" rx="8" fill="#1e3a5f" opacity="0.5"/>
+    <text x="20" y="38" font-family="monospace" font-size="16" fill="#60a5fa">
+      L0 Attestation ✓
+    </text>
+  </g>
+  <g transform="translate(850, 280)">
+    <rect x="0" y="0" width="250" height="60" rx="8" fill="#1e3a5f" opacity="0.5"/>
+    <text x="20" y="38" font-family="monospace" font-size="16" fill="#60a5fa">
+      L2 Evidence ✓
+    </text>
+  </g>
+  <g transform="translate(850, 360)">
+    <rect x="0" y="0" width="250" height="60" rx="8" fill="#1e3a5f" opacity="0.5"/>
+    <text x="20" y="38" font-family="monospace" font-size="16" fill="#60a5fa">
+      Merkle Proof ✓
+    </text>
+  </g>
+</svg>

@@ -1,0 +1,276 @@
+---
+title: Configuration
+description: Configure the Glacis Python SDK with glacis.yaml -- controls, sampling, judges, attestation, and evidence storage.
+---
+
+import { Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Glacis uses a `glacis.yaml` configuration file (v1.3 format) to define policy metadata, input/output controls, sampling rates, judge thresholds, attestation mode, and evidence storage. The SDK auto-loads `./glacis.yaml` from your working directory when used with integrations.
+
+## Full Annotated Reference
+
+```yaml
+version: "1.3"
+
+# --- Policy metadata (included in attestations) ---
+policy:
+  id: "hipaa-safe-harbor"
+  version: "1.0"
+  environment: "production"
+  tags: ["healthcare", "hipaa"]
+
+# --- Input/output controls ---
+controls:
+  output_block_action: "block"   # "block" or "forward"
+  input:
+    pii_phi:
+      enabled: true
+      model: "presidio"                        # Detection engine
+      mode: "fast"                             # "fast" (regex) or "full" (regex + NER)
+      entities: ["US_SSN", "EMAIL_ADDRESS"]    # Empty = all HIPAA entities
+      if_detected: "flag"                      # "forward", "flag", or "block"
+    word_filter:
+      enabled: true
+      entities: ["confidential", "proprietary"]
+      if_detected: "flag"
+    jailbreak:
+      enabled: true
+      model: "prompt_guard_22m"                # or "prompt_guard_86m"
+      threshold: 0.5                           # Classification threshold (0-1)
+      if_detected: "block"
+  output:
+    pii_phi:
+      enabled: true
+      model: "presidio"
+      mode: "fast"
+      entities: []
+      if_detected: "flag"
+    word_filter:
+      enabled: true
+      entities: ["system prompt", "secret"]
+      if_detected: "flag"
+    jailbreak:
+      enabled: false
+
+# --- Sampling tiers ---
+sampling:
+  l1_rate: 1.0    # Probability of L1 evidence collection (0.0-1.0)
+  l2_rate: 0.0    # Probability of L2 deep inspection (0.0-1.0, must be ≤ l1_rate)
+
+# --- Judge pipeline thresholds ---
+judges:
+  max_score: 3.0
+  consensus_threshold: 1.0
+  uphold_threshold: 2.0
+  borderline_threshold: 1.0
+  score_precision: 4
+
+# --- Attestation settings ---
+attestation:
+  offline: true           # true = offline (local signing), false = online (server-witnessed)
+  service_id: "my-service"
+
+# --- Evidence storage ---
+evidence_storage:
+  backend: "sqlite"       # "sqlite" or "json"
+  path: "~/.glacis/glacis.db"  # For sqlite: full .db file path; for json: directory for .jsonl files
+```
+
+## Section Reference
+
+### `policy`
+
+Policy metadata is included in every attestation for audit traceability.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | `str` | `"default"` | Policy identifier (e.g., `"hipaa-safe-harbor"`) |
+| `version` | `str` | `"1.0"` | Policy version |
+| `environment` | `str` | `"development"` | Environment name (e.g., `"production"`, `"staging"`) |
+| `tags` | `list[str]` | `[]` | Custom tags for filtering and grouping |
+
+### `controls`
+
+Controls run on input text (before the LLM call) and output text (after the LLM call). Each control can be independently enabled and configured per stage.
+
+#### `controls.output_block_action`
+
+| Value | Behavior |
+|-------|----------|
+| `"block"` | Raises `GlacisBlockedError` -- the LLM response is withheld from the caller |
+| `"forward"` | Returns the LLM response but marks the determination as `"blocked"` in the attestation |
+
+#### `controls.input` / `controls.output`
+
+Both stages support the same three controls: `pii_phi`, `word_filter`, and `jailbreak`.
+
+**`pii_phi` -- PII/PHI Detection**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable PII/PHI scanning |
+| `model` | `str` | `"presidio"` | Detection engine identifier |
+| `mode` | `"fast"` \| `"full"` | `"fast"` | `"fast"` = regex only, `"full"` = regex + NER model |
+| `entities` | `list[str]` | `[]` | Entity types to scan for (e.g., `"US_SSN"`, `"EMAIL_ADDRESS"`). Empty = all HIPAA entities |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when PII/PHI is detected |
+
+<Aside type="tip">
+  The `redaction` extra is required for PII/PHI controls: `pip install glacis[redaction]`. Despite the name, this extra provides **detection only** -- no text modification or redaction is performed.
+</Aside>
+
+**`word_filter` -- Keyword Matching**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable word filter |
+| `entities` | `list[str]` | `[]` | Literal terms to match (case-insensitive) |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when a term is matched |
+
+**`jailbreak` -- Prompt Injection Detection**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable jailbreak detection |
+| `model` | `str` | `"prompt_guard_22m"` | Detection model: `"prompt_guard_22m"` or `"prompt_guard_86m"` |
+| `threshold` | `float` | `0.5` | Classification threshold (0.0 to 1.0) |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when jailbreak is detected |
+
+<Aside type="tip">
+  The `jailbreak` extra is required for prompt injection detection: `pip install glacis[jailbreak]`
+</Aside>
+
+### `sampling`
+
+Controls the probability of promoting attestations to higher tiers. Sampling is deterministic and auditor-reproducible via HMAC-SHA256.
+
+| Field | Type | Default | Constraint | Description |
+|-------|------|---------|------------|-------------|
+| `l1_rate` | `float` | `1.0` | 0.0 - 1.0 | Probability of L1 sampling (evidence collection). `1.0` = collect all |
+| `l2_rate` | `float` | `0.0` | 0.0 - 1.0, must be ≤ `l1_rate` | Probability of L2 sampling (deep inspection). `0.0` = disabled |
+
+The three tiers:
+- **L0**: Control plane results only (always collected)
+- **L1**: Evidence collection -- input/output payloads retained locally
+- **L2**: Deep inspection -- flagged for judge evaluation (implies L1). Judges must be run separately via `JudgeRunner`
+
+<Aside type="caution">
+  `l2_rate` must be less than or equal to `l1_rate` because L2 sampling is a subset of L1. The SDK raises a `ValueError` if this constraint is violated.
+</Aside>
+
+### `judges`
+
+Thresholds for the judge pipeline that evaluates sampled attestations. Works for any scored evaluation scale.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_score` | `float` | `3.0` | Maximum score on the rubric scale |
+| `consensus_threshold` | `float` | `1.0` | Maximum score spread between judges before flagging disagreement |
+| `uphold_threshold` | `float` | `2.0` | Minimum average score for an `"uphold"` recommendation |
+| `borderline_threshold` | `float` | `1.0` | Minimum average score for `"borderline"` (below this = `"escalate"`) |
+| `score_precision` | `int` | `4` | Decimal places for rounding the final score |
+
+### `attestation`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `offline` | `bool` | `true` | `true` = offline mode (local Ed25519 signing), `false` = online mode (server-witnessed) |
+| `service_id` | `str` | `"openai"` | Default service identifier for attestations |
+
+### `evidence_storage`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `"sqlite"` \| `"json"` | `"sqlite"` | Storage backend. `"sqlite"` = SQLite database, `"json"` = JSONL append-only log |
+| `path` | `str \| null` | `null` (defaults to `~/.glacis/glacis.db` for SQLite, `~/.glacis` for JSON) | For SQLite: full `.db` file path. For JSON: directory containing `.jsonl` files |
+
+## Loading Configuration Programmatically
+
+Use `load_config()` from `glacis.config` to load and parse the configuration file:
+
+```python
+from glacis.config import load_config
+
+# Auto-load from ./glacis.yaml
+config = load_config()  # Returns glacis.config.GlacisConfig
+
+# Or specify an explicit path
+config = load_config("path/to/glacis.yaml")
+
+# Access any section
+print(config.policy.id)                    # "hipaa-safe-harbor"
+print(config.controls.input.pii_phi.enabled)  # True
+print(config.sampling.l1_rate)             # 1.0
+print(config.judges.uphold_threshold)      # 2.0
+print(config.attestation.offline)          # True
+print(config.evidence_storage.backend)     # "sqlite"
+```
+
+The returned `glacis.config.GlacisConfig` object is a Pydantic model, so you get full type safety and validation.
+
+<Aside type="caution">
+  There are **two different classes** named `GlacisConfig` in the SDK. Do not confuse them:
+
+  - **`glacis.config.GlacisConfig`** -- the YAML config model returned by `load_config()`. This holds controls, sampling, judges, and storage settings.
+  - **`glacis.models.GlacisConfig`** (also available as `from glacis import GlacisConfig`) -- the API client config for connecting to the Glacis service (api_key, timeout, etc.).
+
+  If you need the YAML config class, always import from `glacis.config`:
+  ```python
+  from glacis.config import GlacisConfig  # YAML config
+  ```
+  Using `from glacis import GlacisConfig` gives you the API client config class, which is **not** the same thing.
+</Aside>
+
+<Aside type="note">
+  `load_config()` requires `pyyaml`. Install it with `pip install pyyaml`, or it is included automatically with the `redaction`, `jailbreak`, `controls`, or `all` extras.
+</Aside>
+
+## Using with Integrations
+
+Provider integrations (OpenAI, Anthropic, Gemini) accept a `config` parameter to load a `glacis.yaml` file:
+
+```python
+from glacis.integrations.openai import attested_openai
+
+# Pass the path to your config file
+client = attested_openai(config="./glacis.yaml")
+
+# Controls, sampling, and attestation settings
+# are all applied automatically
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+## Defaults When No Config File Exists
+
+If no `glacis.yaml` is found, `load_config()` returns a `glacis.config.GlacisConfig` with all default values:
+
+| Section | Default Behavior |
+|---------|-----------------|
+| `policy` | `id="default"`, `version="1.0"`, `environment="development"`, no tags |
+| `controls` | All controls disabled, `output_block_action="block"` |
+| `sampling` | `l1_rate=1.0` (review all), `l2_rate=0.0` (no deep inspection) |
+| `judges` | `max_score=3.0`, `uphold_threshold=2.0`, `borderline_threshold=1.0` |
+| `attestation` | `offline=true`, `service_id="openai"` |
+| `evidence_storage` | `backend="sqlite"`, `path=null` (defaults to `~/.glacis/glacis.db`) |
+
+## Next Steps
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="Create your first attestation in under 5 minutes."
+    href="/sdk/python/quickstart/"
+  />
+  <LinkCard
+    title="Controls"
+    description="PII detection, word filtering, and jailbreak protection."
+    href="/sdk/python/controls/"
+  />
+  <LinkCard
+    title="CLI Reference"
+    description="Verify receipts from the command line."
+    href="/sdk/python/cli/"
+  />
+</CardGrid>

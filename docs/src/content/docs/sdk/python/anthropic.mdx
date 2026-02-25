@@ -1,0 +1,332 @@
+---
+title: Anthropic Integration
+description: Auto-attest every Anthropic Claude API call. Cryptographic receipts for all messages.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Glacis Anthropic integration wraps the official Anthropic client to automatically create cryptographic attestations for every message. Your data is hashed locally and never leaves your environment -- only hashes and metadata are sent to the Glacis transparency log.
+
+## Installation
+
+```bash
+pip install glacis[anthropic]
+```
+
+## Quick Start
+
+```python
+from glacis.integrations.anthropic import attested_anthropic, get_last_receipt
+
+client = attested_anthropic(
+    glacis_api_key="glsk_live_...",
+    anthropic_api_key="sk-ant-..."
+)
+
+# Make a normal Anthropic call -- attestation happens automatically
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello, Claude!"}]
+)
+
+print(response.content[0].text)
+
+# Get the attestation receipt
+receipt = get_last_receipt()
+print(f"Attested: {receipt.id}")
+print(f"Status: {receipt.witness_status}")
+```
+
+<Aside type="note">
+  The wrapped client has the exact same API as the official Anthropic client. Just swap `Anthropic()` for `attested_anthropic()`.
+</Aside>
+
+<Aside type="note">
+  All calls through this integration are recorded with `operation_type="completion"`. For custom operation types, use `glacis.attest()` directly.
+</Aside>
+
+## What Gets Attested
+
+For each message, Glacis captures:
+
+| Field | Treatment | Details |
+|-------|-----------|---------|
+| Request messages | Hashed | SHA-256, never sent to Glacis |
+| Response content | Hashed | SHA-256, never sent to Glacis |
+| System prompt | Hashed | SHA-256 hash included in control plane record |
+| Model name | Metadata | Sent as-is |
+| Temperature | Metadata | Included in control plane record |
+| Stop reason | Metadata | Included in output evidence |
+| Token counts | Metadata | input and output tokens |
+| Provider | Metadata | Always `"anthropic"` |
+
+## Environment Variables
+
+<Tabs>
+  <TabItem label="Online">
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-...
+    ```
+
+    ```python
+    from glacis.integrations.anthropic import attested_anthropic
+
+    # Anthropic key read from ANTHROPIC_API_KEY env var automatically
+    # Glacis API key must be passed explicitly
+    client = attested_anthropic(glacis_api_key="glsk_live_...")
+    ```
+  </TabItem>
+  <TabItem label="Offline">
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-...
+    ```
+
+    ```python
+    import os
+    from glacis.integrations.anthropic import attested_anthropic
+
+    # No Glacis API key needed for offline mode
+    client = attested_anthropic(
+        offline=True,
+        signing_seed=os.urandom(32),
+    )
+    ```
+  </TabItem>
+  <TabItem label="Explicit">
+    ```python
+    from glacis.integrations.anthropic import attested_anthropic
+
+    client = attested_anthropic(
+        glacis_api_key="glsk_live_...",
+        anthropic_api_key="sk-ant-..."
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+## Accessing Receipts
+
+Use `get_last_receipt()` to retrieve the attestation from the most recent API call. Receipts are stored in **thread-local storage**, so each thread maintains its own last receipt independently.
+
+```python
+from glacis.integrations.anthropic import get_last_receipt
+
+receipt = get_last_receipt()
+if receipt:
+    print(f"ID: {receipt.id}")
+    print(f"Evidence hash: {receipt.evidence_hash}")
+    print(f"Status: {receipt.witness_status}")  # "WITNESSED" or "UNVERIFIED"
+    print(f"Service: {receipt.service_id}")
+```
+
+<Aside type="caution">
+  `get_last_receipt()` returns the receipt for the **current thread only**. In multi-threaded applications, each thread tracks its own last receipt. Call `get_last_receipt()` immediately after the API call to avoid it being overwritten by a subsequent call.
+</Aside>
+
+## Offline Mode
+
+Offline mode creates locally-signed attestations without connecting to the Glacis server. This is useful for development, air-gapped environments, or when you want to defer attestation submission.
+
+Offline mode **requires** a `signing_seed` -- a 32-byte Ed25519 seed used for local signing:
+
+```python
+import os
+from glacis.integrations.anthropic import attested_anthropic, get_last_receipt
+
+client = attested_anthropic(
+    offline=True,
+    signing_seed=os.urandom(32),
+    anthropic_api_key="sk-ant-..."
+)
+
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+receipt = get_last_receipt()
+print(f"Status: {receipt.witness_status}")  # "UNVERIFIED"
+```
+
+<Aside type="tip">
+  See the [Offline Mode](/sdk/python/offline) page for details on offline signing, seed management, and later submission.
+</Aside>
+
+## System Prompts
+
+System prompts are hashed but never transmitted to Glacis. The hash is included in the control plane record for integrity verification:
+
+```python
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    system="You are a helpful AI assistant specialized in compliance.",
+    messages=[{"role": "user", "content": "What is GDPR?"}]
+)
+
+# System prompt hash is included in the attestation
+receipt = get_last_receipt()
+```
+
+## Multi-Turn Conversations
+
+Each API call creates a separate attestation. The full message history is included in the evidence hash for each turn:
+
+```python
+messages = []
+
+# First turn
+messages.append({"role": "user", "content": "Hello!"})
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=messages
+)
+receipt1 = get_last_receipt()
+messages.append({"role": "assistant", "content": response.content[0].text})
+
+# Second turn
+messages.append({"role": "user", "content": "How are you?"})
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=messages
+)
+receipt2 = get_last_receipt()
+
+# Each turn has its own attestation
+print(f"Turn 1: {receipt1.id}")
+print(f"Turn 2: {receipt2.id}")
+```
+
+## Using Controls
+
+Controls let you scan inputs and outputs for PII, jailbreak attempts, banned words, and more. Configure them via a `glacis.yaml` file:
+
+```python
+from glacis.integrations.anthropic import attested_anthropic, GlacisBlockedError
+
+client = attested_anthropic(
+    config="glacis.yaml",
+    anthropic_api_key="sk-ant-..."
+)
+
+try:
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "Hello!"}]
+    )
+    print(response.content[0].text)
+except GlacisBlockedError as e:
+    print(f"Blocked by {e.control_type} (score={e.score})")
+```
+
+The Anthropic integration supports multi-block content in user messages -- controls will scan all text blocks within a message.
+
+<Aside type="caution">
+  Input controls scan only the **last user message** in the conversation. Earlier messages in multi-turn conversations are not scanned. If you need to scan all messages, run controls manually before calling the integration.
+</Aside>
+
+You can also pass custom controls programmatically via the `input_controls` and `output_controls` parameters. See the `BaseControl` interface in `glacis.controls.base` for details on implementing custom controls.
+
+## Retrieving Evidence
+
+Evidence includes the full input, output, and control plane results that were attested. Evidence is stored **locally** and never sent to Glacis servers.
+
+```python
+from glacis.integrations.anthropic import get_last_receipt, get_evidence
+
+receipt = get_last_receipt()
+if receipt:
+    evidence = get_evidence(receipt.id)
+    if evidence:
+        print(evidence["input"])    # Original request (model, messages, system)
+        print(evidence["output"])   # Full response (content, stop_reason, usage)
+```
+
+`get_evidence()` accepts optional `storage_backend` and `storage_path` parameters to override the default storage location:
+
+```python
+evidence = get_evidence(
+    receipt.id,
+    storage_backend="sqlite",
+    storage_path="/path/to/evidence.db"
+)
+```
+
+## `attested_anthropic()` Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `glacis_api_key` | `Optional[str]` | `None` | Glacis API key. Required for online mode. Must be passed explicitly (no env var fallback). |
+| `anthropic_api_key` | `Optional[str]` | `None` | Anthropic API key. Falls back to `ANTHROPIC_API_KEY` env var. |
+| `glacis_base_url` | `str` | `"https://api.glacis.io"` | Glacis API base URL. |
+| `service_id` | `str` | `"anthropic"` | Service identifier for attestations. |
+| `debug` | `bool` | `False` | Enable debug logging. |
+| `offline` | `Optional[bool]` | `None` | Enable offline mode. If `None`, inferred from config or presence of `glacis_api_key`. |
+| `signing_seed` | `Optional[bytes]` | `None` | 32-byte Ed25519 signing seed. **Required** when `offline=True`. |
+| `config` | `Optional[str]` | `None` | Path to `glacis.yaml` config file for controls, sampling, and policy settings. |
+| `input_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on input text before the LLM call. |
+| `output_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on output text after the LLM call. |
+| `**anthropic_kwargs` | `Any` | -- | Additional keyword arguments passed directly to the `Anthropic()` client constructor. |
+
+**Returns:** A wrapped `Anthropic` client. The `client.messages.create()` method is intercepted to perform attestation automatically.
+
+**Raises:** `GlacisBlockedError` if a control blocks the request.
+
+## Full Example
+
+```python
+#!/usr/bin/env python3
+"""Complete example: Anthropic Claude with Glacis attestation."""
+import os
+from glacis.integrations.anthropic import attested_anthropic, get_last_receipt, get_evidence
+
+def main():
+    # Create attested client (online mode — requires GLACIS_API_KEY)
+    client = attested_anthropic(
+        glacis_api_key=os.environ["GLACIS_API_KEY"],
+    )
+
+    # Make a request with a system prompt
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        system="You are a compliance expert.",
+        messages=[
+            {"role": "user", "content": "What is ISO 42001?"}
+        ]
+    )
+
+    print("Response:", response.content[0].text)
+    print()
+
+    # Get attestation receipt
+    receipt = get_last_receipt()
+    if receipt:
+        print("Attestation Details:")
+        print(f"  ID: {receipt.id}")
+        print(f"  Evidence hash: {receipt.evidence_hash}")
+        print(f"  Status: {receipt.witness_status}")
+        print(f"  Service: {receipt.service_id}")
+        print()
+
+        # Retrieve full evidence
+        evidence = get_evidence(receipt.id)
+        if evidence:
+            print("Evidence stored locally:")
+            print(f"  Input model: {evidence['input']['model']}")
+            print(f"  Output tokens: {(evidence['output'].get('usage') or {}).get('output_tokens')}")
+
+if __name__ == "__main__":
+    main()
+```
+
+## Streaming
+
+<Aside type="note">
+  Streaming is **not yet supported**. Using `client.messages.stream()` will bypass Glacis attestation. Streaming support is planned for a future release.
+</Aside>

@@ -1,0 +1,125 @@
+---
+title: GLACIS Documentation
+description: Cryptographic attestation for AI systems. Prove what your models did without your data leaving.
+template: splash
+hero:
+  tagline: Zero-egress AI attestation. Create cryptographic proofs of AI operations without sensitive data leaving your environment.
+  image:
+    file: ../../assets/glacis-hero.svg
+  actions:
+    - text: Get Started
+      link: /sdk/python/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/Glacis-io/glacis-python
+      icon: external
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Install
+
+```bash
+pip install glacis
+```
+
+## Quick Example
+
+```python
+from glacis import Glacis
+import os
+
+# Offline mode - works immediately, no API key needed
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="my-ai-app",
+    operation_type="inference",
+    input={"prompt": "..."},   # Hashed locally, never sent
+    output={"response": "..."}, # Hashed locally, never sent
+)
+
+print(receipt.id)              # oatt_xxx...
+print(receipt.witness_status)  # UNVERIFIED
+```
+
+## What Gets Sent?
+
+| Data | Transmitted? |
+|------|--------------|
+| Your prompts | No -- SHA-256 hash only |
+| Model outputs | No -- SHA-256 hash only |
+| API keys | No |
+| Timestamps | Yes |
+| Service ID | Yes |
+
+Your sensitive data stays local. Only cryptographic commitments are transmitted for witnessing.
+
+<CardGrid stagger>
+  <Card title="Zero-Egress" icon="lock">
+    Payloads are hashed locally using SHA-256. Only the hash is transmitted -- your data never leaves your environment.
+  </Card>
+  <Card title="Offline Mode" icon="laptop">
+    Works immediately without an API key. Receipts are self-signed with Ed25519 and marked "UNVERIFIED".
+  </Card>
+  <Card title="Provider Integrations" icon="puzzle">
+    Auto-attesting wrappers for OpenAI, Anthropic, and Gemini. Every API call is automatically attested.
+  </Card>
+  <Card title="Verifiable" icon="approve-check">
+    Receipts can be independently verified. Online mode adds Merkle proofs and a transparency log.
+  </Card>
+</CardGrid>
+
+## SDK Documentation
+
+<CardGrid>
+  <LinkCard
+    title="Installation"
+    description="Install the SDK with pip, poetry, or uv."
+    href="/sdk/python/installation/"
+  />
+  <LinkCard
+    title="Quickstart"
+    description="Create your first attestation in under 5 minutes."
+    href="/sdk/python/quickstart/"
+  />
+  <LinkCard
+    title="Configuration"
+    description="Set up glacis.yaml for controls, sampling, judges, and storage."
+    href="/sdk/python/configuration/"
+  />
+  <LinkCard
+    title="Controls"
+    description="PII detection, word filtering, and jailbreak protection."
+    href="/sdk/python/controls/"
+  />
+  <LinkCard
+    title="Offline Mode"
+    description="Use the SDK without an API key for development."
+    href="/sdk/python/offline/"
+  />
+  <LinkCard
+    title="OpenAI Integration"
+    description="Auto-attest every OpenAI API call."
+    href="/sdk/python/openai/"
+  />
+</CardGrid>
+
+## Offline vs Online Mode
+
+| Feature | Offline | Online |
+|---------|---------|--------|
+| API key required | No | Yes |
+| Signing | Local Ed25519 | Glacis witness |
+| Merkle proofs | No | Yes |
+| Verification URL | No | Yes |
+| Witness status | UNVERIFIED | WITNESSED |
+
+Start with offline mode for development. Upgrade to online when you need third-party verifiability for audits, papers, or customer due diligence.
+
+## Links
+
+- [PyPI Package](https://pypi.org/project/glacis/)
+- [GitHub Repository](https://github.com/Glacis-io/glacis-python)
+- [API Reference](/sdk/python/api/)
