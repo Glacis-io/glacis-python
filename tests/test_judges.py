@@ -184,6 +184,88 @@ class TestReview:
         result = self._make_result([1.0, 1.0])
         assert result.recommendation == "borderline"
 
+    # --- to_wire_review() tests ---
+
+    def test_to_wire_review_basic(self):
+        """Basic conversion with two verdicts."""
+        result = self._make_result([2.0, 3.0])
+        wire = result.to_wire_review(sample_probability=0.5)
+        assert wire["sample_probability"] == 0.5
+        assert wire["judge_ids"] == ["j0", "j1"]
+        assert wire["conformity_score"] == round(2.5 / 3.0, 4)
+        assert wire["recommendation"] == "uphold"
+        assert wire["rationale"] == "test; test"
+
+    def test_to_wire_review_max_score_zero(self):
+        """max_score=0 should not cause ZeroDivisionError."""
+        result = Review(
+            verdicts=[JudgeVerdict(judge_id="j0", score=0.0, rationale="n/a")],
+            final_score=0.0,
+            max_score=0.0,
+            consensus=True,
+            recommendation="escalate",
+        )
+        wire = result.to_wire_review(sample_probability=0.1)
+        assert wire["conformity_score"] == 0.0
+
+    def test_to_wire_review_conformity_clamped_above_one(self):
+        """Scores exceeding max_score should be clamped to 1.0."""
+        result = Review(
+            verdicts=[JudgeVerdict(judge_id="j0", score=5.0, rationale="over")],
+            final_score=5.0,
+            max_score=3.0,
+            consensus=True,
+            recommendation="uphold",
+        )
+        wire = result.to_wire_review(sample_probability=1.0)
+        assert wire["conformity_score"] == 1.0
+
+    def test_to_wire_review_conformity_clamped_at_zero(self):
+        """Zero score should produce conformity_score 0.0."""
+        result = self._make_result([0.0, 0.0])
+        wire = result.to_wire_review(sample_probability=0.5)
+        assert wire["conformity_score"] == 0.0
+
+    def test_to_wire_review_empty_verdicts(self):
+        """Empty verdicts list should produce empty judge_ids and rationale."""
+        result = Review(
+            verdicts=[],
+            final_score=0.0,
+            max_score=3.0,
+            consensus=True,
+            recommendation="escalate",
+        )
+        wire = result.to_wire_review(sample_probability=0.0)
+        assert wire["judge_ids"] == []
+        assert wire["rationale"] == ""
+        assert wire["conformity_score"] == 0.0
+
+    def test_to_wire_review_sample_probability_boundaries(self):
+        """sample_probability at 0.0 and 1.0 are passed through unchanged."""
+        result = self._make_result([2.0])
+        wire_zero = result.to_wire_review(sample_probability=0.0)
+        wire_one = result.to_wire_review(sample_probability=1.0)
+        assert wire_zero["sample_probability"] == 0.0
+        assert wire_one["sample_probability"] == 1.0
+
+    def test_to_wire_review_rationale_joins_multiple(self):
+        """Rationales from multiple verdicts are joined with '; '."""
+        verdicts = [
+            JudgeVerdict(judge_id="a", score=2.0, rationale="first reason"),
+            JudgeVerdict(judge_id="b", score=3.0, rationale="second reason"),
+            JudgeVerdict(judge_id="c", score=2.5, rationale="third reason"),
+        ]
+        result = Review(
+            verdicts=verdicts,
+            final_score=2.5,
+            max_score=3.0,
+            consensus=True,
+            recommendation="uphold",
+        )
+        wire = result.to_wire_review(sample_probability=0.5)
+        assert wire["rationale"] == "first reason; second reason; third reason"
+        assert wire["judge_ids"] == ["a", "b", "c"]
+
 
 # =============================================================================
 # JudgeRunner tests
