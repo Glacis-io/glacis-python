@@ -179,6 +179,32 @@ except GlacisBlockedError as e:
 
 You can also pass custom controls programmatically via the `input_controls` and `output_controls` parameters. See the `BaseControl` interface in `glacis.controls.base` for details on implementing custom controls.
 
+## Custom Metadata
+
+Attach business-specific metadata to every attestation created by the client. Custom metadata is merged with provider defaults (`provider` and `model`, which are set automatically).
+
+```python
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    glacis_api_key="glsk_live_...",
+    openai_api_key="sk-...",
+    metadata={"department": "legal", "use_case": "contract-review"},
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Summarize this contract."}],
+)
+
+# Metadata is included in every attestation:
+# {"provider": "openai", "model": "gpt-4o", "department": "legal", "use_case": "contract-review"}
+```
+
+<Aside type="note">
+  Metadata values must be strings. The reserved keys `provider` and `model` are set automatically and cannot be overridden.
+</Aside>
+
 ## Retrieving Evidence
 
 Evidence includes the full input, output, and control plane results that were attested. Evidence is stored **locally** and never sent to Glacis servers.
@@ -215,9 +241,11 @@ evidence = get_evidence(
 | `debug` | `bool` | `False` | Enable debug logging. |
 | `offline` | `Optional[bool]` | `None` | Enable offline mode. If `None`, inferred from config or presence of `glacis_api_key`. |
 | `signing_seed` | `Optional[bytes]` | `None` | 32-byte Ed25519 signing seed. **Required** when `offline=True`. |
+| `policy_key` | `Optional[bytes]` | `None` | 32-byte HMAC key for sampling decisions. Falls back to `signing_seed` if not provided. |
 | `config` | `Optional[str]` | `None` | Path to `glacis.yaml` config file for controls, sampling, and policy settings. |
 | `input_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on input text before the LLM call. |
 | `output_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on output text after the LLM call. |
+| `metadata` | `Optional[dict[str, str]]` | `None` | Custom metadata to include in every attestation. Merged with provider defaults (`provider`, `model`). Cannot override reserved keys. |
 | `**openai_kwargs` | `Any` | -- | Additional keyword arguments passed directly to the `OpenAI()` client constructor. |
 
 **Returns:** A wrapped `OpenAI` client. The `client.chat.completions.create()` method is intercepted to perform attestation automatically.
@@ -277,5 +305,5 @@ if __name__ == "__main__":
 ## Streaming
 
 <Aside type="note">
-  Streaming is **not yet supported**. Passing `stream=True` to `client.chat.completions.create()` will bypass Glacis attestation. Streaming support is planned for a future release.
+  Streaming is **not yet supported**. Passing `stream=True` to `client.chat.completions.create()` may produce errors or incomplete attestations, as the wrapper expects a non-streaming response object. Streaming support is planned for a future release.
 </Aside>

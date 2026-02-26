@@ -12,12 +12,18 @@ import pytest
 from glacis.integrations.base import (
     ControlResultsAccumulator,
     GlacisBlockedError,
+    IntegrationContext,
     _map_control_type,
+    attest_and_store,
+    build_metadata,
+    check_input_block,
+    check_output_block,
     create_control_plane_results,
     handle_blocked_request,
     initialize_config,
     run_input_controls,
     run_output_controls,
+    setup_integration,
 )
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -472,3 +478,415 @@ class TestInitializeConfig:
         )
 
         assert effective_service_id == "openai"
+
+
+# ─── build_metadata Tests ──────────────────────────────────────────────────
+
+
+class TestBuildMetadata:
+    """Tests for build_metadata helper."""
+
+    def test_defaults_only(self):
+        """Returns provider and model when no custom metadata."""
+        result = build_metadata("openai", "gpt-4o")
+        assert result == {"provider": "openai", "model": "gpt-4o"}
+
+    def test_merges_custom_metadata(self):
+        """Custom metadata is merged with defaults."""
+        result = build_metadata(
+            "openai", "gpt-4o",
+            custom_metadata={"department": "legal", "use_case": "review"},
+        )
+        assert result == {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "department": "legal",
+            "use_case": "review",
+        }
+
+    def test_extra_kwargs(self):
+        """Extra kwargs are included in metadata."""
+        result = build_metadata("openai", "gpt-4o", blocked="True")
+        assert result == {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "blocked": "True",
+        }
+
+    def test_custom_metadata_with_extra_kwargs(self):
+        """Custom metadata and extra kwargs combine."""
+        result = build_metadata(
+            "openai", "gpt-4o",
+            custom_metadata={"dept": "eng"},
+            blocked="True",
+        )
+        assert result["provider"] == "openai"
+        assert result["model"] == "gpt-4o"
+        assert result["dept"] == "eng"
+        assert result["blocked"] == "True"
+
+    def test_rejects_provider_override(self):
+        """Cannot override 'provider' via custom metadata."""
+        with pytest.raises(ValueError, match="provider"):
+            build_metadata("openai", "gpt-4o", custom_metadata={"provider": "fake"})
+
+    def test_rejects_model_override(self):
+        """Cannot override 'model' via custom metadata."""
+        with pytest.raises(ValueError, match="model"):
+            build_metadata("openai", "gpt-4o", custom_metadata={"model": "fake"})
+
+    def test_none_custom_metadata(self):
+        """None custom_metadata is handled gracefully."""
+        result = build_metadata("anthropic", "claude-3", custom_metadata=None)
+        assert result == {"provider": "anthropic", "model": "claude-3"}
+
+    def test_empty_custom_metadata(self):
+        """Empty dict custom_metadata is handled gracefully."""
+        result = build_metadata("gemini", "gemini-2.5-flash", custom_metadata={})
+        assert result == {"provider": "gemini", "model": "gemini-2.5-flash"}
+
+
+# ─── handle_blocked_request with custom_metadata Tests ─────────────────────
+
+
+class TestHandleBlockedRequestCustomMetadata:
+    """Tests for handle_blocked_request with custom_metadata parameter."""
+
+    def test_custom_metadata_in_blocked_attestation(self, signing_seed):
+        """Custom metadata is included in blocked request attestation."""
+        from glacis import Glacis
+
+        glacis = Glacis(mode="offline", signing_seed=signing_seed)
+
+        with patch.object(glacis, "attest", wraps=glacis.attest) as mock_attest:
+            with pytest.raises(GlacisBlockedError):
+                handle_blocked_request(
+                    glacis_client=glacis,
+                    service_id="test",
+                    input_data={"model": "gpt-4", "messages": []},
+                    control_plane_results=None,
+                    provider="openai",
+                    model="gpt-4",
+                    blocking_control_type="jailbreak",
+                    blocking_score=0.95,
+                    debug=False,
+                    custom_metadata={"department": "legal"},
+                )
+
+        call_kwargs = mock_attest.call_args[1]
+        metadata = call_kwargs["metadata"]
+        assert metadata["provider"] == "openai"
+        assert metadata["model"] == "gpt-4"
+        assert metadata["blocked"] == "True"
+        assert metadata["department"] == "legal"
+
+
+# ─── IntegrationContext Tests ───────────────────────────────────────────────
+
+
+class TestIntegrationContext:
+    """Tests for IntegrationContext dataclass."""
+
+    def test_construction(self):
+        """IntegrationContext can be constructed with all fields."""
+        ctx = IntegrationContext(
+            glacis=MagicMock(),
+            cfg=_default_config(),
+            controls_runner=None,
+            effective_service_id="openai",
+            storage_backend="sqlite",
+            storage_path=None,
+            output_block_action="block",
+            custom_metadata={"dept": "eng"},
+            debug=False,
+        )
+        assert ctx.effective_service_id == "openai"
+        assert ctx.custom_metadata == {"dept": "eng"}
+        assert ctx.output_block_action == "block"
+
+
+# ─── setup_integration Tests ───────────────────────────────────────────────
+
+
+class TestSetupIntegration:
+    """Tests for setup_integration helper."""
+
+    def test_returns_integration_context(self, signing_seed):
+        """setup_integration returns a fully populated IntegrationContext."""
+        ctx = setup_integration(
+            config=None,
+            offline=True,
+            glacis_api_key=None,
+            glacis_base_url="https://api.glacis.io",
+            default_service_id="openai",
+            service_id="openai",
+            debug=False,
+            signing_seed=signing_seed,
+            policy_key=None,
+            input_controls=None,
+            output_controls=None,
+            metadata={"dept": "eng"},
+        )
+        assert isinstance(ctx, IntegrationContext)
+        assert ctx.effective_service_id == "openai"
+        assert ctx.custom_metadata == {"dept": "eng"}
+        assert ctx.debug is False
+
+    def test_requires_signing_seed_offline(self):
+        """Offline mode without signing_seed raises ValueError."""
+        with pytest.raises(ValueError, match="signing_seed"):
+            setup_integration(
+                config=None,
+                offline=True,
+                glacis_api_key=None,
+                glacis_base_url="https://api.glacis.io",
+                default_service_id="openai",
+                service_id="openai",
+                debug=False,
+                signing_seed=None,
+                policy_key=None,
+                input_controls=None,
+                output_controls=None,
+                metadata=None,
+            )
+
+    def test_requires_api_key_online(self):
+        """Online mode without glacis_api_key raises ValueError."""
+        with pytest.raises(ValueError, match="api_key|glacis_api_key"):
+            setup_integration(
+                config=None,
+                offline=False,
+                glacis_api_key=None,
+                glacis_base_url="https://api.glacis.io",
+                default_service_id="openai",
+                service_id="openai",
+                debug=False,
+                signing_seed=None,
+                policy_key=None,
+                input_controls=None,
+                output_controls=None,
+                metadata=None,
+            )
+
+
+# ─── check_input_block Tests ───────────────────────────────────────────────
+
+
+class TestCheckInputBlock:
+    """Tests for check_input_block helper."""
+
+    def _make_ctx(self, signing_seed):
+        return setup_integration(
+            config=None,
+            offline=True,
+            glacis_api_key=None,
+            glacis_base_url="https://api.glacis.io",
+            default_service_id="openai",
+            service_id="openai",
+            debug=False,
+            signing_seed=signing_seed,
+            policy_key=None,
+            input_controls=None,
+            output_controls=None,
+            metadata=None,
+        )
+
+    def test_noop_when_not_blocking(self, signing_seed):
+        """Does nothing when accumulator has no block."""
+        ctx = self._make_ctx(signing_seed)
+        acc = ControlResultsAccumulator()
+
+        # Should not raise
+        check_input_block(ctx, acc, "gpt-4", "openai", {"model": "gpt-4"})
+
+    def test_raises_when_blocking(self, signing_seed):
+        """Raises GlacisBlockedError when accumulator has a block."""
+        ctx = self._make_ctx(signing_seed)
+        acc = ControlResultsAccumulator()
+        results = [_make_control_result(control_type="jailbreak", action="block", score=0.95)]
+        stage = _make_stage_result(results=results, should_block=True)
+        acc.update_from_stage(stage, "input")
+
+        with pytest.raises(GlacisBlockedError) as exc_info:
+            check_input_block(
+                ctx, acc, "gpt-4", "openai",
+                {"model": "gpt-4", "messages": []},
+            )
+
+        assert exc_info.value.control_type == "jailbreak"
+        assert exc_info.value.score == 0.95
+
+
+# ─── check_output_block Tests ──────────────────────────────────────────────
+
+
+class TestCheckOutputBlock:
+    """Tests for check_output_block helper."""
+
+    def _make_ctx(self, signing_seed, output_block_action="block"):
+        ctx = setup_integration(
+            config=None,
+            offline=True,
+            glacis_api_key=None,
+            glacis_base_url="https://api.glacis.io",
+            default_service_id="openai",
+            service_id="openai",
+            debug=False,
+            signing_seed=signing_seed,
+            policy_key=None,
+            input_controls=None,
+            output_controls=None,
+            metadata=None,
+        )
+        # Override block action for testing
+        ctx.output_block_action = output_block_action
+        return ctx
+
+    def test_noop_when_not_blocking(self, signing_seed):
+        """Does nothing when accumulator has no block."""
+        ctx = self._make_ctx(signing_seed)
+        acc = ControlResultsAccumulator()
+        cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
+
+        # Should not raise
+        check_output_block(ctx, acc, "gpt-4", "openai", {"model": "gpt-4"}, cpr)
+
+    def test_noop_when_forward_action(self, signing_seed):
+        """Does nothing when output_block_action is 'forward'."""
+        ctx = self._make_ctx(signing_seed, output_block_action="forward")
+        # Need a controls_runner to pass the guard condition
+        ctx.controls_runner = MagicMock()
+        ctx.controls_runner.has_output_controls = True
+
+        acc = ControlResultsAccumulator()
+        results = [_make_control_result(control_type="pii", action="block", score=0.9)]
+        stage = _make_stage_result(results=results, should_block=True)
+        acc.update_from_stage(stage, "output")
+        cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
+
+        # Should not raise because action is "forward"
+        check_output_block(ctx, acc, "gpt-4", "openai", {"model": "gpt-4"}, cpr)
+
+    def test_raises_when_block_action(self, signing_seed):
+        """Raises GlacisBlockedError when output_block_action is 'block'."""
+        ctx = self._make_ctx(signing_seed, output_block_action="block")
+        ctx.controls_runner = MagicMock()
+        ctx.controls_runner.has_output_controls = True
+
+        acc = ControlResultsAccumulator()
+        results = [_make_control_result(control_type="pii", action="block", score=0.9)]
+        stage = _make_stage_result(results=results, should_block=True)
+        acc.update_from_stage(stage, "output")
+        cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
+
+        with pytest.raises(GlacisBlockedError) as exc_info:
+            check_output_block(
+                ctx, acc, "gpt-4", "openai",
+                {"model": "gpt-4", "messages": []}, cpr,
+            )
+
+        assert exc_info.value.control_type == "pii"
+
+    def test_noop_when_no_controls_runner(self, signing_seed):
+        """Does nothing when controls_runner is None."""
+        ctx = self._make_ctx(signing_seed)
+        # controls_runner is None by default (no controls enabled)
+        acc = ControlResultsAccumulator()
+        acc.should_block = True
+        cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
+
+        # Should not raise
+        check_output_block(ctx, acc, "gpt-4", "openai", {"model": "gpt-4"}, cpr)
+
+
+# ─── attest_and_store Tests ────────────────────────────────────────────────
+
+
+class TestAttestAndStore:
+    """Tests for attest_and_store helper."""
+
+    def _make_ctx(self, signing_seed):
+        return setup_integration(
+            config=None,
+            offline=True,
+            glacis_api_key=None,
+            glacis_base_url="https://api.glacis.io",
+            default_service_id="openai",
+            service_id="openai",
+            debug=False,
+            signing_seed=signing_seed,
+            policy_key=None,
+            input_controls=None,
+            output_controls=None,
+            metadata=None,
+        )
+
+    def test_happy_path(self, signing_seed):
+        """Attest and store succeeds and sets last receipt."""
+        from glacis.integrations.base import get_last_receipt
+
+        ctx = self._make_ctx(signing_seed)
+        acc = ControlResultsAccumulator()
+        cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
+
+        attest_and_store(
+            ctx,
+            input_data={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            output_data={"model": "gpt-4", "choices": []},
+            metadata={"provider": "openai", "model": "gpt-4"},
+            control_plane_results=cpr,
+        )
+
+        receipt = get_last_receipt()
+        assert receipt is not None
+        assert receipt.id is not None
+
+    def test_exception_swallowed(self):
+        """Attestation errors are swallowed silently."""
+        ctx = IntegrationContext(
+            glacis=MagicMock(),
+            cfg=_default_config(),
+            controls_runner=None,
+            effective_service_id="openai",
+            storage_backend="sqlite",
+            storage_path=None,
+            output_block_action="block",
+            custom_metadata=None,
+            debug=False,
+        )
+        ctx.glacis.attest.side_effect = Exception("Network error")
+
+        # Should not raise
+        attest_and_store(
+            ctx,
+            input_data={"model": "gpt-4"},
+            output_data={},
+            metadata={"provider": "openai", "model": "gpt-4"},
+            control_plane_results=None,
+        )
+
+    def test_debug_prints_on_failure(self, capsys):
+        """Debug mode prints attestation failure."""
+        ctx = IntegrationContext(
+            glacis=MagicMock(),
+            cfg=_default_config(),
+            controls_runner=None,
+            effective_service_id="openai",
+            storage_backend="sqlite",
+            storage_path=None,
+            output_block_action="block",
+            custom_metadata=None,
+            debug=True,
+        )
+        ctx.glacis.attest.side_effect = Exception("Network error")
+
+        attest_and_store(
+            ctx,
+            input_data={"model": "gpt-4"},
+            output_data={},
+            metadata={"provider": "openai", "model": "gpt-4"},
+            control_plane_results=None,
+        )
+
+        captured = capsys.readouterr()
+        assert "[glacis] Attestation failed:" in captured.out

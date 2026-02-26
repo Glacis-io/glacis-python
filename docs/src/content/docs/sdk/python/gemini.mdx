@@ -261,9 +261,11 @@ evidence = get_evidence(
 | `debug` | `bool` | `False` | Enable debug logging. |
 | `offline` | `Optional[bool]` | `None` | Enable offline mode. If `None`, inferred from config or presence of `glacis_api_key`. |
 | `signing_seed` | `Optional[bytes]` | `None` | 32-byte Ed25519 signing seed. **Required** when `offline=True`. |
+| `policy_key` | `Optional[bytes]` | `None` | 32-byte HMAC key for sampling decisions. Falls back to `signing_seed` if not provided. |
 | `config` | `Optional[str]` | `None` | Path to `glacis.yaml` config file for controls, sampling, and policy settings. |
 | `input_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on input text before the LLM call. |
 | `output_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on output text after the LLM call. |
+| `metadata` | `Optional[dict[str, str]]` | `None` | Custom metadata to include in every attestation. Merged with provider defaults (`provider`, `model`). Cannot override reserved keys. |
 | `**gemini_kwargs` | `Any` | -- | Additional keyword arguments passed directly to the `genai.Client()` constructor. |
 
 **Returns:** A wrapped `google.genai.Client`. The `client.models.generate_content()` method is intercepted to perform attestation automatically.

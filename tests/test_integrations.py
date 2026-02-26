@@ -220,3 +220,49 @@ attestation:
             pytest.skip("pyyaml not installed")
         finally:
             Path(config_path).unlink()
+
+
+class TestIntegrationCustomMetadata:
+    """Tests for custom metadata parameter on integration factory functions."""
+
+    def test_openai_accepts_metadata(self, signing_seed: bytes):
+        """attested_openai accepts metadata parameter."""
+        pytest.importorskip("openai")
+        from glacis.integrations.openai import attested_openai
+
+        client = attested_openai(
+            openai_api_key="sk-test",
+            offline=True,
+            signing_seed=signing_seed,
+            metadata={"department": "legal", "use_case": "review"},
+        )
+
+        assert hasattr(client.chat.completions, "create")
+
+    def test_anthropic_accepts_metadata(self, signing_seed: bytes):
+        """attested_anthropic accepts metadata parameter."""
+        pytest.importorskip("anthropic")
+        from glacis.integrations.anthropic import attested_anthropic
+
+        client = attested_anthropic(
+            anthropic_api_key="sk-ant-test",
+            offline=True,
+            signing_seed=signing_seed,
+            metadata={"department": "legal"},
+        )
+
+        assert hasattr(client.messages, "create")
+
+    def test_gemini_accepts_metadata(self, signing_seed: bytes):
+        """attested_gemini accepts metadata parameter."""
+        pytest.importorskip("google.genai")
+        from glacis.integrations.gemini import attested_gemini
+
+        client = attested_gemini(
+            gemini_api_key="test-key",
+            offline=True,
+            signing_seed=signing_seed,
+            metadata={"department": "legal"},
+        )
+
+        assert hasattr(client.models, "generate_content")

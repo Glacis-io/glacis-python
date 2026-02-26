@@ -91,7 +91,7 @@ try:
 except ImportError:
     _CONTROLS_AVAILABLE = False
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     # Main classes

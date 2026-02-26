@@ -20,7 +20,7 @@ The framework consists of four components:
 | `BaseJudge` | Abstract class for implementing judges |
 | `JudgeVerdict` | Result from a single judge on a single item |
 | `JudgeRunner` | Runs multiple judges and aggregates scores |
-| `ReviewResult` | Aggregated result with final score and recommendation |
+| `Review` | Aggregated result with final score and recommendation |
 
 ## BaseJudge
 
@@ -94,7 +94,7 @@ If a judge raises an exception, it is caught and recorded as a verdict with `sco
 | `consensus_threshold` | `float` | `1.0` | Max score spread before flagging disagreement (ignored if `config` provided) |
 | `config` | `JudgesConfig \| None` | `None` | Full configuration with all thresholds |
 
-## ReviewResult
+## Review
 
 The aggregated result from running all judges:
 
@@ -105,6 +105,26 @@ The aggregated result from running all judges:
 | `max_score` | `float` | Maximum possible score (from config) |
 | `consensus` | `bool` | Whether judges agree within the threshold |
 | `recommendation` | `str` | `"uphold"`, `"borderline"`, or `"escalate"` |
+
+### to_wire_review()
+
+Convert a `Review` to a dict matching the `glacis.models.Review` wire format (for L2 attestation):
+
+```python
+review = runner.run(item, reference=source_doc)
+wire = review.to_wire_review(sample_probability=0.1)
+# wire = {
+#   "sample_probability": 0.1,
+#   "judge_ids": ["gpt-4o-mini", "claude-haiku"],
+#   "conformity_score": 0.9167,   # final_score / max_score, clamped to [0, 1]
+#   "recommendation": "uphold",
+#   "rationale": "correct; mostly correct",
+# }
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `sample_probability` | `float` | Probability this item was sampled (0.0-1.0) |
 
 ## Recommendation Logic
 

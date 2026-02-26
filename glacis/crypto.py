@@ -19,7 +19,6 @@ Example:
 
 import hashlib
 import json
-from base64 import b64encode
 from typing import Any, Optional
 
 
@@ -167,12 +166,12 @@ class Ed25519Runtime:
 
         json_bytes = attestation_json.encode("utf-8")
         signature = self.sign(seed, json_bytes)
-        signature_b64 = b64encode(signature).decode("ascii")
+        signature_hex = signature.hex()
 
         payload = json.loads(attestation_json)
         return json.dumps({
             "payload": payload,
-            "signature": signature_b64,
+            "signature": signature_hex,
         }, separators=(",", ":"))
 
 

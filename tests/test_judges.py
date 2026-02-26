@@ -2,7 +2,7 @@
 Comprehensive tests for the GLACIS LLM Judge Pipeline.
 
 Covers:
-- JudgeVerdict / ReviewResult model validation
+- JudgeVerdict / Review model validation
 - JudgeRunner aggregation, consensus, and error handling
 - OpenAIJudge / AnthropicJudge (mocked API calls)
 - should_review() L1 sampling gate
@@ -20,8 +20,8 @@ import pytest
 from pydantic import ValidationError
 
 from glacis import Glacis
-from glacis.judges import BaseJudge, JudgeRunner, JudgesConfig, JudgeVerdict, ReviewResult
-from glacis.models import Attestation, Review, SamplingDecision
+from glacis.judges import BaseJudge, JudgeRunner, JudgesConfig, JudgeVerdict, Review
+from glacis.models import Attestation, Review as WireReview, SamplingDecision
 
 
 def _has_judges_module() -> bool:
@@ -121,15 +121,15 @@ class TestJudgeVerdict:
 
 
 # =============================================================================
-# ReviewResult model tests
+# Review model tests
 # =============================================================================
 
 
-class TestReviewResult:
-    """Test ReviewResult model and recommendation logic."""
+class TestReview:
+    """Test Review model and recommendation logic."""
 
-    def _make_result(self, scores: list[float], threshold: float = 1.0) -> ReviewResult:
-        """Helper to build ReviewResult from raw scores."""
+    def _make_result(self, scores: list[float], threshold: float = 1.0) -> Review:
+        """Helper to build Review from raw scores."""
         verdicts = [
             JudgeVerdict(judge_id=f"j{i}", score=s, rationale="test")
             for i, s in enumerate(scores)
@@ -147,7 +147,7 @@ class TestReviewResult:
         else:
             rec = "escalate"
 
-        return ReviewResult(
+        return Review(
             verdicts=verdicts,
             final_score=round(final, 4),
             consensus=consensus,
@@ -183,6 +183,88 @@ class TestReviewResult:
         """Score == 1.0 should be borderline."""
         result = self._make_result([1.0, 1.0])
         assert result.recommendation == "borderline"
+
+    # --- to_wire_review() tests ---
+
+    def test_to_wire_review_basic(self):
+        """Basic conversion with two verdicts."""
+        result = self._make_result([2.0, 3.0])
+        wire = result.to_wire_review(sample_probability=0.5)
+        assert wire["sample_probability"] == 0.5
+        assert wire["judge_ids"] == ["j0", "j1"]
+        assert wire["conformity_score"] == round(2.5 / 3.0, 4)
+        assert wire["recommendation"] == "uphold"
+        assert wire["rationale"] == "test; test"
+
+    def test_to_wire_review_max_score_zero(self):
+        """max_score=0 should not cause ZeroDivisionError."""
+        result = Review(
+            verdicts=[JudgeVerdict(judge_id="j0", score=0.0, rationale="n/a")],
+            final_score=0.0,
+            max_score=0.0,
+            consensus=True,
+            recommendation="escalate",
+        )
+        wire = result.to_wire_review(sample_probability=0.1)
+        assert wire["conformity_score"] == 0.0
+
+    def test_to_wire_review_conformity_clamped_above_one(self):
+        """Scores exceeding max_score should be clamped to 1.0."""
+        result = Review(
+            verdicts=[JudgeVerdict(judge_id="j0", score=5.0, rationale="over")],
+            final_score=5.0,
+            max_score=3.0,
+            consensus=True,
+            recommendation="uphold",
+        )
+        wire = result.to_wire_review(sample_probability=1.0)
+        assert wire["conformity_score"] == 1.0
+
+    def test_to_wire_review_conformity_clamped_at_zero(self):
+        """Zero score should produce conformity_score 0.0."""
+        result = self._make_result([0.0, 0.0])
+        wire = result.to_wire_review(sample_probability=0.5)
+        assert wire["conformity_score"] == 0.0
+
+    def test_to_wire_review_empty_verdicts(self):
+        """Empty verdicts list should produce empty judge_ids and rationale."""
+        result = Review(
+            verdicts=[],
+            final_score=0.0,
+            max_score=3.0,
+            consensus=True,
+            recommendation="escalate",
+        )
+        wire = result.to_wire_review(sample_probability=0.0)
+        assert wire["judge_ids"] == []
+        assert wire["rationale"] == ""
+        assert wire["conformity_score"] == 0.0
+
+    def test_to_wire_review_sample_probability_boundaries(self):
+        """sample_probability at 0.0 and 1.0 are passed through unchanged."""
+        result = self._make_result([2.0])
+        wire_zero = result.to_wire_review(sample_probability=0.0)
+        wire_one = result.to_wire_review(sample_probability=1.0)
+        assert wire_zero["sample_probability"] == 0.0
+        assert wire_one["sample_probability"] == 1.0
+
+    def test_to_wire_review_rationale_joins_multiple(self):
+        """Rationales from multiple verdicts are joined with '; '."""
+        verdicts = [
+            JudgeVerdict(judge_id="a", score=2.0, rationale="first reason"),
+            JudgeVerdict(judge_id="b", score=3.0, rationale="second reason"),
+            JudgeVerdict(judge_id="c", score=2.5, rationale="third reason"),
+        ]
+        result = Review(
+            verdicts=verdicts,
+            final_score=2.5,
+            max_score=3.0,
+            consensus=True,
+            recommendation="uphold",
+        )
+        wire = result.to_wire_review(sample_probability=0.5)
+        assert wire["rationale"] == "first reason; second reason; third reason"
+        assert wire["judge_ids"] == ["a", "b", "c"]
 
 
 # =============================================================================
@@ -1110,8 +1192,8 @@ class TestEdgeCases:
         assert d["latency_ms"] == 42
 
     def test_review_result_serializes_to_dict(self):
-        """ReviewResult.model_dump() should produce a clean dict for attestation."""
-        result = ReviewResult(
+        """Review.model_dump() should produce a clean dict for attestation."""
+        result = Review(
             verdicts=[
                 JudgeVerdict(judge_id="j1", score=2.5, rationale="good"),
                 JudgeVerdict(judge_id="j2", score=3.0, rationale="great"),
@@ -1239,7 +1321,7 @@ class TestJudgeRunnerWithConfig:
         assert result.final_score == 1.67
 
     def test_config_max_score_in_result(self, sample_qa_pair):
-        """ReviewResult.max_score should come from config."""
+        """Review.max_score should come from config."""
         cfg = JudgesConfig(max_score=1.0)
         runner = JudgeRunner(judges=[StubJudge("a", 0.8)], config=cfg)
         result = runner.run(sample_qa_pair)
@@ -1345,7 +1427,7 @@ class TestConformityScoreRename:
     """Test that Review model uses conformity_score (not nonconformity_score)."""
 
     def test_review_has_conformity_score(self):
-        review = Review(
+        review = WireReview(
             sample_probability=0.1,
             judge_ids=["j1"],
             conformity_score=0.8,
@@ -1356,4 +1438,4 @@ class TestConformityScoreRename:
 
     def test_review_no_nonconformity_score(self):
         """The old nonconformity_score field should not exist."""
-        assert not hasattr(Review, "nonconformity_score")
+        assert not hasattr(WireReview, "nonconformity_score")

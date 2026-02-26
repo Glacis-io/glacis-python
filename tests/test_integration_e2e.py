@@ -217,7 +217,7 @@ class TestOpenAIE2E:
         with (
             patch("openai.OpenAI", return_value=mock_client),
             patch(
-                "glacis.integrations.openai.store_evidence",
+                "glacis.integrations.base.store_evidence",
                 side_effect=Exception("DB error"),
             ),
         ):
@@ -622,7 +622,7 @@ class TestIntegrationControlsE2E:
 
         with (
             patch("openai.OpenAI", return_value=mock_client),
-            patch("glacis.integrations.openai.create_controls_runner", return_value=runner),
+            patch("glacis.integrations.base.create_controls_runner", return_value=runner),
         ):
             client = attested_openai(
                 openai_api_key="sk-test",
@@ -655,7 +655,7 @@ class TestIntegrationControlsE2E:
 
         with (
             patch("openai.OpenAI", return_value=mock_client),
-            patch("glacis.integrations.openai.create_controls_runner", return_value=runner),
+            patch("glacis.integrations.base.create_controls_runner", return_value=runner),
         ):
             client = attested_openai(
                 openai_api_key="sk-test",
@@ -690,7 +690,7 @@ class TestIntegrationControlsE2E:
 
         with (
             patch("openai.OpenAI", return_value=mock_client),
-            patch("glacis.integrations.openai.create_controls_runner", return_value=runner),
+            patch("glacis.integrations.base.create_controls_runner", return_value=runner),
         ):
             client = attested_openai(
                 openai_api_key="sk-test",
@@ -724,7 +724,7 @@ class TestIntegrationControlsE2E:
         with (
             patch("anthropic.Anthropic", return_value=mock_client),
             patch(
-                "glacis.integrations.anthropic.create_controls_runner",
+                "glacis.integrations.base.create_controls_runner",
                 return_value=runner,
             ),
         ):
@@ -760,7 +760,7 @@ class TestIntegrationControlsE2E:
         with (
             patch("google.genai.Client", return_value=mock_client),
             patch(
-                "glacis.integrations.gemini.create_controls_runner",
+                "glacis.integrations.base.create_controls_runner",
                 return_value=runner,
             ),
         ):
@@ -793,7 +793,7 @@ class TestIntegrationControlsE2E:
 
         with (
             patch("openai.OpenAI", return_value=mock_client),
-            patch("glacis.integrations.openai.create_controls_runner", return_value=runner),
+            patch("glacis.integrations.base.create_controls_runner", return_value=runner),
         ):
             client = attested_openai(
                 openai_api_key="sk-test",

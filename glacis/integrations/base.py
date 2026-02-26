@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 
 # SDK version used in ControlExecution records
-SDK_VERSION = "0.5.0"
+SDK_VERSION = "0.6.0"
 
 # Known control types that map directly to ControlType enum
 _KNOWN_CONTROL_TYPES = frozenset({
@@ -178,6 +179,7 @@ def create_glacis_client(
     storage_backend: Optional[str] = None,
     storage_path: Optional[str] = None,
     sampling_config: Optional["SamplingConfig"] = None,
+    policy_key: Optional[bytes] = None,
 ) -> "Glacis":
     """
     Create a Glacis client (online or offline).
@@ -191,6 +193,7 @@ def create_glacis_client(
         storage_backend: Storage backend type ("sqlite" or "json")
         storage_path: Storage path override
         sampling_config: Sampling configuration (l1_rate, l2_rate)
+        policy_key: 32-byte HMAC key for sampling (falls back to signing_seed)
 
     Returns:
         Configured Glacis client
@@ -207,6 +210,8 @@ def create_glacis_client(
         extra_kwargs["storage_path"] = Path(storage_path)
     if sampling_config:
         extra_kwargs["sampling_config"] = sampling_config
+    if policy_key:
+        extra_kwargs["policy_key"] = policy_key
 
     if offline:
         if not signing_seed:
@@ -484,6 +489,39 @@ def create_control_plane_results(
     )
 
 
+def build_metadata(
+    provider: str,
+    model: str,
+    custom_metadata: Optional[dict[str, str]] = None,
+    **extra: str,
+) -> dict[str, Any]:
+    """Build metadata dict with provider defaults and optional custom fields.
+
+    Provider-managed keys ('provider', 'model') cannot be overridden by
+    custom_metadata.
+
+    Args:
+        provider: LLM provider name (e.g. "openai", "anthropic", "gemini").
+        model: LLM model name.
+        custom_metadata: Optional customer-provided metadata to merge in.
+        **extra: Additional provider-managed keys (e.g. blocked="True").
+
+    Returns:
+        Merged metadata dict.
+
+    Raises:
+        ValueError: If custom_metadata tries to override 'provider' or 'model'.
+    """
+    base: dict[str, Any] = {"provider": provider, "model": model, **extra}
+    if custom_metadata:
+        reserved = {"provider", "model"}
+        for key in reserved:
+            if key in custom_metadata:
+                raise ValueError(f"Cannot override reserved metadata key: '{key}'")
+        base.update(custom_metadata)
+    return base
+
+
 def handle_blocked_request(
     glacis_client: "Glacis",
     service_id: str,
@@ -496,6 +534,7 @@ def handle_blocked_request(
     debug: bool,
     storage_backend: Optional[str] = None,
     storage_path: Optional[str] = None,
+    custom_metadata: Optional[dict[str, str]] = None,
 ) -> None:
     """Attest a blocked request and raise GlacisBlockedError.
 
@@ -511,9 +550,10 @@ def handle_blocked_request(
         debug: Enable debug logging.
         storage_backend: Evidence storage backend override.
         storage_path: Evidence storage path override.
+        custom_metadata: Optional customer-provided metadata to merge in.
     """
     output_data = {"blocked": True, "reason": f"{blocking_control_type}_detected"}
-    metadata = {"provider": provider, "model": model, "blocked": str(True)}
+    metadata = build_metadata(provider, model, custom_metadata, blocked=str(True))
 
     try:
         receipt = glacis_client.attest(
@@ -549,6 +589,204 @@ def handle_blocked_request(
     )
 
 
+# ---------------------------------------------------------------------------
+# Consolidated integration helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IntegrationContext:
+    """Shared state for an attested integration closure.
+
+    Bundles the ~10 variables that every provider integration closure needs,
+    so they can be passed as a single object to the pipeline helpers.
+    """
+
+    glacis: "Glacis"
+    cfg: "GlacisConfig"
+    controls_runner: Optional["ControlsRunner"]
+    effective_service_id: str
+    storage_backend: Optional[str]
+    storage_path: Optional[str]
+    output_block_action: str
+    custom_metadata: Optional[dict[str, str]]
+    debug: bool
+
+
+def setup_integration(
+    config: Optional[str],
+    offline: Optional[bool],
+    glacis_api_key: Optional[str],
+    glacis_base_url: str,
+    default_service_id: str,
+    service_id: str,
+    debug: bool,
+    signing_seed: Optional[bytes],
+    policy_key: Optional[bytes],
+    input_controls: Optional[list["BaseControl"]],
+    output_controls: Optional[list["BaseControl"]],
+    metadata: Optional[dict[str, str]],
+) -> IntegrationContext:
+    """Initialize config, controls, and Glacis client for an integration.
+
+    Replaces the identical ~30-line setup block in each factory function.
+
+    Returns:
+        IntegrationContext with all closure state needed by the
+        attested wrapper.
+    """
+    cfg, effective_offline, effective_service_id = initialize_config(
+        config_path=config,
+        offline=offline,
+        glacis_api_key=glacis_api_key,
+        default_service_id=default_service_id,
+        service_id=service_id,
+    )
+    controls_runner = create_controls_runner(
+        cfg, debug,
+        input_controls=input_controls,
+        output_controls=output_controls,
+    )
+    glacis_client = create_glacis_client(
+        offline=effective_offline,
+        signing_seed=signing_seed,
+        glacis_api_key=glacis_api_key,
+        glacis_base_url=glacis_base_url,
+        debug=debug,
+        storage_backend=cfg.evidence_storage.backend,
+        storage_path=cfg.evidence_storage.path,
+        sampling_config=cfg.sampling,
+        policy_key=policy_key,
+    )
+    return IntegrationContext(
+        glacis=glacis_client,
+        cfg=cfg,
+        controls_runner=controls_runner,
+        effective_service_id=effective_service_id,
+        storage_backend=cfg.evidence_storage.backend,
+        storage_path=cfg.evidence_storage.path,
+        output_block_action=cfg.controls.output_block_action,
+        custom_metadata=metadata,
+        debug=debug,
+    )
+
+
+def check_input_block(
+    ctx: IntegrationContext,
+    accumulator: ControlResultsAccumulator,
+    model: str,
+    provider: str,
+    input_data: dict[str, Any],
+    system_prompt_hash: Optional[str] = None,
+    temperature: Optional[float] = None,
+) -> None:
+    """Check if input controls want to block, and raise GlacisBlockedError if so.
+
+    No-op if the accumulator has not flagged a block.
+    """
+    if not accumulator.should_block:
+        return
+    cpr = create_control_plane_results(
+        accumulator, ctx.cfg, model, provider,
+        system_prompt_hash=system_prompt_hash,
+        temperature=temperature,
+    )
+    blocking = accumulator.get_blocking_control()
+    handle_blocked_request(
+        glacis_client=ctx.glacis,
+        service_id=ctx.effective_service_id,
+        input_data=input_data,
+        control_plane_results=cpr,
+        provider=provider,
+        model=model,
+        blocking_control_type=blocking.type if blocking else "unknown",
+        blocking_score=blocking.score if blocking else None,
+        debug=ctx.debug,
+        storage_backend=ctx.storage_backend,
+        storage_path=ctx.storage_path,
+        custom_metadata=ctx.custom_metadata,
+    )
+
+
+def check_output_block(
+    ctx: IntegrationContext,
+    accumulator: ControlResultsAccumulator,
+    model: str,
+    provider: str,
+    input_data: dict[str, Any],
+    control_plane_results: "ControlPlaneResults",
+) -> None:
+    """Check if output controls want to block, and raise GlacisBlockedError if so.
+
+    Respects the ``output_block_action`` setting: only blocks when set to
+    ``"block"``; ``"forward"`` lets the response through (determination will
+    still show ``blocked`` in the attestation).
+    """
+    if not (
+        accumulator.should_block
+        and ctx.controls_runner
+        and ctx.controls_runner.has_output_controls
+    ):
+        return
+    if ctx.output_block_action != "block":
+        return
+    blocking = accumulator.get_blocking_control()
+    handle_blocked_request(
+        glacis_client=ctx.glacis,
+        service_id=ctx.effective_service_id,
+        input_data=input_data,
+        control_plane_results=control_plane_results,
+        provider=provider,
+        model=model,
+        blocking_control_type=blocking.type if blocking else "unknown",
+        blocking_score=blocking.score if blocking else None,
+        debug=ctx.debug,
+        storage_backend=ctx.storage_backend,
+        storage_path=ctx.storage_path,
+        custom_metadata=ctx.custom_metadata,
+    )
+
+
+def attest_and_store(
+    ctx: IntegrationContext,
+    input_data: dict[str, Any],
+    output_data: dict[str, Any],
+    metadata: dict[str, Any],
+    control_plane_results: "ControlPlaneResults",
+) -> None:
+    """Attest and store evidence, silently handling errors.
+
+    Combines ``glacis.attest()`` + ``set_last_receipt()`` + ``store_evidence()``
+    in a single call.  Errors are swallowed (printed in debug mode) so the LLM
+    response is never lost due to attestation failures.
+    """
+    try:
+        receipt = ctx.glacis.attest(
+            service_id=ctx.effective_service_id,
+            operation_type="completion",
+            input=input_data,
+            output=output_data,
+            metadata=metadata,
+            control_plane_results=control_plane_results,
+        )
+        set_last_receipt(receipt)
+        store_evidence(
+            receipt=receipt,
+            service_id=ctx.effective_service_id,
+            operation_type="completion",
+            input_data=input_data,
+            output_data=output_data,
+            control_plane_results=control_plane_results,
+            metadata=metadata,
+            debug=ctx.debug,
+            storage_backend=ctx.storage_backend,
+            storage_path=ctx.storage_path,
+        )
+    except Exception as e:
+        if ctx.debug:
+            print(f"[glacis] Attestation failed: {e}")
+
+
 __all__ = [
     "GlacisBlockedError",
     "get_last_receipt",
@@ -564,5 +802,11 @@ __all__ = [
     "run_input_controls",
     "run_output_controls",
     "create_control_plane_results",
+    "build_metadata",
     "handle_blocked_request",
+    "IntegrationContext",
+    "setup_integration",
+    "check_input_block",
+    "check_output_block",
+    "attest_and_store",
 ]

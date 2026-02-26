@@ -41,6 +41,7 @@ glacis = Glacis(
 | `max_delay` | `float` | No | Maximum delay (seconds) for backoff. Default: `30.0` |
 | `mode` | `Literal["online", "offline"]` | No | Operating mode. Default: `"online"` |
 | `signing_seed` | `Optional[bytes]` | Offline | 32-byte Ed25519 seed. Required for offline mode. |
+| `policy_key` | `Optional[bytes]` | No | 32-byte HMAC key for sampling decisions. Falls back to `signing_seed` if not provided. |
 | `db_path` | `Optional[Path]` | No | SQLite database path for offline receipts. Default: `~/.glacis/glacis.db` |
 | `storage_backend` | `str` | No | Storage backend type: `"sqlite"` or `"json"`. Default: `"sqlite"` |
 | `storage_path` | `Optional[Path]` | No | Base path for storage. Overrides `db_path`. |
@@ -163,7 +164,7 @@ children = glacis.decompose(
 
 ### glacis.should_review()
 
-Deterministic sampling decision using nested L1/L2 tiers. Given the same `evidence_hash` + `signing_seed`, always returns the same decision. Uses HMAC-SHA256 to produce a deterministic, auditor-reproducible tag.
+Deterministic sampling decision using nested L1/L2 tiers. Given the same `evidence_hash` + `policy_key` (or `signing_seed`), always returns the same decision. Uses HMAC-SHA256 with a `"sample:v1"` domain separator to produce a deterministic, auditor-reproducible tag.
 
 Tier logic (nested -- L2 implies L1):
 - **L2** if `sample_value` ≤ `l2_rate` threshold (deep inspection)
@@ -185,7 +186,7 @@ print(decision.sample_value)  # uint64 derived from HMAC
 
 **Returns:** [`SamplingDecision`](#samplingdecision)
 
-**Raises:** `ValueError` if called without `signing_seed` (requires offline mode)
+**Raises:** `ValueError` if called without `policy_key` or `signing_seed` (requires offline mode)
 
 ---
 
@@ -346,7 +347,7 @@ async with AsyncGlacis(api_key="glsk_live_...") as glacis:
 | `hash(payload)` | RFC 8785 + SHA-256. Returns `str`. |
 
 <Aside type="note">
-  `AsyncGlacis` is online-only. The following `Glacis` methods are not available on `AsyncGlacis`: `decompose`, `should_review`, `operation`, `get_last_receipt`. Note that `decompose` works in both online and offline mode on the synchronous `Glacis` client; `should_review` requires offline mode (uses the `signing_seed` for HMAC).
+  `AsyncGlacis` is online-only. The following `Glacis` methods are not available on `AsyncGlacis`: `decompose`, `should_review`, `operation`, `get_last_receipt`. Note that `decompose` works in both online and offline mode on the synchronous `Glacis` client; `should_review` requires offline mode (uses the `policy_key` or `signing_seed` for HMAC).
 </Aside>
 
 ---
@@ -444,7 +445,7 @@ class Attestation(BaseModel):
 | `evidence` | `Optional[Evidence]` | L1 sampled evidence payload |
 | `review` | `Optional[Review]` | L2 deep review record |
 | `public_key` | `str` | Arbiter Ed25519 public key (hex) |
-| `signature` | `str` | Arbiter Ed25519 signature (base64) |
+| `signature` | `str` | Arbiter Ed25519 signature (hex) |
 | `sampling_decision` | `Optional[SamplingDecision]` | Server-assigned sampling tier |
 | `is_offline` | `bool` | Whether this is an offline attestation |
 | `timestamp` | `Optional[int]` | Unix timestamp in milliseconds |
@@ -763,7 +764,7 @@ class SignedTreeHead(BaseModel):
 | `timestamp` | `str` | ISO 8601 timestamp when signed |
 | `root_hash` | `str` | Root hash (hex-encoded) |
 | `public_key` | `Optional[str]` | Ed25519 public key (hex) |
-| `signature` | `str` | Ed25519 signature (base64-encoded) |
+| `signature` | `str` | Ed25519 signature (hex-encoded) |
 
 ---
 
