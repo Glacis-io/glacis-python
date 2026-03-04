@@ -41,11 +41,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
-logger = logging.getLogger(__name__)
-
-# Lock for thread-safe sys.path modifications
-_sys_path_lock = threading.Lock()
-
 from glacis.controls.base import BaseControl, ControlAction, ControlResult
 from glacis.controls.content_safety import ContentSafetyControl
 from glacis.controls.grounding import GroundingControl
@@ -54,6 +49,11 @@ from glacis.controls.pii import PIIControl
 from glacis.controls.prompt_security import PromptSecurityControl
 from glacis.controls.topic import TopicControl
 from glacis.controls.word_filter import WordFilterControl
+
+logger = logging.getLogger(__name__)
+
+# Lock for thread-safe sys.path modifications
+_sys_path_lock = threading.Lock()
 
 if TYPE_CHECKING:
     from glacis.config import CustomControlEntry, InputControlsConfig, OutputControlsConfig
@@ -236,7 +236,9 @@ class ControlsRunner:
             if input_config.topic.enabled:
                 self._input_controls.append(TopicControl(input_config.topic))
                 if debug:
-                    n = len(input_config.topic.allowed_topics) + len(input_config.topic.blocked_topics)
+                    n = len(input_config.topic.allowed_topics) + len(
+                        input_config.topic.blocked_topics
+                    )
                     print(f"[glacis] Input TopicControl initialized ({n} topics)")
 
             if input_config.prompt_security.enabled:
@@ -289,14 +291,19 @@ class ControlsRunner:
             if output_config.topic.enabled:
                 self._output_controls.append(TopicControl(output_config.topic))
                 if debug:
-                    n = len(output_config.topic.allowed_topics) + len(output_config.topic.blocked_topics)
+                    n = len(output_config.topic.allowed_topics) + len(
+                        output_config.topic.blocked_topics
+                    )
                     print(f"[glacis] Output TopicControl initialized ({n} topics)")
 
             if output_config.prompt_security.enabled:
                 self._output_controls.append(PromptSecurityControl(output_config.prompt_security))
                 if debug:
                     n = len(output_config.prompt_security.patterns)
-                    print(f"[glacis] Output PromptSecurityControl initialized ({n} custom patterns)")
+                    print(
+                        f"[glacis] Output PromptSecurityControl initialized "
+                        f"({n} custom patterns)"
+                    )
 
             if output_config.grounding.enabled:
                 self._output_controls.append(GroundingControl(output_config.grounding))

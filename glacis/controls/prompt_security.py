@@ -62,7 +62,8 @@ _BUILTIN_PATTERNS: list[tuple[str, str]] = [
         "role_manipulation",
     ),
     (
-        r"act as (?:if |though )?(?:you )?(?:have |had )?no (?:rules|restrictions|guidelines|limitations)",
+        r"act as (?:if |though )?(?:you )?(?:have |had )?no "
+        r"(?:rules|restrictions|guidelines|limitations)",
         "role_manipulation",
     ),
     (

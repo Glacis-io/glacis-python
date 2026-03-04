@@ -81,7 +81,9 @@ class ContentSafetyControl(BaseControl):
             )
 
         # Normalize category filter to lowercase for comparison
-        self._category_filter = {c.lower() for c in config.categories} if config.categories else set()
+        self._category_filter = (
+            {c.lower() for c in config.categories} if config.categories else set()
+        )
 
     def _ensure_initialized(self) -> None:
         """Lazy-initialize the classifier on first use."""

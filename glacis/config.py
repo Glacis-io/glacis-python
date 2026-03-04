@@ -303,7 +303,9 @@ class InputControlsConfig(BaseModel):
     jailbreak: JailbreakControlConfig = Field(default_factory=JailbreakControlConfig)
     content_safety: ContentSafetyControlConfig = Field(default_factory=ContentSafetyControlConfig)
     topic: TopicControlConfig = Field(default_factory=TopicControlConfig)
-    prompt_security: PromptSecurityControlConfig = Field(default_factory=PromptSecurityControlConfig)
+    prompt_security: PromptSecurityControlConfig = Field(
+        default_factory=PromptSecurityControlConfig
+    )
     grounding: GroundingControlConfig = Field(default_factory=GroundingControlConfig)
     custom: list[CustomControlEntry] = Field(
         default_factory=list,
@@ -319,7 +321,9 @@ class OutputControlsConfig(BaseModel):
     jailbreak: JailbreakControlConfig = Field(default_factory=JailbreakControlConfig)
     content_safety: ContentSafetyControlConfig = Field(default_factory=ContentSafetyControlConfig)
     topic: TopicControlConfig = Field(default_factory=TopicControlConfig)
-    prompt_security: PromptSecurityControlConfig = Field(default_factory=PromptSecurityControlConfig)
+    prompt_security: PromptSecurityControlConfig = Field(
+        default_factory=PromptSecurityControlConfig
+    )
     grounding: GroundingControlConfig = Field(default_factory=GroundingControlConfig)
     custom: list[CustomControlEntry] = Field(
         default_factory=list,
