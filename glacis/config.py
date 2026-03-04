@@ -456,7 +456,7 @@ def _substitute_env_vars(obj: Any) -> Any:
     unchanged. Raises ``ValueError`` if a referenced variable is not set.
     """
     if isinstance(obj, str):
-        def _replace(m: re.Match) -> str:
+        def _replace(m: "re.Match[str]") -> str:
             var = m.group(1)
             val = os.environ.get(var)
             if val is None:
