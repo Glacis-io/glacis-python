@@ -178,7 +178,10 @@ class GlacisOperationContext:
 
     def __exit__(self, *args: Any) -> None:
         set_active_operation(self._previous_op)
-        set_pending_supersedes(self._previous_supersedes)
+        # Only restore previous supersedes if the current one wasn't consumed.
+        # If it was consumed (now None), the previous one is stale — don't resurrect it.
+        if get_pending_supersedes() is not None:
+            set_pending_supersedes(self._previous_supersedes)
 
 
 def get_evidence(
@@ -384,9 +387,11 @@ def create_controls_runner(
         or output_cfg.grounding.enabled
     )
     has_custom = bool(input_controls or output_controls)
+    input_custom = getattr(input_cfg, "custom", None)
+    output_custom = getattr(output_cfg, "custom", None)
     has_yaml_custom = bool(
-        getattr(input_cfg, "custom", None)
-        or getattr(output_cfg, "custom", None)
+        (input_custom and any(c.enabled for c in input_custom))
+        or (output_custom and any(c.enabled for c in output_custom))
     )
 
     if not has_builtin and not has_custom and not has_yaml_custom:

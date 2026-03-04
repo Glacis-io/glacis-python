@@ -34,6 +34,7 @@ Example (using ControlsRunner):
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import sys
 import threading
@@ -149,22 +150,26 @@ def _load_custom_control(
 
     # Merge if_detected into args so the control can use it.
     # Top-level if_detected always wins over args to avoid silent precedence surprises.
-    # If the constructor doesn't accept if_detected (no **kwargs), try without it.
+    # Use inspect to check if the constructor accepts if_detected, rather than a
+    # broad try/except TypeError which could mask bugs inside the constructor.
     kwargs = dict(entry.args)
-    kwargs["if_detected"] = entry.if_detected
+
+    sig = inspect.signature(cls.__init__)
+    params = sig.parameters
+    accepts_if_detected = (
+        "if_detected" in params
+        or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    )
+    if accepts_if_detected:
+        kwargs["if_detected"] = entry.if_detected
 
     try:
         return cls(**kwargs)
-    except TypeError:
-        # Retry without if_detected for controls that don't accept it
-        kwargs.pop("if_detected", None)
-        try:
-            return cls(**kwargs)
-        except TypeError as e:
-            raise TypeError(
-                f"Failed to instantiate '{dot_path}' with args {list(kwargs.keys())}. "
-                f"Check that the constructor accepts these parameters. Error: {e}"
-            ) from e
+    except TypeError as e:
+        raise TypeError(
+            f"Failed to instantiate '{dot_path}' with args {list(kwargs.keys())}. "
+            f"Check that the constructor accepts these parameters. Error: {e}"
+        ) from e
 
 
 class ControlsRunner:
@@ -487,5 +492,4 @@ __all__ = [
     "StageResult",
     "TopicControl",
     "WordFilterControl",
-    "_load_custom_control",
 ]

@@ -207,7 +207,7 @@ Glacis recognizes 8 control types. Each control you write or configure is classi
 | `grounding` | `GroundingControl` *(stub)* | Factual grounding / hallucination | Validating LLM output against source documents |
 | `custom` | *Catch-all* | Any other validation | Domain-specific business logic |
 
-All 7 built-in controls can be configured entirely in `glacis.yaml`. The `grounding` control is a pass-through stub -- for real grounding validation, use the `custom` section with a control that accepts reference text. Set the `control_type` class attribute on your custom control class to any of these values. Controls with unrecognized types are automatically classified as `"custom"` in the attestation.
+All 7 built-in controls listed above (excluding `custom`) can be configured entirely in `glacis.yaml`. The `grounding` control is a pass-through stub — for real grounding validation, use the `custom` section with a control that accepts reference text. Set the `control_type` class attribute on your custom control class to any of these values. Controls with unrecognized types are automatically classified as `"custom"` in the attestation.
 
 ### Content Safety
 

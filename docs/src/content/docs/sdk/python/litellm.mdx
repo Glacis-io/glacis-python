@@ -5,7 +5,7 @@ description: Auto-attest every LiteLLM API call with zero code changes. Unified 
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The Glacis LiteLLM integration wraps LiteLLM's unified completion interface to automatically create cryptographic attestations for every LLM call across 100+ providers. Your data is hashed locally and never leaves your environment -- only hashes and metadata are sent to the Glacis transparency log.
+The Glacis LiteLLM integration wraps LiteLLM's unified completion interface to automatically create cryptographic attestations for every LLM call across 100+ providers. Your data is hashed locally and never leaves your environment — only hashes and metadata are sent to the Glacis transparency log.
 
 Since LiteLLM exposes module-level functions (not a client object), this integration returns a thin wrapper object with `.completion()` and `.acompletion()` methods that mirror LiteLLM's interface.
 
@@ -22,7 +22,7 @@ from glacis.integrations.litellm import attested_litellm, get_last_receipt
 
 client = attested_litellm(glacis_api_key="glsk_live_...")
 
-# Make a normal LiteLLM call -- attestation happens automatically
+# Make a normal LiteLLM call — attestation happens automatically
 response = client.completion(
     model="gpt-4",
     messages=[{"role": "user", "content": "Hello!"}]
