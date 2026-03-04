@@ -33,32 +33,34 @@ controls:
 
     # Jailbreak/Prompt Injection Detection
     jailbreak:
-      enabled: true
+      enabled: false
       model: "prompt_guard_22m"       # "prompt_guard_22m" or "prompt_guard_86m"
       threshold: 0.5                  # Classification threshold (0-1)
       if_detected: "block"            # "forward" | "flag" | "block"
 
   output:
-    # PII/PHI Detection on LLM responses
-    pii_phi:
-      enabled: true
-      model: "presidio"
-      mode: "fast"
-      entities: []
-      if_detected: "flag"
 
     # Word/Phrase Filter on LLM responses
     word_filter:
-      enabled: false
+      enabled: true
       entities: ["confidential", "internal only", "do not share"]
       if_detected: "flag"
 
-    # Jailbreak Detection on LLM responses (catches output-side injection)
-    jailbreak:
-      enabled: false
-      model: "prompt_guard_22m"
-      threshold: 0.5
-      if_detected: "flag"
+    # Custom controls — loaded from Python modules at startup.
+    # See demos/custom_control_demo.ipynb for a tutorial on building custom controls.
+    # Example:
+    #   custom:
+    #     - path: "tone_policy_control.TonePolicyControl"
+    #       enabled: true
+    #       if_detected: "flag"
+    #       args:
+    #         openai_api_key: "${OPENAI_API_KEY}"
+    #         policies:
+    #           - "Use a professional, neutral tone"
+    #           - "Do not speculate or make unsupported claims"
+    #           - "Do not mention competitor products by name"
+    #         model: "gpt-4o-mini"
+
 
 # Sampling configuration
 sampling:

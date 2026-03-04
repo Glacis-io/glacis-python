@@ -1,0 +1,269 @@
+---
+title: LiteLLM Integration
+description: Auto-attest every LiteLLM API call with zero code changes. Unified attestation across 100+ LLM providers.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Glacis LiteLLM integration wraps LiteLLM's unified completion interface to automatically create cryptographic attestations for every LLM call across 100+ providers. Your data is hashed locally and never leaves your environment — only hashes and metadata are sent to the Glacis transparency log.
+
+Since LiteLLM exposes module-level functions (not a client object), this integration returns a thin wrapper object with `.completion()` and `.acompletion()` methods that mirror LiteLLM's interface.
+
+## Installation
+
+```bash
+pip install glacis[litellm]
+```
+
+## Quick Start
+
+```python
+from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+client = attested_litellm(glacis_api_key="glsk_live_...")
+
+# Make a normal LiteLLM call — attestation happens automatically
+response = client.completion(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+print(response.choices[0].message.content)
+
+# Get the attestation receipt
+receipt = get_last_receipt()
+print(f"Attested: {receipt.id}")
+print(f"Status: {receipt.witness_status}")
+```
+
+<Aside type="note">
+  The wrapper accepts the same arguments as `litellm.completion()`. Replace `litellm.completion(...)` with `client.completion(...)` and attestation happens automatically.
+</Aside>
+
+<Aside type="note">
+  All calls through this integration are recorded with `operation_type="completion"`. For custom operation types, use `glacis.attest()` directly.
+</Aside>
+
+## What Gets Attested
+
+For each completion, Glacis captures:
+
+| Field | Treatment | Details |
+|-------|-----------|---------|
+| Request messages | Hashed | SHA-256, never sent to Glacis |
+| Response content | Hashed | SHA-256, never sent to Glacis |
+| System prompt | Hashed | SHA-256 hash included in control plane record |
+| Model name | Metadata | Sent as-is (e.g., `gpt-4`, `claude-3-sonnet`, `mistral/mistral-large`) |
+| Temperature | Metadata | Included in control plane record |
+| Token counts | Metadata | prompt, completion, and total tokens |
+| Provider | Metadata | Always `"litellm"` |
+
+## Usage with Different Providers
+
+LiteLLM supports 100+ providers through a unified interface. The `model` parameter determines which provider is used:
+
+```python
+from glacis.integrations.litellm import attested_litellm
+
+client = attested_litellm(glacis_api_key="glsk_live_...")
+
+# OpenAI
+response = client.completion(model="gpt-4", messages=[...])
+
+# Anthropic
+response = client.completion(model="claude-3-sonnet-20240229", messages=[...])
+
+# Azure OpenAI
+response = client.completion(model="azure/my-deployment", messages=[...])
+
+# AWS Bedrock
+response = client.completion(model="bedrock/anthropic.claude-v2", messages=[...])
+
+# Ollama (local)
+response = client.completion(model="ollama/llama3", messages=[...])
+```
+
+Each call is attested with the actual model name used, giving you a unified attestation trail across all your LLM providers.
+
+## Environment Variables
+
+<Tabs>
+  <TabItem label="Online">
+    ```python
+    from glacis.integrations.litellm import attested_litellm
+
+    # LiteLLM reads provider API keys from env vars automatically
+    # (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+    client = attested_litellm(glacis_api_key="glsk_live_...")
+    ```
+  </TabItem>
+  <TabItem label="Offline">
+    ```python
+    import os
+    from glacis.integrations.litellm import attested_litellm
+
+    # No Glacis API key needed for offline mode
+    client = attested_litellm(
+        offline=True,
+        signing_seed=os.urandom(32),
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+## Accessing Receipts
+
+Use `get_last_receipt()` to retrieve the attestation from the most recent API call. Receipts are stored in **thread-local storage**, so each thread maintains its own last receipt independently.
+
+```python
+from glacis.integrations.litellm import get_last_receipt
+
+receipt = get_last_receipt()
+if receipt:
+    print(f"ID: {receipt.id}")
+    print(f"Evidence hash: {receipt.evidence_hash}")
+    print(f"Status: {receipt.witness_status}")  # "WITNESSED" or "UNVERIFIED"
+    print(f"Service: {receipt.service_id}")
+```
+
+<Aside type="caution">
+  `get_last_receipt()` returns the receipt for the **current thread only**. In multi-threaded applications, each thread tracks its own last receipt. Call `get_last_receipt()` immediately after the API call to avoid it being overwritten by a subsequent call.
+</Aside>
+
+## Offline Mode
+
+Offline mode creates locally-signed attestations without connecting to the Glacis server. This is useful for development, air-gapped environments, or when you want to defer attestation submission.
+
+```python
+import os
+from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+client = attested_litellm(
+    offline=True,
+    signing_seed=os.urandom(32),
+)
+
+response = client.completion(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+receipt = get_last_receipt()
+print(f"Status: {receipt.witness_status}")  # "UNVERIFIED"
+```
+
+<Aside type="tip">
+  See the [Offline Mode](/sdk/python/offline) page for details on offline signing, seed management, and later submission.
+</Aside>
+
+## Using Controls
+
+Controls let you scan inputs and outputs for PII, jailbreak attempts, banned words, and more. Configure them via a `glacis.yaml` file:
+
+```python
+from glacis.integrations.litellm import attested_litellm, GlacisBlockedError
+
+client = attested_litellm(config="glacis.yaml")
+
+try:
+    response = client.completion(
+        model="gpt-4",
+        messages=[{"role": "user", "content": "Hello!"}]
+    )
+    print(response.choices[0].message.content)
+except GlacisBlockedError as e:
+    print(f"Blocked by {e.control_type} (score={e.score})")
+```
+
+<Aside type="caution">
+  Input controls scan only the **last user message** in the conversation. Earlier messages in multi-turn conversations are not scanned. If you need to scan all messages, run controls manually before calling the integration.
+</Aside>
+
+## Custom Metadata
+
+Attach business-specific metadata to every attestation created by the client:
+
+```python
+from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+client = attested_litellm(
+    glacis_api_key="glsk_live_...",
+    metadata={"department": "legal", "use_case": "contract-review"},
+)
+
+response = client.completion(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Summarize this contract."}],
+)
+
+# Metadata is included in every attestation:
+# {"provider": "litellm", "model": "gpt-4", "department": "legal", "use_case": "contract-review"}
+```
+
+<Aside type="note">
+  Metadata values must be strings. The reserved keys `provider` and `model` are set automatically and cannot be overridden.
+</Aside>
+
+## Retrieving Evidence
+
+Evidence includes the full input, output, and control plane results that were attested. Evidence is stored **locally** and never sent to Glacis servers.
+
+```python
+from glacis.integrations.litellm import get_last_receipt, get_evidence
+
+receipt = get_last_receipt()
+if receipt:
+    evidence = get_evidence(receipt.id)
+    if evidence:
+        print(evidence["input"])    # Original request (model, messages)
+        print(evidence["output"])   # Full response (choices, usage)
+```
+
+## Async Support
+
+The wrapper also provides `acompletion()` for async workflows:
+
+```python
+import asyncio
+from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+async def main():
+    client = attested_litellm(glacis_api_key="glsk_live_...")
+
+    response = await client.acompletion(
+        model="gpt-4",
+        messages=[{"role": "user", "content": "Hello!"}]
+    )
+
+    print(response.choices[0].message.content)
+    receipt = get_last_receipt()
+    print(f"Attested: {receipt.id}")
+
+asyncio.run(main())
+```
+
+## `attested_litellm()` Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `glacis_api_key` | `Optional[str]` | `None` | Glacis API key. Required for online mode. |
+| `glacis_base_url` | `str` | `"https://api.glacis.io"` | Glacis API base URL. |
+| `service_id` | `str` | `"litellm"` | Service identifier for attestations. |
+| `debug` | `bool` | `False` | Enable debug logging. |
+| `offline` | `Optional[bool]` | `None` | Enable offline mode. If `None`, inferred from config or presence of `glacis_api_key`. |
+| `signing_seed` | `Optional[bytes]` | `None` | 32-byte Ed25519 signing seed. **Required** when `offline=True`. |
+| `policy_key` | `Optional[bytes]` | `None` | 32-byte HMAC key for sampling decisions. Falls back to `signing_seed` if not provided. |
+| `config` | `Optional[str]` | `None` | Path to `glacis.yaml` config file for controls, sampling, and policy settings. |
+| `input_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on input text before the LLM call. |
+| `output_controls` | `Optional[list[BaseControl]]` | `None` | Custom controls to run on output text after the LLM call. |
+| `metadata` | `Optional[dict[str, str]]` | `None` | Custom metadata to include in every attestation. Merged with provider defaults (`provider`, `model`). Cannot override reserved keys. |
+
+**Returns:** An `AttestedLiteLLM` wrapper with `.completion()` and `.acompletion()` methods.
+
+**Raises:** `GlacisBlockedError` if a control blocks the request.
+
+## Streaming
+
+<Aside type="note">
+  Streaming is **not yet supported**. Passing `stream=True` may produce errors or incomplete attestations, as the wrapper expects a non-streaming response object. Streaming support is planned for a future release.
+</Aside>

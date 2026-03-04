@@ -192,44 +192,268 @@ client = attested_openai(
 )
 ```
 
-## Custom Controls
+## Control Types
 
-Create custom controls by subclassing `BaseControl` and implementing the `check()` method:
+Glacis recognizes 8 control types. Each control you write or configure is classified into one of these types in the attestation record.
 
-```python
-from glacis.controls import BaseControl, ControlResult
+| Type | Built-in | Description | Example Use Case |
+|------|----------|-------------|------------------|
+| `pii` | `PIIControl` | PII/PHI detection | Scanning for SSNs, emails, medical records |
+| `jailbreak` | `JailbreakControl` | Prompt injection detection (ML) | Blocking "ignore all instructions" attacks |
+| `word_filter` | `WordFilterControl` | Literal keyword matching | Catching leaked terms like "confidential" |
+| `content_safety` | `ContentSafetyControl` | Toxicity / harmful content (ML) | Filtering offensive or policy-violating output |
+| `topic` | `TopicControl` | Topic enforcement (keyword) | Ensuring LLM stays within intended domain |
+| `prompt_security` | `PromptSecurityControl` | Prompt extraction detection (regex) | Detecting system prompt extraction attempts |
+| `grounding` | `GroundingControl` *(stub)* | Factual grounding / hallucination | Validating LLM output against source documents |
+| `custom` | *Catch-all* | Any other validation | Domain-specific business logic |
 
+All 7 built-in controls listed above (excluding `custom`) can be configured entirely in `glacis.yaml`. The `grounding` control is a pass-through stub — for real grounding validation, use the `custom` section with a control that accepts reference text. Set the `control_type` class attribute on your custom control class to any of these values. Controls with unrecognized types are automatically classified as `"custom"` in the attestation.
 
-class ToxicityControl(BaseControl):
-    """Custom toxicity detection control."""
+### Content Safety
 
-    control_type = "custom"
+Detects toxic, harmful, or policy-violating content using HuggingFace toxicity classifiers. The model is lazy-loaded on first use.
 
-    def check(self, text: str) -> ControlResult:
-        # Your detection logic here
-        is_toxic = "toxic_keyword" in text.lower()
-        return ControlResult(
-            control_type=self.control_type,
-            detected=is_toxic,
-            action="flag" if is_toxic else "forward",
-            score=0.95 if is_toxic else 0.0,
-            categories=["toxicity"] if is_toxic else [],
-            latency_ms=1,
-            metadata={"engine": "custom-toxicity-v1"},
-        )
+```yaml
+controls:
+  output:
+    content_safety:
+      enabled: true
+      model: "toxic-bert"                      # HuggingFace model alias
+      threshold: 0.5                            # Score threshold (0-1)
+      categories: ["toxic", "threat", "insult"] # Empty = all categories
+      if_detected: "flag"
 ```
 
-Then inject it into the pipeline:
+Categories (toxic-bert): `toxic`, `severe_toxic`, `obscene`, `threat`, `insult`, `identity_hate`.
+
+<Aside type="tip">
+  Requires the `transformers` package: `pip install glacis[content-safety]`
+</Aside>
+
+### Topic Enforcement
+
+Keyword-based topic control with two modes: **blocklist** (flag matching terms) and **allowlist** (flag when no terms match).
+
+```yaml
+controls:
+  input:
+    topic:
+      enabled: true
+      allowed_topics: ["healthcare", "medical", "patient"]  # Must match at least one
+      blocked_topics: ["politics", "gambling"]               # Must not match any
+      if_detected: "block"
+```
+
+When both are configured, blocked topics are checked first. No external dependencies required.
+
+### Prompt Security
+
+Detects prompt extraction attempts, instruction overrides, and role manipulation using built-in regex patterns. Ships with patterns for common attacks (system prompt extraction, "ignore instructions", DAN, developer mode, etc.).
+
+```yaml
+controls:
+  input:
+    prompt_security:
+      enabled: true
+      patterns: ["secret\\s+password"]  # Additional custom patterns (regex)
+      if_detected: "block"              # Defaults to "block" for security
+```
+
+Complements `jailbreak` (ML-based): prompt_security is rule-based and zero-latency. No external dependencies.
+
+### Grounding (Stub)
+
+The built-in grounding control is a pass-through stub because `check(text)` doesn't receive reference text for comparison. Enable it for attestation type classification, or implement real grounding via `custom`:
+
+```yaml
+controls:
+  output:
+    grounding:
+      enabled: true           # Stub: always passes, sets control_type="grounding"
+    custom:
+      - path: "my_grounding.GroundingValidator"  # Real implementation
+        enabled: true
+        args:
+          reference_text: "The source document..."
+          threshold: 0.7
+```
+
+## Custom Controls
+
+Custom controls let you plug any validation logic into the Glacis pipeline -- LLM-based judges, ML models, API calls, regex matching, database lookups, or anything else. They run automatically on every LLM call and their results are cryptographically attested.
+
+### Writing a Custom Control
+
+Three things are required:
+
+1. **Set `control_type`** -- a class attribute identifying the control (any of the 8 types above)
+2. **Implement `check(text)`** -- the single abstract method that receives the text to validate
+3. **Return a `ControlResult`** -- a standardized result with detection info
+
+The `check()` method is the universal extension point. For input controls, `text` is the user's message. For output controls, `text` is the LLM response. What happens inside `check()` is entirely up to you.
+
+```python
+from glacis.controls.base import BaseControl, ControlResult
+
+
+class GroundingControl(BaseControl):
+    """Validates LLM output is grounded in a reference document."""
+
+    control_type = "grounding"  # Maps to the "grounding" attestation type
+
+    def __init__(self, api_key: str, threshold: float = 0.7, if_detected: str = "flag"):
+        self._api_key = api_key
+        self._threshold = threshold
+        self._action = if_detected
+
+    def check(self, text: str) -> ControlResult:
+        # Your validation logic — LLM call, ML model, API, anything
+        score = self._compute_grounding_score(text)
+        is_ungrounded = score < self._threshold
+
+        return ControlResult(
+            control_type=self.control_type,
+            detected=is_ungrounded,
+            action=self._action if is_ungrounded else "forward",
+            score=score,
+            categories=["low_grounding"] if is_ungrounded else [],
+            latency_ms=0,  # Set by your implementation
+            metadata={"threshold": self._threshold, "model": "your-model"},
+        )
+
+    def _compute_grounding_score(self, text: str) -> float:
+        # ... your scoring logic ...
+        return 0.85
+
+    def close(self) -> None:
+        # Optional: release resources (API clients, ML models, etc.)
+        pass
+```
+
+<Aside type="tip">
+  Override `close()` to release expensive resources like API clients, ML models, or database connections. Controls also support the context manager protocol (`with` statement).
+</Aside>
+
+### Configuring in glacis.yaml (Recommended)
+
+The recommended way to register custom controls is through `glacis.yaml`. This lets you enable, disable, and tune controls without changing any code.
+
+```yaml
+controls:
+  output:
+    custom:
+      - path: "grounding_control.GroundingControl"  # module.ClassName
+        enabled: true
+        if_detected: "flag"
+        args:
+          api_key: "${OPENAI_API_KEY}"               # Environment variable
+          threshold: 0.7
+```
+
+**`path`** -- Dot-separated import path in the format `module_name.ClassName`. The module is resolved relative to the YAML file's directory (automatically added to `sys.path`).
+
+**`enabled`** -- Toggle the control on/off without removing the configuration. Default: `true`.
+
+**`if_detected`** -- Action when the control detects an issue: `"forward"`, `"flag"`, or `"block"`. Default: `"flag"`. This is passed to your constructor as the `if_detected` kwarg.
+
+**`args`** -- Constructor keyword arguments. Supports `${ENV_VAR}` substitution for secrets.
+
+#### File Placement
+
+Place your control module next to `glacis.yaml`. Glacis automatically adds the YAML file's directory to `sys.path`, so imports just work:
+
+```
+my-project/
+  glacis.yaml              # References "grounding_control.GroundingControl"
+  grounding_control.py     # Your custom control module
+  app.py
+```
+
+For controls in a package:
+
+```
+my-project/
+  glacis.yaml              # References "controls.grounding.GroundingControl"
+  controls/
+    __init__.py
+    grounding.py
+  app.py
+```
+
+#### Environment Variable Substitution
+
+Use `${VAR_NAME}` syntax to inject environment variables into any string value in `glacis.yaml`. This works everywhere in the config, not just in custom control args:
+
+```yaml
+controls:
+  output:
+    custom:
+      - path: "my_control.QAValidator"
+        args:
+          api_key: "${OPENAI_API_KEY}"
+          endpoint: "${VALIDATION_API_URL}"
+```
+
+If a referenced variable is not set, Glacis raises a clear error at startup:
+
+```
+ValueError: Environment variable 'OPENAI_API_KEY' is not set.
+Referenced in glacis.yaml via ${OPENAI_API_KEY}.
+```
+
+### Programmatic Registration (Alternative)
+
+For cases where YAML configuration isn't suitable (e.g., controls that require runtime-constructed objects), pass control instances directly:
 
 ```python
 from glacis.integrations.openai import attested_openai
 
 client = attested_openai(
-    input_controls=[ToxicityControl()],
+    output_controls=[GroundingControl(api_key="sk-...", threshold=0.7)],
 )
 ```
 
-Custom controls support the context manager protocol. Override `close()` to release expensive resources like ML models or database connections.
+### Multiple Custom Controls
+
+You can register any number of custom controls on both input and output stages:
+
+```yaml
+controls:
+  input:
+    custom:
+      - path: "security.PromptLeakDetector"
+        enabled: true
+        if_detected: "block"
+        args:
+          model: "classifier-v2"
+  output:
+    custom:
+      - path: "grounding_control.GroundingControl"
+        enabled: true
+        if_detected: "flag"
+        args:
+          api_key: "${OPENAI_API_KEY}"
+      - path: "toxicity.ContentSafetyControl"
+        enabled: true
+        if_detected: "block"
+        args:
+          threshold: 0.9
+```
+
+All controls -- built-in and custom -- run in parallel within each stage. Total latency equals the slowest control, not the sum. Errors in individual controls don't crash the pipeline.
+
+### Troubleshooting
+
+If a custom control fails to load, Glacis raises a descriptive error at startup:
+
+| Error | Cause | Example Message |
+|-------|-------|----------------|
+| `ImportError` | Invalid path format | `Invalid control path 'NoDotsHere'. Expected format: 'module_name.ClassName' (e.g., 'my_controls.ToxicityControl').` |
+| `ImportError` | Module not found | `Cannot import module 'my_controls' for custom control 'my_controls.Foo'. Glacis looked in: /path/to/project (glacis.yaml directory) and standard Python path. Check that the file 'my_controls.py' exists and has no import errors.` |
+| `AttributeError` | Class not in module | `Module 'my_controls' has no class 'Foo'. Available controls in 'my_controls': ['GroundingControl', 'ToxicityControl']` |
+| `TypeError` | Not a BaseControl | `'my_controls.Helper' is not a BaseControl subclass. Custom controls must extend glacis.controls.base.BaseControl.` |
+| `TypeError` | Constructor mismatch | `Failed to instantiate 'my_controls.MyCtrl' with args ['api_key']. Check that the constructor accepts these parameters. Error: ...` |
+| `ValueError` | Missing env var | `Environment variable 'MY_KEY' is not set. Referenced in glacis.yaml via ${MY_KEY}.` |
 
 ## Control Plane Results
 
@@ -243,7 +467,7 @@ Control results are recorded in the attestation's `control_plane_results` field.
 | `provider` | `str` | Provider identifier |
 | `latency_ms` | `int` | Processing time in milliseconds |
 | `status` | `str` | Action taken: `"forward"`, `"flag"`, `"block"`, or `"error"` |
-| `score` | `float \| None` | Confidence score from ML-based controls (0-1) |
+| `score` | `float \| None` | Confidence score (scale is control-specific, e.g., 0-1 for ML classifiers, 0-3 for grading rubrics) |
 | `result_hash` | `str \| None` | Hash of the control result |
 | `stage` | `str` | Pipeline stage: `"input"` or `"output"` |
 
@@ -258,7 +482,7 @@ Every control returns a standardized `ControlResult`:
 | `control_type` | `str` | Control type identifier |
 | `detected` | `bool` | Whether a threat/issue was detected |
 | `action` | `str` | `"forward"`, `"flag"`, `"block"`, or `"error"` |
-| `score` | `float \| None` | Confidence score (0-1) |
+| `score` | `float \| None` | Confidence score (must be >= 0, scale is control-specific) |
 | `categories` | `list[str]` | Detected categories (e.g., `["US_SSN", "PERSON"]`) |
 | `latency_ms` | `int` | Processing time in milliseconds |
 | `modified_text` | `str \| None` | Reserved for future use (not currently used) |
@@ -280,6 +504,7 @@ from glacis.controls import ControlsRunner, StageResult, ControlAction
 
 ## See Also
 
+- [`demos/custom_control_demo.ipynb`](https://github.com/glacisai/glacis-python/blob/main/demos/custom_control_demo.ipynb) -- step-by-step notebook building a custom control from scratch
 - [Configuration](/sdk/python/configuration/) -- full `glacis.yaml` reference
 - [API Reference](/sdk/python/api/) -- `ControlPlaneResults`, `ControlExecution` models
 - [Sampling & Evidence](/sdk/python/sampling/) -- how controls interact with L1/L2 sampling

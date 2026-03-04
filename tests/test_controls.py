@@ -334,14 +334,16 @@ class TestControlResult:
         assert result.modified_text is None
 
     def test_control_result_score_bounds(self):
-        """Score must be 0-1."""
+        """Score must be >= 0 (no upper bound — scale is control-specific)."""
         from pydantic import ValidationError
 
-        with pytest.raises(ValidationError):
-            ControlResult(control_type="test", score=1.5)
-
+        # Negative scores are invalid
         with pytest.raises(ValidationError):
             ControlResult(control_type="test", score=-0.1)
+
+        # Scores above 1.0 are valid (e.g., 0-3 rubric scales)
+        result = ControlResult(control_type="test", score=2.5)
+        assert result.score == 2.5
 
         result = ControlResult(control_type="test", score=0.5)
         assert result.score == 0.5

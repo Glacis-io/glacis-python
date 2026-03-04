@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from glacis.integrations.base import (
     ControlResultsAccumulator,
     GlacisBlockedError,
+    GlacisCallContext,
+    GlacisOperationContext,
     attest_and_store,
     build_metadata,
     check_input_block,
@@ -215,6 +217,11 @@ def attested_openai(
         return response
 
     client.chat.completions.create = attested_create  # type: ignore
+
+    # Attach pipeline context managers
+    client.glacis_context = lambda metadata: GlacisCallContext(metadata)  # type: ignore
+    client.glacis_operation = lambda: GlacisOperationContext()  # type: ignore
+
     return client
 
 
@@ -223,4 +230,6 @@ __all__ = [
     "get_last_receipt",
     "get_evidence",
     "GlacisBlockedError",
+    "GlacisCallContext",
+    "GlacisOperationContext",
 ]

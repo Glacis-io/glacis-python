@@ -1,6 +1,6 @@
 [project]
 name = "glacis"
-version = "0.6.0"
+version = "0.7.0"
 description = "GLACIS SDK for Python - AI Compliance Attestation"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -35,6 +35,7 @@ dev = [
     "pytest-httpx>=0.22.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
+    "pyyaml>=6.0.0",
 ]
 openai = [
     "openai>=1.0.0",
@@ -44,6 +45,9 @@ anthropic = [
 ]
 gemini = [
     "google-genai>=1.0.0",
+]
+litellm = [
+    "litellm>=1.0.0",
 ]
 redaction = [
     "presidio-analyzer>=2.2.0",
@@ -60,7 +64,7 @@ controls = [
     "glacis[redaction,jailbreak]",
 ]
 all = [
-    "glacis[dev,openai,anthropic,gemini,controls]",
+    "glacis[dev,openai,anthropic,gemini,litellm,controls]",
 ]
 
 [project.urls]
@@ -110,6 +114,8 @@ module = [
     "google.*",
     "google.genai",
     "google.genai.*",
+    "litellm",
+    "litellm.*",
     "presidio_analyzer",
     "presidio_analyzer.*",
     "presidio_anonymizer",

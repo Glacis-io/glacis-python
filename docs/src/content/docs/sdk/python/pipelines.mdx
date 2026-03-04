@@ -1,0 +1,219 @@
+---
+title: Pipeline Integration
+description: Link multi-step AI operations with per-call metadata, operation contexts, revision chains, and batch decomposition.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The wrapper integrations (`attested_openai`, `attested_gemini`, etc.) are designed for simple request-response attestation. For multi-step pipelines — generate, validate, retry — the SDK provides context managers that add operation linking and per-call metadata without leaving the wrapper.
+
+## Per-call Metadata
+
+By default, the `metadata` parameter on `attested_openai()` is static — every call gets the same metadata. Use `glacis_context()` to set metadata for individual calls:
+
+```python
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    glacis_api_key="glsk_live_...",
+    openai_api_key="sk-...",
+    metadata={"pipeline": "qa-generator"},  # shared across all calls
+)
+
+# Per-call metadata overrides and extends the client-level metadata
+with client.glacis_context(metadata={"chunk_id": "chunk_012", "step": "generate"}):
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Generate a QA pair"}],
+    )
+
+receipt = get_last_receipt()
+# receipt metadata: {"provider": "openai", "model": "gpt-4o",
+#                    "pipeline": "qa-generator", "chunk_id": "chunk_012",
+#                    "step": "generate"}
+```
+
+**Merge order:** provider defaults (`provider`, `model`) → client-level `metadata` → per-call `glacis_context`. Per-call values override client-level values for overlapping keys. The reserved keys `provider` and `model` cannot be overridden.
+
+## Operation Linking
+
+Each wrapper call normally creates an independent attestation with no link to other calls. Use `glacis_operation()` to group calls under a shared `operation_id` with auto-incrementing `operation_sequence`:
+
+```python
+with client.glacis_operation() as op:
+    # Step 0: Generate
+    gen = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Generate a summary"}],
+    )
+    gen_receipt = get_last_receipt()
+    # gen_receipt.operation_id == op.operation_id
+    # gen_receipt.operation_sequence == 0
+
+    # Step 1: Validate
+    val = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Is this summary accurate?"}],
+    )
+    val_receipt = get_last_receipt()
+    # val_receipt.operation_id == op.operation_id
+    # val_receipt.operation_sequence == 1
+```
+
+All attestations within the block share the same `operation_id` — a dashboard or audit tool can query by `operation_id` to reconstruct the full operation chain.
+
+## Revision Chains
+
+When a step is retried (e.g., regenerating after a failed validation), use `op.supersedes()` to create a revision chain linking the new attestation to the one it replaces:
+
+```python
+with client.glacis_operation() as op:
+    gen = client.chat.completions.create(model="gpt-4o", messages=[...])
+    gen_receipt = get_last_receipt()  # seq 0
+
+    val = client.chat.completions.create(model="gpt-4o", messages=[...])
+    val_receipt = get_last_receipt()  # seq 1
+
+    # Validation failed — regenerate, superseding the original
+    op.supersedes(gen_receipt.id)
+    regen = client.chat.completions.create(model="gpt-4o", messages=[...])
+    regen_receipt = get_last_receipt()
+    # regen_receipt.operation_sequence == 2
+    # regen_receipt.supersedes == gen_receipt.id
+```
+
+<Aside type="note">
+  `supersedes` is **one-shot** — it applies only to the next attestation and is automatically cleared. You don't need to reset it.
+</Aside>
+
+## Combining Context Managers
+
+`glacis_operation` and `glacis_context` nest naturally:
+
+```python
+with client.glacis_operation() as op:
+    with client.glacis_context(metadata={"step": "generate"}):
+        gen = client.chat.completions.create(model="gpt-4o", messages=[...])
+
+    with client.glacis_context(metadata={"step": "validate"}):
+        val = client.chat.completions.create(model="gpt-4o", messages=[...])
+```
+
+Each attestation gets both the operation linking (shared `operation_id`, incrementing sequence) and the step-specific metadata.
+
+## Batch Decomposition
+
+When a single LLM call produces multiple items (e.g., a batch of QA pairs), use `decompose()` on the core Glacis client to create per-item attestations:
+
+```python
+from glacis import Glacis
+
+glacis_client = Glacis(offline=True, signing_seed=seed)
+
+# Parent attestation from the batch call
+parent = glacis_client.attest(
+    service_id="my-service",
+    operation_type="completion",
+    input={"prompt": "Generate 5 QA pairs"},
+    output={"pairs": qa_pairs},
+)
+
+# Decompose into individual attestations
+items = [{"question": qa["q"], "answer": qa["a"]} for qa in qa_pairs]
+sub_attestations = glacis_client.decompose(parent, items)
+# All share parent's operation_id with incrementing sequences
+```
+
+<Aside type="note">
+  `decompose()` is on the core `Glacis` client, not on the wrapper. Use it alongside the wrapper when you need per-item attestations from a batch response.
+</Aside>
+
+## When to Use Direct `glacis.attest()`
+
+The wrapper handles standard completion attestations. Use the core `Glacis` client directly when you need:
+
+- **Custom `operation_type`** — the wrapper always uses `"completion"`. For embeddings, classification, or custom types, call `glacis.attest()` directly.
+- **Non-LLM attestations** — attesting validation results, human reviews, or pipeline metadata that don't involve an LLM call.
+- **Full control** — when the context manager pattern doesn't fit your pipeline's control flow.
+
+```python
+from glacis import Glacis
+
+glacis_client = Glacis(offline=True, signing_seed=seed)
+
+# Attest a validation step (no LLM call involved)
+receipt = glacis_client.attest(
+    service_id="my-service",
+    operation_type="validation",
+    input={"question": question, "answer": answer},
+    output={"valid": True, "score": 0.95},
+    operation_id=op_id,        # link to same operation
+    operation_sequence=seq,     # continue the sequence
+)
+```
+
+## Complete Example
+
+A multi-step pipeline with generate, validate, and conditional retry:
+
+```python
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    glacis_api_key="glsk_live_...",
+    openai_api_key="sk-...",
+    metadata={"pipeline": "qa-generator"},
+)
+
+def process_chunk(chunk_id: str, context: str):
+    with client.glacis_operation() as op:
+        # Step 0: Generate
+        with client.glacis_context(metadata={"chunk_id": chunk_id, "step": "generate"}):
+            gen = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Generate a QA pair from this text."},
+                    {"role": "user", "content": context},
+                ],
+            )
+            gen_receipt = get_last_receipt()
+
+        # Step 1: Validate
+        answer = gen.choices[0].message.content
+        with client.glacis_context(metadata={"chunk_id": chunk_id, "step": "validate"}):
+            val = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Is this answer accurate? Reply YES or NO."},
+                    {"role": "user", "content": f"Context: {context}\nAnswer: {answer}"},
+                ],
+            )
+
+        # Step 2: Retry if validation failed
+        if "NO" in val.choices[0].message.content.upper():
+            op.supersedes(gen_receipt.id)
+            with client.glacis_context(metadata={"chunk_id": chunk_id, "step": "regenerate"}):
+                regen = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "Regenerate a more accurate QA pair."},
+                        {"role": "user", "content": context},
+                    ],
+                )
+            return regen
+
+        return gen
+```
+
+The resulting attestation chain for a retry case:
+
+```
+operation_id: "a1b2c3d4-..."
+├── seq 0: generate      [oatt_001]
+├── seq 1: validate      [oatt_002]
+└── seq 2: regenerate    [oatt_003] (supersedes oatt_001)
+```
+
+## Thread Safety
+
+All context managers use thread-local storage. Each thread maintains independent metadata and operation state — safe for concurrent requests in multi-threaded servers. No locking is required.

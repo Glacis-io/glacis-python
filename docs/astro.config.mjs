@@ -33,6 +33,7 @@ export default defineConfig({
             { label: 'OpenAI', link: '/sdk/python/openai/' },
             { label: 'Anthropic', link: '/sdk/python/anthropic/' },
             { label: 'Gemini', link: '/sdk/python/gemini/' },
+            { label: 'LiteLLM', link: '/sdk/python/litellm/' },
           ],
         },
         {

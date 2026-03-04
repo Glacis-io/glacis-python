@@ -78,12 +78,16 @@ from glacis.storage import (
 try:
     from glacis.controls import (  # noqa: F401
         BaseControl,
+        ContentSafetyControl,
         ControlAction,
         ControlResult,
         ControlsRunner,
+        GroundingControl,
         JailbreakControl,
         PIIControl,
+        PromptSecurityControl,
         StageResult,
+        TopicControl,
         WordFilterControl,
     )
 
@@ -145,11 +149,15 @@ __all__ = [
 if _CONTROLS_AVAILABLE:
     __all__.extend([
         "BaseControl",
+        "ContentSafetyControl",
         "ControlAction",
         "ControlResult",
         "ControlsRunner",
-        "PIIControl",
+        "GroundingControl",
         "JailbreakControl",
-        "WordFilterControl",
+        "PIIControl",
+        "PromptSecurityControl",
         "StageResult",
+        "TopicControl",
+        "WordFilterControl",
     ])
