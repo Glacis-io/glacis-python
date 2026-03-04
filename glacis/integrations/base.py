@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 # SDK version used in ControlExecution records
-SDK_VERSION = "0.6.0"
+SDK_VERSION = "0.7.0"
 
 # Known control types that map directly to ControlType enum
 _KNOWN_CONTROL_TYPES = frozenset({
@@ -66,6 +66,119 @@ def get_last_receipt() -> Optional["Attestation"]:
 def set_last_receipt(receipt: "Attestation") -> None:
     """Store the last receipt in thread-local storage."""
     _thread_local.last_receipt = receipt
+
+
+# ---------------------------------------------------------------------------
+# Per-call metadata (thread-local)
+# ---------------------------------------------------------------------------
+
+
+def get_call_metadata() -> Optional[dict[str, str]]:
+    """Get per-call metadata from thread-local storage."""
+    return getattr(_thread_local, "_call_metadata", None)
+
+
+def set_call_metadata(metadata: Optional[dict[str, str]]) -> None:
+    """Set per-call metadata in thread-local storage."""
+    _thread_local._call_metadata = metadata
+
+
+class GlacisCallContext:
+    """Context manager for per-call metadata override.
+
+    Sets thread-local metadata that merges with (and overrides)
+    client-level metadata for the duration of the block.
+
+    Example::
+
+        with client.glacis_context(metadata={"chunk_id": "c012", "step": "generate"}):
+            response = client.chat.completions.create(...)
+    """
+
+    def __init__(self, metadata: dict[str, str]) -> None:
+        self._metadata = metadata
+        self._previous: Optional[dict[str, str]] = None
+
+    def __enter__(self) -> "GlacisCallContext":
+        self._previous = get_call_metadata()
+        set_call_metadata(self._metadata)
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        set_call_metadata(self._previous)
+
+
+# ---------------------------------------------------------------------------
+# Operation context (thread-local)
+# ---------------------------------------------------------------------------
+
+
+def get_active_operation() -> Any:
+    """Get the active OperationContext from thread-local storage."""
+    return getattr(_thread_local, "_operation_context", None)
+
+
+def set_active_operation(op: Any) -> None:
+    """Set the active OperationContext in thread-local storage."""
+    _thread_local._operation_context = op
+
+
+def get_pending_supersedes() -> Optional[str]:
+    """Get the pending supersedes attestation ID."""
+    return getattr(_thread_local, "_supersedes", None)
+
+
+def set_pending_supersedes(attestation_id: Optional[str]) -> None:
+    """Set a supersedes value to be consumed by the next attestation."""
+    _thread_local._supersedes = attestation_id
+
+
+class GlacisOperationContext:
+    """Context manager that groups wrapper calls into a single operation.
+
+    All attested wrapper calls within this block share the same
+    ``operation_id`` with auto-incrementing ``operation_sequence``.
+
+    Example::
+
+        with client.glacis_operation() as op:
+            gen = client.chat.completions.create(...)          # seq 0
+            val = client.chat.completions.create(...)          # seq 1
+            gen_receipt = get_last_receipt()
+            op.supersedes(gen_receipt.id)
+            regen = client.chat.completions.create(...)        # seq 2, supersedes gen
+    """
+
+    def __init__(self) -> None:
+        from glacis.client import OperationContext
+
+        self._op = OperationContext()
+        self._previous_op: Any = None
+        self._previous_supersedes: Optional[str] = None
+
+    @property
+    def operation_id(self) -> str:
+        """The shared operation ID for all calls in this context."""
+        return self._op.operation_id
+
+    def supersedes(self, attestation_id: str) -> None:
+        """Mark the next wrapper call as superseding the given attestation.
+
+        The supersedes value is consumed (cleared) after the next
+        ``attest()`` call — it only applies once.
+        """
+        set_pending_supersedes(attestation_id)
+
+    def __enter__(self) -> "GlacisOperationContext":
+        self._previous_op = get_active_operation()
+        self._previous_supersedes = get_pending_supersedes()
+        set_active_operation(self._op)
+        set_pending_supersedes(None)
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        set_active_operation(self._previous_op)
+        set_pending_supersedes(self._previous_supersedes)
 
 
 def get_evidence(
@@ -258,13 +371,25 @@ def create_controls_runner(
         input_cfg.pii_phi.enabled
         or input_cfg.word_filter.enabled
         or input_cfg.jailbreak.enabled
+        or input_cfg.content_safety.enabled
+        or input_cfg.topic.enabled
+        or input_cfg.prompt_security.enabled
+        or input_cfg.grounding.enabled
         or output_cfg.pii_phi.enabled
         or output_cfg.word_filter.enabled
         or output_cfg.jailbreak.enabled
+        or output_cfg.content_safety.enabled
+        or output_cfg.topic.enabled
+        or output_cfg.prompt_security.enabled
+        or output_cfg.grounding.enabled
     )
     has_custom = bool(input_controls or output_controls)
+    has_yaml_custom = bool(
+        getattr(input_cfg, "custom", None)
+        or getattr(output_cfg, "custom", None)
+    )
 
-    if not has_builtin and not has_custom:
+    if not has_builtin and not has_custom and not has_yaml_custom:
         return None
 
     from glacis.controls import ControlsRunner
@@ -275,6 +400,7 @@ def create_controls_runner(
         input_controls=input_controls,
         output_controls=output_controls,
         debug=debug,
+        config_dir=getattr(cfg, "_config_dir", None),
     )
 
 
@@ -513,12 +639,22 @@ def build_metadata(
         ValueError: If custom_metadata tries to override 'provider' or 'model'.
     """
     base: dict[str, Any] = {"provider": provider, "model": model, **extra}
+    reserved = {"provider", "model"}
+
     if custom_metadata:
-        reserved = {"provider", "model"}
         for key in reserved:
             if key in custom_metadata:
                 raise ValueError(f"Cannot override reserved metadata key: '{key}'")
         base.update(custom_metadata)
+
+    # Merge per-call metadata (from glacis_context), overriding client-level
+    call_metadata = get_call_metadata()
+    if call_metadata:
+        for key in reserved:
+            if key in call_metadata:
+                raise ValueError(f"Cannot override reserved metadata key: '{key}'")
+        base.update(call_metadata)
+
     return base
 
 
@@ -555,6 +691,18 @@ def handle_blocked_request(
     output_data = {"blocked": True, "reason": f"{blocking_control_type}_detected"}
     metadata = build_metadata(provider, model, custom_metadata, blocked=str(True))
 
+    # Read thread-local operation context
+    active_op = get_active_operation()
+    op_id: Optional[str] = None
+    op_seq: Optional[int] = None
+    if active_op is not None:
+        op_id = active_op.operation_id
+        op_seq = active_op.next_sequence()
+
+    supersedes = get_pending_supersedes()
+    if supersedes is not None:
+        set_pending_supersedes(None)  # consume after use
+
     try:
         receipt = glacis_client.attest(
             service_id=service_id,
@@ -563,6 +711,9 @@ def handle_blocked_request(
             output=output_data,
             metadata=metadata,
             control_plane_results=control_plane_results,
+            operation_id=op_id,
+            operation_sequence=op_seq,
+            supersedes=supersedes,
         )
         set_last_receipt(receipt)
         store_evidence(
@@ -760,6 +911,18 @@ def attest_and_store(
     in a single call.  Errors are swallowed (printed in debug mode) so the LLM
     response is never lost due to attestation failures.
     """
+    # Read thread-local operation context
+    active_op = get_active_operation()
+    op_id: Optional[str] = None
+    op_seq: Optional[int] = None
+    if active_op is not None:
+        op_id = active_op.operation_id
+        op_seq = active_op.next_sequence()
+
+    supersedes = get_pending_supersedes()
+    if supersedes is not None:
+        set_pending_supersedes(None)  # consume after use
+
     try:
         receipt = ctx.glacis.attest(
             service_id=ctx.effective_service_id,
@@ -768,6 +931,9 @@ def attest_and_store(
             output=output_data,
             metadata=metadata,
             control_plane_results=control_plane_results,
+            operation_id=op_id,
+            operation_sequence=op_seq,
+            supersedes=supersedes,
         )
         set_last_receipt(receipt)
         store_evidence(
@@ -789,8 +955,16 @@ def attest_and_store(
 
 __all__ = [
     "GlacisBlockedError",
+    "GlacisCallContext",
+    "GlacisOperationContext",
     "get_last_receipt",
     "set_last_receipt",
+    "get_call_metadata",
+    "set_call_metadata",
+    "get_active_operation",
+    "set_active_operation",
+    "get_pending_supersedes",
+    "set_pending_supersedes",
     "get_evidence",
     "suppress_noisy_loggers",
     "initialize_config",

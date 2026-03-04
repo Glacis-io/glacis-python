@@ -38,6 +38,25 @@ controls:
       model: "prompt_guard_22m"                # or "prompt_guard_86m"
       threshold: 0.5                           # Classification threshold (0-1)
       if_detected: "block"
+    content_safety:
+      enabled: true
+      model: "toxic-bert"                      # HuggingFace model alias
+      threshold: 0.5                           # Score threshold (0-1)
+      categories: []                           # Empty = all categories
+      if_detected: "flag"
+    topic:
+      enabled: true
+      allowed_topics: ["healthcare", "medical"] # Must match at least one
+      blocked_topics: []                       # Must not match any
+      if_detected: "block"
+    prompt_security:
+      enabled: true
+      patterns: []                             # Additional custom regex patterns
+      if_detected: "block"
+    grounding:
+      enabled: false                           # Stub: always passes
+      threshold: 0.5
+      if_detected: "flag"
   output:
     pii_phi:
       enabled: true
@@ -50,6 +69,16 @@ controls:
       entities: ["system prompt", "secret"]
       if_detected: "flag"
     jailbreak:
+      enabled: false
+    content_safety:
+      enabled: true
+      threshold: 0.5
+      if_detected: "flag"
+    topic:
+      enabled: false
+    prompt_security:
+      enabled: false
+    grounding:
       enabled: false
 
 # --- Sampling tiers ---
@@ -102,7 +131,7 @@ Controls run on input text (before the LLM call) and output text (after the LLM 
 
 #### `controls.input` / `controls.output`
 
-Both stages support the same three controls: `pii_phi`, `word_filter`, and `jailbreak`.
+Both stages support the same seven built-in controls: `pii_phi`, `word_filter`, `jailbreak`, `content_safety`, `topic`, `prompt_security`, and `grounding`.
 
 **`pii_phi` -- PII/PHI Detection**
 
@@ -137,6 +166,49 @@ Both stages support the same three controls: `pii_phi`, `word_filter`, and `jail
 
 <Aside type="tip">
   The `jailbreak` extra is required for prompt injection detection: `pip install glacis[jailbreak]`
+</Aside>
+
+**`content_safety` -- Toxicity Detection**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable content safety scanning |
+| `model` | `str` | `"toxic-bert"` | Detection model (currently: `"toxic-bert"`) |
+| `threshold` | `float` | `0.5` | Score threshold (0.0 to 1.0) |
+| `categories` | `list[str]` | `[]` | Toxicity categories to check. Empty = all |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when harmful content is detected |
+
+<Aside type="tip">
+  Requires the `transformers` package: `pip install glacis[content-safety]`
+</Aside>
+
+**`topic` -- Topic Enforcement**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable topic enforcement |
+| `allowed_topics` | `list[str]` | `[]` | Allowed keywords (text must match at least one) |
+| `blocked_topics` | `list[str]` | `[]` | Blocked keywords (any match = flagged) |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when topic violation is detected |
+
+**`prompt_security` -- Prompt Extraction Detection**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable prompt security scanning |
+| `patterns` | `list[str]` | `[]` | Additional regex patterns (added to built-in set) |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"block"` | Action when extraction attempt is detected |
+
+**`grounding` -- Grounding Stub**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable grounding control (stub) |
+| `threshold` | `float` | `0.5` | Threshold (for custom implementations extending the stub) |
+| `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when grounding issue is detected |
+
+<Aside type="note">
+  The built-in grounding control is a pass-through stub. For real grounding validation, use the `custom` controls section with a `BaseControl` subclass that accepts reference text.
 </Aside>
 
 ### `sampling`

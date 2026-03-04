@@ -27,7 +27,7 @@ class ControlResult(BaseModel):
         control_type: The type of control (e.g., "pii", "jailbreak", "word_filter")
         detected: Whether a threat/issue was detected
         action: Action taken — "forward", "flag", "block", or "error"
-        score: Confidence score from ML-based controls (0-1)
+        score: Confidence score from ML-based controls (0 = no detection, scale is control-specific)
         categories: List of detected categories (e.g., ["US_SSN", "PERSON"])
         latency_ms: Processing time in milliseconds
         metadata: Control-specific metadata (for audit trail)
@@ -40,7 +40,7 @@ class ControlResult(BaseModel):
         default="forward", description="Action taken or recommended"
     )
     score: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0, description="Confidence score (0-1)"
+        default=None, ge=0.0, description="Confidence score (0 = no detection)"
     )
     categories: list[str] = Field(
         default_factory=list, description="Detected categories"

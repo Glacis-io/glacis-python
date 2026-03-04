@@ -33,17 +33,30 @@ Example (using ControlsRunner):
 
 from __future__ import annotations
 
+import importlib
+import logging
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
+logger = logging.getLogger(__name__)
+
+# Lock for thread-safe sys.path modifications
+_sys_path_lock = threading.Lock()
+
 from glacis.controls.base import BaseControl, ControlAction, ControlResult
+from glacis.controls.content_safety import ContentSafetyControl
+from glacis.controls.grounding import GroundingControl
 from glacis.controls.jailbreak import JailbreakControl
 from glacis.controls.pii import PIIControl
+from glacis.controls.prompt_security import PromptSecurityControl
+from glacis.controls.topic import TopicControl
 from glacis.controls.word_filter import WordFilterControl
 
 if TYPE_CHECKING:
-    from glacis.config import InputControlsConfig, OutputControlsConfig
+    from glacis.config import CustomControlEntry, InputControlsConfig, OutputControlsConfig
 
 
 @dataclass
@@ -59,6 +72,99 @@ class StageResult:
     results: list[ControlResult] = field(default_factory=list)
     effective_text: str = ""
     should_block: bool = False
+
+
+def _load_custom_control(
+    entry: "CustomControlEntry",
+    config_dir: Optional[str] = None,
+) -> BaseControl:
+    """Import and instantiate a custom control from a dot-path.
+
+    Args:
+        entry: Custom control config entry with path, args, if_detected.
+        config_dir: Directory of the glacis.yaml file (added to sys.path).
+
+    Returns:
+        Instantiated BaseControl subclass.
+
+    Raises:
+        ImportError: If the module cannot be imported.
+        AttributeError: If the class is not found in the module.
+        TypeError: If the class is not a BaseControl subclass or constructor fails.
+    """
+    dot_path = entry.path  # e.g., "my_controls.ToxicityControl"
+    parts = dot_path.rsplit(".", 1)
+    if len(parts) != 2:
+        raise ImportError(
+            f"Invalid control path '{dot_path}'. "
+            f"Expected format: 'module_name.ClassName' "
+            f"(e.g., 'my_controls.ToxicityControl')."
+        )
+    module_path, class_name = parts
+
+    # Auto-add YAML file's directory to sys.path for local imports
+    if config_dir:
+        with _sys_path_lock:
+            if config_dir not in sys.path:
+                sys.path.append(config_dir)
+
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as e:
+        hint = ""
+        if config_dir:
+            hint = (
+                f" Glacis looked in: {config_dir} (glacis.yaml directory) "
+                f"and standard Python path."
+            )
+        raise ImportError(
+            f"Cannot import module '{module_path}' for custom control "
+            f"'{dot_path}'.{hint} Check that the file '{module_path}.py' "
+            f"exists and has no import errors."
+        ) from e
+
+    try:
+        cls = getattr(module, class_name)
+    except AttributeError:
+        available = [
+            n for n in dir(module)
+            if isinstance(getattr(module, n, None), type)
+            and issubclass(getattr(module, n), BaseControl)
+            and n != "BaseControl"
+        ]
+        hint = (
+            f" Available controls in '{module_path}': {available}"
+            if available
+            else ""
+        )
+        raise AttributeError(
+            f"Module '{module_path}' has no class '{class_name}'.{hint}"
+        )
+
+    if not (isinstance(cls, type) and issubclass(cls, BaseControl)):
+        raise TypeError(
+            f"'{dot_path}' is not a BaseControl subclass. "
+            f"Custom controls must extend glacis.controls.base.BaseControl."
+        )
+
+    # Merge if_detected into args so the control can use it.
+    # Top-level if_detected always wins over args to avoid silent precedence surprises.
+    # If the constructor doesn't accept if_detected (no **kwargs), try without it.
+    kwargs = dict(entry.args)
+    kwargs["if_detected"] = entry.if_detected
+
+    try:
+        return cls(**kwargs)
+    except TypeError:
+        # Retry without if_detected for controls that don't accept it
+        kwargs.pop("if_detected", None)
+        try:
+            return cls(**kwargs)
+        except TypeError as e:
+            raise TypeError(
+                f"Failed to instantiate '{dot_path}' with args {list(kwargs.keys())}. "
+                f"Check that the constructor accepts these parameters. Error: {e}"
+            ) from e
 
 
 class ControlsRunner:
@@ -83,6 +189,7 @@ class ControlsRunner:
         input_controls: Optional[list[BaseControl]] = None,
         output_controls: Optional[list[BaseControl]] = None,
         debug: bool = False,
+        config_dir: Optional[str] = None,
     ) -> None:
         self._debug = debug
 
@@ -118,6 +225,31 @@ class ControlsRunner:
                         f"(model={input_config.jailbreak.model})"
                     )
 
+            if input_config.content_safety.enabled:
+                self._input_controls.append(ContentSafetyControl(input_config.content_safety))
+                if debug:
+                    print(
+                        f"[glacis] Input ContentSafetyControl initialized "
+                        f"(model={input_config.content_safety.model})"
+                    )
+
+            if input_config.topic.enabled:
+                self._input_controls.append(TopicControl(input_config.topic))
+                if debug:
+                    n = len(input_config.topic.allowed_topics) + len(input_config.topic.blocked_topics)
+                    print(f"[glacis] Input TopicControl initialized ({n} topics)")
+
+            if input_config.prompt_security.enabled:
+                self._input_controls.append(PromptSecurityControl(input_config.prompt_security))
+                if debug:
+                    n = len(input_config.prompt_security.patterns)
+                    print(f"[glacis] Input PromptSecurityControl initialized ({n} custom patterns)")
+
+            if input_config.grounding.enabled:
+                self._input_controls.append(GroundingControl(input_config.grounding))
+                if debug:
+                    print("[glacis] Input GroundingControl initialized (stub)")
+
         # --- Output stage built-in controls ---
         if output_config:
             if output_config.pii_phi.enabled:
@@ -146,7 +278,75 @@ class ControlsRunner:
                         f"(model={output_config.jailbreak.model})"
                     )
 
-        # --- Custom controls ---
+            if output_config.content_safety.enabled:
+                self._output_controls.append(ContentSafetyControl(output_config.content_safety))
+                if debug:
+                    print(
+                        f"[glacis] Output ContentSafetyControl initialized "
+                        f"(model={output_config.content_safety.model})"
+                    )
+
+            if output_config.topic.enabled:
+                self._output_controls.append(TopicControl(output_config.topic))
+                if debug:
+                    n = len(output_config.topic.allowed_topics) + len(output_config.topic.blocked_topics)
+                    print(f"[glacis] Output TopicControl initialized ({n} topics)")
+
+            if output_config.prompt_security.enabled:
+                self._output_controls.append(PromptSecurityControl(output_config.prompt_security))
+                if debug:
+                    n = len(output_config.prompt_security.patterns)
+                    print(f"[glacis] Output PromptSecurityControl initialized ({n} custom patterns)")
+
+            if output_config.grounding.enabled:
+                self._output_controls.append(GroundingControl(output_config.grounding))
+                if debug:
+                    print("[glacis] Output GroundingControl initialized (stub)")
+
+        # --- Custom controls from YAML config ---
+        if input_config and hasattr(input_config, "custom"):
+            for entry in input_config.custom:
+                if entry.enabled:
+                    try:
+                        ctrl = _load_custom_control(entry, config_dir)
+                    except (ImportError, AttributeError, TypeError) as e:
+                        logger.error(
+                            "Failed to load input custom control '%s': %s",
+                            entry.path, e,
+                        )
+                        raise RuntimeError(
+                            f"Failed to load custom control '{entry.path}' "
+                            f"from glacis.yaml (input stage): {e}"
+                        ) from e
+                    self._input_controls.append(ctrl)
+                    if debug:
+                        print(
+                            f"[glacis] Input custom control '{ctrl.control_type}' "
+                            f"loaded from {entry.path}"
+                        )
+
+        if output_config and hasattr(output_config, "custom"):
+            for entry in output_config.custom:
+                if entry.enabled:
+                    try:
+                        ctrl = _load_custom_control(entry, config_dir)
+                    except (ImportError, AttributeError, TypeError) as e:
+                        logger.error(
+                            "Failed to load output custom control '%s': %s",
+                            entry.path, e,
+                        )
+                        raise RuntimeError(
+                            f"Failed to load custom control '{entry.path}' "
+                            f"from glacis.yaml (output stage): {e}"
+                        ) from e
+                    self._output_controls.append(ctrl)
+                    if debug:
+                        print(
+                            f"[glacis] Output custom control '{ctrl.control_type}' "
+                            f"loaded from {entry.path}"
+                        )
+
+        # --- Programmatic custom controls ---
         for ctrl in (input_controls or []):
             self._input_controls.append(ctrl)
             if debug:
@@ -269,11 +469,16 @@ class ControlsRunner:
 # Public exports
 __all__ = [
     "BaseControl",
+    "ContentSafetyControl",
     "ControlAction",
     "ControlResult",
     "ControlsRunner",
+    "GroundingControl",
     "JailbreakControl",
     "PIIControl",
+    "PromptSecurityControl",
     "StageResult",
+    "TopicControl",
     "WordFilterControl",
+    "_load_custom_control",
 ]

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/glacis-logo.png" alt="Glacis" width="200">
+  <img src="https://raw.githubusercontent.com/Glacis-io/glacis-python/main/assets/glacis-logo.png" alt="Glacis" width="200">
 </p>
 
 # Glacis Python SDK

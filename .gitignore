@@ -90,3 +90,4 @@ examples/.env
 
 # Claude Code
 .claude/
+CLAUDE.md
