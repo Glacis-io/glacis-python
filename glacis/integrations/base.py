@@ -209,6 +209,10 @@ def get_evidence(
     Evidence includes the full input, output, and control_plane_results that
     were attested. This data is stored locally and never sent to GLACIS servers.
 
+    When *storage_backend* / *storage_path* are not provided, the values are
+    read from the active ``glacis.yaml`` config (if present), falling back to
+    the SQLite default.
+
     Args:
         attestation_id: The attestation ID (att_xxx or oatt_xxx)
         storage_backend: Backend type override ("sqlite" or "json")
@@ -218,7 +222,15 @@ def get_evidence(
         Dict with input, output, control_plane_results, and metadata,
         or None if not found
     """
+    from glacis.config import load_config
     from glacis.storage import create_storage
+
+    if storage_backend is None or storage_path is None:
+        cfg = load_config()
+        if storage_backend is None:
+            storage_backend = cfg.evidence_storage.backend
+        if storage_path is None:
+            storage_path = cfg.evidence_storage.path
 
     storage = create_storage(
         backend=storage_backend or "sqlite",
