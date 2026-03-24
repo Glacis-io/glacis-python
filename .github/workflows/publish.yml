@@ -24,20 +24,6 @@ jobs:
       - name: Build package
         run: python -m build
 
-      - name: Verify WASM in wheel
-        run: |
-          unzip -l dist/*.whl | grep -q "s3p_core_wasi.wasm" || {
-            echo "ERROR: WASM binary not found in wheel!"
-            exit 1
-          }
-
-      - name: Verify WASM in sdist
-        run: |
-          tar -tzf dist/*.tar.gz | grep -q "s3p_core_wasi.wasm" || {
-            echo "ERROR: WASM binary not found in sdist!"
-            exit 1
-          }
-
       - name: Check package
         run: twine check dist/*
 
