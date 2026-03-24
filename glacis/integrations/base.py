@@ -3,7 +3,7 @@ GLACIS integration base module.
 
 Provides shared functionality for all provider integrations:
 - GlacisBlockedError exception
-- Thread-local receipt storage
+- Context-scoped receipt storage (async-safe via ContextVar)
 - Evidence retrieval
 - Logger suppression
 - Config and client initialization helpers
@@ -13,7 +13,7 @@ Provides shared functionality for all provider integrations:
 from __future__ import annotations
 
 import logging
-import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
@@ -40,8 +40,14 @@ _KNOWN_CONTROL_TYPES = frozenset({
     "prompt_security", "grounding", "word_filter", "custom",
 })
 
-# Thread-local storage for the last receipt
-_thread_local = threading.local()
+# ContextVar storage — async-safe (each coroutine gets its own copy)
+# and thread-safe (each thread gets its own copy).
+_last_receipt_var: ContextVar[Optional[Any]] = ContextVar("_last_receipt", default=None)
+_call_metadata_var: ContextVar[Optional[dict[str, str]]] = ContextVar(
+    "_call_metadata", default=None,
+)
+_operation_context_var: ContextVar[Any] = ContextVar("_operation_context", default=None)
+_supersedes_var: ContextVar[Optional[str]] = ContextVar("_supersedes", default=None)
 
 
 class GlacisBlockedError(Exception):
@@ -55,82 +61,91 @@ class GlacisBlockedError(Exception):
 
 def get_last_receipt() -> Optional["Attestation"]:
     """
-    Get the last attestation from the current thread.
+    Get the last attestation from the current context.
+
+    Safe for both threaded and async (coroutine) concurrency.
 
     Returns:
-        The last Attestation, or None if no attestation has been made in this thread.
+        The last Attestation, or None if no attestation has been made
+        in this context.
     """
-    return getattr(_thread_local, "last_receipt", None)
+    return _last_receipt_var.get()
 
 
 def set_last_receipt(receipt: "Attestation") -> None:
-    """Store the last receipt in thread-local storage."""
-    _thread_local.last_receipt = receipt
+    """Store the last receipt in context-local storage."""
+    _last_receipt_var.set(receipt)
 
 
 # ---------------------------------------------------------------------------
-# Per-call metadata (thread-local)
+# Per-call metadata (context-scoped)
 # ---------------------------------------------------------------------------
 
 
 def get_call_metadata() -> Optional[dict[str, str]]:
-    """Get per-call metadata from thread-local storage."""
-    return getattr(_thread_local, "_call_metadata", None)
+    """Get per-call metadata from context-local storage."""
+    return _call_metadata_var.get()
 
 
 def set_call_metadata(metadata: Optional[dict[str, str]]) -> None:
-    """Set per-call metadata in thread-local storage."""
-    _thread_local._call_metadata = metadata
+    """Set per-call metadata in context-local storage."""
+    _call_metadata_var.set(metadata)
 
 
-class GlacisCallContext:
+class GlacisTagScope:
     """Context manager for per-call metadata override.
 
-    Sets thread-local metadata that merges with (and overrides)
-    client-level metadata for the duration of the block.
+    Sets context-local metadata that merges with (and overrides)
+    client-level metadata for the duration of the block.  Safe for
+    both threaded and async concurrency.
 
     Example::
 
-        with client.glacis_context(metadata={"chunk_id": "c012", "step": "generate"}):
+        with client.glacis_tags({"chunk_id": "c012", "step": "generate"}):
             response = client.chat.completions.create(...)
     """
 
     def __init__(self, metadata: dict[str, str]) -> None:
         self._metadata = metadata
-        self._previous: Optional[dict[str, str]] = None
+        self._token: Any = None  # contextvars.Token
 
-    def __enter__(self) -> "GlacisCallContext":
-        self._previous = get_call_metadata()
-        set_call_metadata(self._metadata)
+    def __enter__(self) -> "GlacisTagScope":
+        self._token = _call_metadata_var.set(self._metadata)
         return self
 
     def __exit__(self, *args: Any) -> None:
-        set_call_metadata(self._previous)
+        if self._token is not None:
+            _call_metadata_var.reset(self._token)
+            self._token = None
+
+
+# Deprecated alias (one release)
+GlacisCallContext = GlacisTagScope
 
 
 # ---------------------------------------------------------------------------
-# Operation context (thread-local)
+# Operation context (context-scoped)
 # ---------------------------------------------------------------------------
 
 
 def get_active_operation() -> Any:
-    """Get the active OperationContext from thread-local storage."""
-    return getattr(_thread_local, "_operation_context", None)
+    """Get the active OperationContext from context-local storage."""
+    return _operation_context_var.get()
 
 
 def set_active_operation(op: Any) -> None:
-    """Set the active OperationContext in thread-local storage."""
-    _thread_local._operation_context = op
+    """Set the active OperationContext in context-local storage."""
+    _operation_context_var.set(op)
 
 
 def get_pending_supersedes() -> Optional[str]:
     """Get the pending supersedes attestation ID."""
-    return getattr(_thread_local, "_supersedes", None)
+    return _supersedes_var.get()
 
 
 def set_pending_supersedes(attestation_id: Optional[str]) -> None:
     """Set a supersedes value to be consumed by the next attestation."""
-    _thread_local._supersedes = attestation_id
+    _supersedes_var.set(attestation_id)
 
 
 class GlacisOperationContext:
@@ -153,8 +168,8 @@ class GlacisOperationContext:
         from glacis.client import OperationContext
 
         self._op = OperationContext()
-        self._previous_op: Any = None
-        self._previous_supersedes: Optional[str] = None
+        self._op_token: Any = None  # contextvars.Token
+        self._supersedes_token: Any = None  # contextvars.Token
 
     @property
     def operation_id(self) -> str:
@@ -170,18 +185,17 @@ class GlacisOperationContext:
         set_pending_supersedes(attestation_id)
 
     def __enter__(self) -> "GlacisOperationContext":
-        self._previous_op = get_active_operation()
-        self._previous_supersedes = get_pending_supersedes()
-        set_active_operation(self._op)
-        set_pending_supersedes(None)
+        self._op_token = _operation_context_var.set(self._op)
+        self._supersedes_token = _supersedes_var.set(None)
         return self
 
     def __exit__(self, *args: Any) -> None:
-        set_active_operation(self._previous_op)
-        # Only restore previous supersedes if the current one wasn't consumed.
-        # If it was consumed (now None), the previous one is stale — don't resurrect it.
-        if get_pending_supersedes() is not None:
-            set_pending_supersedes(self._previous_supersedes)
+        if self._supersedes_token is not None:
+            _supersedes_var.reset(self._supersedes_token)
+            self._supersedes_token = None
+        if self._op_token is not None:
+            _operation_context_var.reset(self._op_token)
+            self._op_token = None
 
 
 def get_evidence(
@@ -652,7 +666,7 @@ def build_metadata(
                 raise ValueError(f"Cannot override reserved metadata key: '{key}'")
         base.update(custom_metadata)
 
-    # Merge per-call metadata (from glacis_context), overriding client-level
+    # Merge per-call metadata (from glacis_tags), overriding client-level
     call_metadata = get_call_metadata()
     if call_metadata:
         for key in reserved:
@@ -696,7 +710,7 @@ def handle_blocked_request(
     output_data = {"blocked": True, "reason": f"{blocking_control_type}_detected"}
     metadata = build_metadata(provider, model, custom_metadata, blocked=str(True))
 
-    # Read thread-local operation context
+    # Read context-scoped operation state
     active_op = get_active_operation()
     op_id: Optional[str] = None
     op_seq: Optional[int] = None
@@ -916,7 +930,7 @@ def attest_and_store(
     in a single call.  Errors are swallowed (printed in debug mode) so the LLM
     response is never lost due to attestation failures.
     """
-    # Read thread-local operation context
+    # Read context-scoped operation state
     active_op = get_active_operation()
     op_id: Optional[str] = None
     op_seq: Optional[int] = None
@@ -960,7 +974,7 @@ def attest_and_store(
 
 __all__ = [
     "GlacisBlockedError",
-    "GlacisCallContext",
+    "GlacisTagScope",
     "GlacisOperationContext",
     "get_last_receipt",
     "set_last_receipt",

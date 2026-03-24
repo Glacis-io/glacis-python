@@ -42,6 +42,8 @@ Note: For Azure OpenAI, use the openai package with azure endpoint configuration
 from glacis.integrations.anthropic import attested_anthropic
 from glacis.integrations.base import (
     GlacisBlockedError,
+    GlacisOperationContext,
+    GlacisTagScope,
     get_evidence,
     get_last_receipt,
 )
@@ -67,4 +69,6 @@ __all__ = [
     "get_last_litellm_receipt",
     "get_evidence",
     "GlacisBlockedError",
+    "GlacisTagScope",
+    "GlacisOperationContext",
 ]

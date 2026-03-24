@@ -14,14 +14,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_receipt_state():
-    """Reset thread-local receipt state between tests."""
-    from glacis.integrations.base import _thread_local
+    """Reset context-var receipt state between tests."""
+    from glacis.integrations.base import _last_receipt_var
 
-    if hasattr(_thread_local, "last_receipt"):
-        del _thread_local.last_receipt
+    token = _last_receipt_var.set(None)
     yield
-    if hasattr(_thread_local, "last_receipt"):
-        del _thread_local.last_receipt
+    _last_receipt_var.reset(token)
 
 
 @pytest.fixture(autouse=True)

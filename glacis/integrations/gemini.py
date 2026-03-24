@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from glacis.integrations.base import (
     ControlResultsAccumulator,
     GlacisBlockedError,
-    GlacisCallContext,
+    GlacisTagScope,
     GlacisOperationContext,
     attest_and_store,
     build_metadata,
@@ -252,7 +252,7 @@ def attested_gemini(
     client.models.generate_content = attested_generate_content  # type: ignore
 
     # Attach pipeline context managers
-    client.glacis_context = lambda metadata: GlacisCallContext(metadata)  # type: ignore
+    client.glacis_tags = lambda metadata: GlacisTagScope(metadata)  # type: ignore
     client.glacis_operation = lambda: GlacisOperationContext()  # type: ignore
 
     return client
@@ -334,6 +334,6 @@ __all__ = [
     "get_last_receipt",
     "get_evidence",
     "GlacisBlockedError",
-    "GlacisCallContext",
+    "GlacisTagScope",
     "GlacisOperationContext",
 ]

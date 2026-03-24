@@ -113,7 +113,7 @@ Each call is attested with the actual model name used, giving you a unified atte
 
 ## Accessing Receipts
 
-Use `get_last_receipt()` to retrieve the attestation from the most recent API call. Receipts are stored in **thread-local storage**, so each thread maintains its own last receipt independently.
+Use `get_last_receipt()` to retrieve the attestation from the most recent API call. Receipts are stored using `contextvars.ContextVar`, so each thread and each async task maintains its own last receipt independently.
 
 ```python
 from glacis.integrations.litellm import get_last_receipt
@@ -127,7 +127,7 @@ if receipt:
 ```
 
 <Aside type="caution">
-  `get_last_receipt()` returns the receipt for the **current thread only**. In multi-threaded applications, each thread tracks its own last receipt. Call `get_last_receipt()` immediately after the API call to avoid it being overwritten by a subsequent call.
+  `get_last_receipt()` returns the receipt for the **current context** (thread or async task). In concurrent applications, each thread and each `asyncio.Task` tracks its own last receipt. Call `get_last_receipt()` immediately after the API call to avoid it being overwritten by a subsequent call.
 </Aside>
 
 ## Offline Mode
