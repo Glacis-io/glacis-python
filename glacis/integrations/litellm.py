@@ -30,8 +30,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from glacis.integrations.base import (
     ControlResultsAccumulator,
     GlacisBlockedError,
-    GlacisTagScope,
     GlacisOperationContext,
+    GlacisTagScope,
     attest_and_store,
     build_metadata,
     check_input_block,
