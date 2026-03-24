@@ -30,8 +30,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from glacis.integrations.base import (
     ControlResultsAccumulator,
     GlacisBlockedError,
-    GlacisCallContext,
     GlacisOperationContext,
+    GlacisTagScope,
     attest_and_store,
     build_metadata,
     check_input_block,
@@ -60,9 +60,9 @@ class AttestedLiteLLM:
     def __init__(self, ctx: "IntegrationContext") -> None:
         self._ctx = ctx
 
-    def glacis_context(self, metadata: dict[str, str]) -> GlacisCallContext:
+    def glacis_tags(self, metadata: dict[str, str]) -> GlacisTagScope:
         """Set per-call metadata for wrapper calls within this block."""
-        return GlacisCallContext(metadata)
+        return GlacisTagScope(metadata)
 
     def glacis_operation(self) -> GlacisOperationContext:
         """Create an operation scope — all calls within share an operation_id."""
@@ -343,6 +343,6 @@ __all__ = [
     "get_last_receipt",
     "get_evidence",
     "GlacisBlockedError",
-    "GlacisCallContext",
+    "GlacisTagScope",
     "GlacisOperationContext",
 ]

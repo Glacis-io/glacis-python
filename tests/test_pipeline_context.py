@@ -1,21 +1,27 @@
 """
-Tests for pipeline context managers: GlacisCallContext and GlacisOperationContext.
+Tests for pipeline context managers: GlacisTagScope and GlacisOperationContext.
 
 Validates per-call metadata, operation linking, supersedes handling,
-thread isolation, and integration with attest_and_store / handle_blocked_request.
+thread isolation, async isolation, and integration with
+attest_and_store / handle_blocked_request.
 """
 
+import asyncio
 import threading
+from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
 
 from glacis.integrations.base import (
     ControlResultsAccumulator,
-    GlacisCallContext,
+    GlacisTagScope,
     GlacisOperationContext,
     IntegrationContext,
-    _thread_local,
+    _call_metadata_var,
+    _last_receipt_var,
+    _operation_context_var,
+    _supersedes_var,
     attest_and_store,
     build_metadata,
     create_control_plane_results,
@@ -42,15 +48,12 @@ def _temp_home(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_pipeline_state():
-    """Reset thread-local pipeline state between tests."""
-    attrs = ("last_receipt", "_call_metadata", "_operation_context", "_supersedes")
-    for attr in attrs:
-        if hasattr(_thread_local, attr):
-            delattr(_thread_local, attr)
+    """Reset context-var pipeline state between tests."""
+    _vars = (_last_receipt_var, _call_metadata_var, _operation_context_var, _supersedes_var)
+    tokens = [v.set(None) for v in _vars]
     yield
-    for attr in attrs:
-        if hasattr(_thread_local, attr):
-            delattr(_thread_local, attr)
+    for v, tok in zip(_vars, tokens):
+        v.reset(tok)
 
 
 def _default_config():
@@ -76,33 +79,33 @@ def _make_ctx(signing_seed):
     )
 
 
-# ─── Per-call Metadata (GlacisCallContext) ────────────────────────────────────
+# ─── Per-call Metadata (GlacisTagScope) ────────────────────────────────────
 
 
-class TestGlacisCallContext:
+class TestGlacisTagScope:
     """Tests for per-call metadata context manager."""
 
-    def test_sets_thread_local(self):
+    def test_sets_context_var(self):
         assert get_call_metadata() is None
-        with GlacisCallContext({"step": "generate"}):
+        with GlacisTagScope({"step": "generate"}):
             assert get_call_metadata() == {"step": "generate"}
 
     def test_restores_on_exit(self):
-        with GlacisCallContext({"step": "generate"}):
+        with GlacisTagScope({"step": "generate"}):
             pass
         assert get_call_metadata() is None
 
     def test_nesting_restores_previous(self):
-        with GlacisCallContext({"step": "outer"}):
+        with GlacisTagScope({"step": "outer"}):
             assert get_call_metadata() == {"step": "outer"}
-            with GlacisCallContext({"step": "inner"}):
+            with GlacisTagScope({"step": "inner"}):
                 assert get_call_metadata() == {"step": "inner"}
             assert get_call_metadata() == {"step": "outer"}
         assert get_call_metadata() is None
 
     def test_restores_on_exception(self):
         try:
-            with GlacisCallContext({"step": "fail"}):
+            with GlacisTagScope({"step": "fail"}):
                 raise ValueError("boom")
         except ValueError:
             pass
@@ -113,19 +116,19 @@ class TestBuildMetadataWithCallContext:
     """Tests for build_metadata merging with per-call metadata."""
 
     def test_merges_per_call_metadata(self):
-        with GlacisCallContext({"chunk_id": "c012"}):
+        with GlacisTagScope({"chunk_id": "c012"}):
             md = build_metadata("openai", "gpt-4")
         assert md["chunk_id"] == "c012"
         assert md["provider"] == "openai"
         assert md["model"] == "gpt-4"
 
     def test_per_call_overrides_client_level(self):
-        with GlacisCallContext({"step": "validate"}):
+        with GlacisTagScope({"step": "validate"}):
             md = build_metadata("openai", "gpt-4", custom_metadata={"step": "generate"})
         assert md["step"] == "validate"
 
     def test_per_call_rejects_reserved_keys(self):
-        with GlacisCallContext({"provider": "evil"}):
+        with GlacisTagScope({"provider": "evil"}):
             with pytest.raises(ValueError, match="reserved metadata key"):
                 build_metadata("openai", "gpt-4")
 
@@ -138,7 +141,7 @@ class TestBuildMetadataWithCallContext:
         barrier = threading.Barrier(2)
 
         def thread_fn(name, metadata):
-            with GlacisCallContext(metadata):
+            with GlacisTagScope(metadata):
                 barrier.wait(timeout=5)
                 results[name] = get_call_metadata()
 
@@ -159,7 +162,7 @@ class TestBuildMetadataWithCallContext:
 class TestGlacisOperationContext:
     """Tests for operation linking context manager."""
 
-    def test_sets_thread_local(self):
+    def test_sets_context_var(self):
         assert get_active_operation() is None
         with GlacisOperationContext() as op:
             assert get_active_operation() is not None
@@ -228,7 +231,7 @@ class TestGlacisOperationContext:
 
 
 class TestAttestAndStoreWithOperation:
-    """Tests that attest_and_store reads thread-local operation context."""
+    """Tests that attest_and_store reads context-var operation state."""
 
     def test_passes_operation_fields(self, signing_seed):
         ctx = _make_ctx(signing_seed)
@@ -401,12 +404,12 @@ class TestCombinedContexts:
         cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
 
         with GlacisOperationContext() as op:
-            with GlacisCallContext({"step": "generate"}):
+            with GlacisTagScope({"step": "generate"}):
                 md = build_metadata("openai", "gpt-4", ctx.custom_metadata)
                 attest_and_store(ctx, {"messages": []}, {"choices": []}, md, cpr)
                 r1 = get_last_receipt()
 
-            with GlacisCallContext({"step": "validate"}):
+            with GlacisTagScope({"step": "validate"}):
                 md = build_metadata("openai", "gpt-4", ctx.custom_metadata)
                 attest_and_store(ctx, {"messages": []}, {"choices": []}, md, cpr)
                 r2 = get_last_receipt()
@@ -420,7 +423,7 @@ class TestCombinedContexts:
 
 
 class TestProviderContextManagersExist:
-    """Tests that provider wrappers expose glacis_context and glacis_operation."""
+    """Tests that provider wrappers expose glacis_tags and glacis_operation."""
 
     def test_litellm_has_context_managers(self):
         """AttestedLiteLLM class has both methods."""
@@ -428,9 +431,113 @@ class TestProviderContextManagersExist:
 
         ctx_mock = MagicMock()
         client = AttestedLiteLLM(ctx_mock)
-        assert hasattr(client, "glacis_context")
+        assert hasattr(client, "glacis_tags")
         assert hasattr(client, "glacis_operation")
 
         # Verify they return the right types
-        assert isinstance(client.glacis_context({"k": "v"}), GlacisCallContext)
+        assert isinstance(client.glacis_tags({"k": "v"}), GlacisTagScope)
         assert isinstance(client.glacis_operation(), GlacisOperationContext)
+
+
+# ─── Async Isolation ─────────────────────────────────────────────────────────
+
+
+class TestAsyncIsolation:
+    """Verify that ContextVar storage isolates concurrent coroutines.
+
+    These tests would FAIL with the old threading.local() approach because
+    all coroutines on the same event loop thread shared the same storage.
+    With ContextVar, each task created via asyncio.gather() gets its own
+    copy of the context.
+    """
+
+    def test_call_metadata_isolated_across_coroutines(self):
+        """Concurrent coroutines with GlacisTagScope must not bleed metadata."""
+        results: dict[str, Optional[dict[str, str]]] = {}
+
+        async def coro(name: str, metadata: dict[str, str]):
+            with GlacisTagScope(metadata):
+                await asyncio.sleep(0)  # force a task switch
+                results[name] = get_call_metadata()
+
+        async def run():
+            await asyncio.gather(
+                coro("a", {"doc": "Eliquis.pdf"}),
+                coro("b", {"doc": "Xarelto.pdf"}),
+            )
+
+        asyncio.run(run())
+
+        assert results["a"] == {"doc": "Eliquis.pdf"}
+        assert results["b"] == {"doc": "Xarelto.pdf"}
+
+    def test_last_receipt_isolated_across_coroutines(self):
+        """Each coroutine's set_last_receipt must not overwrite the other's."""
+        from glacis.integrations.base import set_last_receipt
+        from glacis.models import Attestation
+
+        results: dict[str, Optional[str]] = {}
+
+        def _make_attestation(name: str) -> Attestation:
+            return Attestation(
+                id=f"oatt_{name}",
+                evidence_hash="a" * 64,
+                public_key="b" * 64,
+                signature="c" * 10,
+            )
+
+        async def coro(name: str):
+            att = _make_attestation(name)
+            set_last_receipt(att)
+            await asyncio.sleep(0)  # force task switch
+            receipt = get_last_receipt()
+            results[name] = receipt.id if receipt else None
+
+        async def run():
+            await asyncio.gather(coro("first"), coro("second"))
+
+        asyncio.run(run())
+
+        assert results["first"] == "oatt_first"
+        assert results["second"] == "oatt_second"
+
+    def test_operation_context_isolated_across_coroutines(self):
+        """Each coroutine's GlacisOperationContext must be independent."""
+        results: dict[str, str] = {}
+
+        async def coro(name: str):
+            with GlacisOperationContext() as op:
+                await asyncio.sleep(0)  # force task switch
+                active = get_active_operation()
+                results[name] = active.operation_id
+
+        async def run():
+            await asyncio.gather(coro("x"), coro("y"))
+
+        asyncio.run(run())
+
+        assert results["x"] != results["y"]
+
+    def test_supersedes_isolated_across_coroutines(self):
+        """Supersedes set in one coroutine must not leak to another."""
+        results: dict[str, Optional[str]] = {}
+
+        async def run():
+            wrote_event = asyncio.Event()
+
+            async def coro_setter():
+                set_pending_supersedes("att_replaced")
+                wrote_event.set()
+                await asyncio.sleep(0)
+                results["setter"] = get_pending_supersedes()
+
+            async def coro_observer():
+                await wrote_event.wait()  # ensure setter wrote before we read
+                results["observer"] = get_pending_supersedes()
+
+            await asyncio.gather(coro_setter(), coro_observer())
+
+        asyncio.run(run())
+
+        assert results["setter"] == "att_replaced"
+        assert results["observer"] is None

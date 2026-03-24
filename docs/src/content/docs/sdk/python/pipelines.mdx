@@ -9,7 +9,7 @@ The wrapper integrations (`attested_openai`, `attested_gemini`, etc.) are design
 
 ## Per-call Metadata
 
-By default, the `metadata` parameter on `attested_openai()` is static — every call gets the same metadata. Use `glacis_context()` to set metadata for individual calls:
+By default, the `metadata` parameter on `attested_openai()` is static — every call gets the same metadata. Use `glacis_tags()` to set metadata for individual calls:
 
 ```python
 from glacis.integrations.openai import attested_openai, get_last_receipt
@@ -21,7 +21,7 @@ client = attested_openai(
 )
 
 # Per-call metadata overrides and extends the client-level metadata
-with client.glacis_context(metadata={"chunk_id": "chunk_012", "step": "generate"}):
+with client.glacis_tags({"chunk_id": "chunk_012", "step": "generate"}):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": "Generate a QA pair"}],
@@ -33,7 +33,7 @@ receipt = get_last_receipt()
 #                    "step": "generate"}
 ```
 
-**Merge order:** provider defaults (`provider`, `model`) → client-level `metadata` → per-call `glacis_context`. Per-call values override client-level values for overlapping keys. The reserved keys `provider` and `model` cannot be overridden.
+**Merge order:** provider defaults (`provider`, `model`) → client-level `metadata` → per-call `glacis_tags`. Per-call values override client-level values for overlapping keys. The reserved keys `provider` and `model` cannot be overridden.
 
 ## Operation Linking
 
@@ -88,14 +88,14 @@ with client.glacis_operation() as op:
 
 ## Combining Context Managers
 
-`glacis_operation` and `glacis_context` nest naturally:
+`glacis_operation` and `glacis_tags` nest naturally:
 
 ```python
 with client.glacis_operation() as op:
-    with client.glacis_context(metadata={"step": "generate"}):
+    with client.glacis_tags({"step": "generate"}):
         gen = client.chat.completions.create(model="gpt-4o", messages=[...])
 
-    with client.glacis_context(metadata={"step": "validate"}):
+    with client.glacis_tags({"step": "validate"}):
         val = client.chat.completions.create(model="gpt-4o", messages=[...])
 ```
 
@@ -168,7 +168,7 @@ client = attested_openai(
 def process_chunk(chunk_id: str, context: str):
     with client.glacis_operation() as op:
         # Step 0: Generate
-        with client.glacis_context(metadata={"chunk_id": chunk_id, "step": "generate"}):
+        with client.glacis_tags({"chunk_id": chunk_id, "step": "generate"}):
             gen = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -180,7 +180,7 @@ def process_chunk(chunk_id: str, context: str):
 
         # Step 1: Validate
         answer = gen.choices[0].message.content
-        with client.glacis_context(metadata={"chunk_id": chunk_id, "step": "validate"}):
+        with client.glacis_tags({"chunk_id": chunk_id, "step": "validate"}):
             val = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -192,7 +192,7 @@ def process_chunk(chunk_id: str, context: str):
         # Step 2: Retry if validation failed
         if "NO" in val.choices[0].message.content.upper():
             op.supersedes(gen_receipt.id)
-            with client.glacis_context(metadata={"chunk_id": chunk_id, "step": "regenerate"}):
+            with client.glacis_tags({"chunk_id": chunk_id, "step": "regenerate"}):
                 regen = client.chat.completions.create(
                     model="gpt-4o",
                     messages=[
@@ -214,6 +214,8 @@ operation_id: "a1b2c3d4-..."
 └── seq 2: regenerate    [oatt_003] (supersedes oatt_001)
 ```
 
-## Thread Safety
+## Concurrency Safety
 
-All context managers use thread-local storage. Each thread maintains independent metadata and operation state — safe for concurrent requests in multi-threaded servers. No locking is required.
+All context managers use `contextvars.ContextVar` for state isolation. This is safe for both threaded and async concurrency — each thread gets its own copy, and each `asyncio.Task` (created by `asyncio.gather`, `create_task`, etc.) inherits an independent snapshot. No locking is required.
+
+This means `glacis_tags()`, `glacis_operation()`, and `get_last_receipt()` all work correctly when running parallel async calls (e.g., LiteLLM's `acompletion()`).
