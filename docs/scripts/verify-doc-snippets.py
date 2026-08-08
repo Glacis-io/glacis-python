@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Executable check that the code in these docs actually runs on glacis 0.8.0.
+"""Executable check that the code in these docs actually runs on the SDK.
 
 Every snippet published under `Connect` and `Verify` has a counterpart here.
 If the SDK surface changes, this script fails and the affected page is wrong.
@@ -8,18 +8,23 @@ Usage (from the repo root, with the SDK installed):
 
     python docs/scripts/verify-doc-snippets.py
 
-Exit code 0 = every documented behaviour reproduced. Non-zero = a doc page
-is making a claim the SDK does not support.
+Exit code 0 = every check reproduced. Non-zero = a doc page is making a claim
+the SDK does not support.
 
-Snippets that require a network call (online/witnessed mode) or a paid
-provider key (OpenAI/Anthropic/Gemini/LiteLLM wrappers) are NOT exercised
-here — those pages mark themselves as untested against a live endpoint.
-What this script does cover: the offline signing path, canonical hashing
-(including every documented divergence from RFC 8785), which fields are
-inside and outside the offline signature, storage and its 100-character
-previews, operation/sequence linking, sampling, the CLI, the mode
-differences the docs promise, and the independent (third-party)
-signature-verification recipe.
+**This script does not claim complete coverage, and it never has.** Claims it
+cannot execute are printed as `NOT COVERED` with the reason, and counted
+separately in the summary — they are not silently absent and they are not
+counted as passes. Read the NOT COVERED block at the end of a run: it is the
+list of things a green result does *not* establish.
+
+Executed here: the offline signing path; canonical hashing and every
+documented divergence from RFC 8785; all sixteen rows of the signed/unsigned
+field tables, by tampering; storage round-trips on both backends including
+persisted `control_plane_results` and the pre-0.8.1 loss of it; the retry and
+latency behaviour of the online path (against a stubbed transport, no
+network); what the online request body carries; L1/L2 evidence retention;
+operation/sequence linking; sampling; the CLI; and the independent
+(third-party) signature-verification recipe.
 """
 
 from __future__ import annotations
@@ -33,12 +38,23 @@ import tempfile
 from pathlib import Path
 
 CHECKS: list[tuple[str, bool, str]] = []
+UNCOVERED: list[tuple[str, str]] = []
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
     CHECKS.append((name, bool(condition), detail))
     status = "ok  " if condition else "FAIL"
     print(f"[{status}] {name}{(' — ' + detail) if detail else ''}")
+
+
+def not_covered(name: str, why: str) -> None:
+    """Record a documented claim this script cannot execute.
+
+    Printing it is the point. A harness that quietly omits what it cannot do
+    is indistinguishable from one that covers everything.
+    """
+    UNCOVERED.append((name, why))
+    print(f"[----] NOT COVERED: {name} — {why}")
 
 
 def _raises(exc, fn, *args, **kwargs) -> bool:
@@ -57,7 +73,15 @@ def main() -> int:
     from glacis import Glacis
     from glacis.crypto import canonical_json, hash_payload
 
-    check("SDK version is 0.8.0", glacis.__version__ == "0.8.0", glacis.__version__)
+    # The pages are written against 0.8.0 — what `pip install glacis` serves —
+    # except where they say otherwise. This repo carries the unpublished 0.8.1
+    # fixes, so the script accepts either and prints which one it ran on.
+    check(
+        "SDK under test is 0.8.0 or the unpublished 0.8.1 in this repo",
+        glacis.__version__ in ("0.8.0", "0.8.1.dev0"),
+        glacis.__version__,
+    )
+    on_081 = glacis.__version__ == "0.8.1.dev0"
 
     workdir = Path(tempfile.mkdtemp(prefix="glacis-docs-"))
     seed = bytes.fromhex(
@@ -254,8 +278,8 @@ def main() -> int:
     # alongside it. Both halves are asserted here by tampering: editing a
     # signed field must break the check, editing an unsigned one must not.
     # ------------------------------------------------------------------
-    def still_verifies(mutate: dict) -> bool:
-        r = dict(as_dict)
+    def still_verifies(mutate: dict, base: dict | None = None) -> bool:
+        r = dict(base if base is not None else as_dict)
         r.update(mutate)
         try:
             VerifyKey(bytes.fromhex(r["public_key"])).verify(
@@ -265,6 +289,27 @@ def main() -> int:
         except (BadSignatureError, ValueError, KeyError):
             return False
 
+    def _verifies_with_constants(base: dict, **constants) -> bool:
+        """Rebuild the signed payload with a different `version` / `mode`.
+
+        Those two are constants in the payload, not fields on the receipt, so
+        the only way to tamper with them is from the verifier's side.
+        """
+        body = json.loads(signed_message(base).decode())
+        body.update(constants)
+        message = json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+        try:
+            VerifyKey(bytes.fromhex(base["public_key"])).verify(
+                message, bytes.fromhex(base["signature"])
+            )
+            return True
+        except (BadSignatureError, ValueError):
+            return False
+
+    cpr_dict = json.loads(json.dumps(with_cpr.model_dump(), default=str))
+    sup_dict = json.loads(json.dumps(with_supersedes.model_dump(), default=str))
+
+    # --- The six OUTSIDE rows ------------------------------------------------
     for field, value in (
         ("id", "oatt_not-the-real-id"),
         ("cpr_hash", "0" * 64),
@@ -276,6 +321,39 @@ def main() -> int:
             still_verifies({field: value}),
         )
 
+    check(
+        "`evidence`/`review`/`sampling_decision` are OUTSIDE the signature "
+        "(adding them does not break the check)",
+        still_verifies(
+            {
+                "evidence": {"sample_probability": 1.0, "data": {"anything": True}},
+                "review": {"sample_probability": 1.0, "conformity_score": 1.0},
+                "sampling_decision": {"level": "L2", "sample_value": 7},
+            }
+        ),
+    )
+
+    # `public_key` rides outside the signature, but not in the way the other
+    # five do: swapping it alone breaks the check. What it is not is bound to
+    # an identity — a full re-sign by another key verifies perfectly. Both
+    # halves of that sentence are on the page, so both are pinned.
+    from nacl.signing import SigningKey
+
+    attacker = SigningKey(bytes.fromhex("11" * 32))
+    check(
+        "`public_key` swapped alone BREAKS the check",
+        not still_verifies({"public_key": bytes(attacker.verify_key).hex()}),
+    )
+    _resigned = dict(as_dict)
+    _resigned["public_key"] = bytes(attacker.verify_key).hex()
+    _resigned["signature"] = attacker.sign(signed_message(as_dict)).signature.hex()
+    check(
+        "`public_key` is not bound to an identity — a re-signed receipt verifies",
+        still_verifies({}, base=_resigned),
+        "a different key, a different signature, a perfectly valid receipt",
+    )
+
+    # --- The ten INSIDE rows -------------------------------------------------
     for field, value in (
         ("service_id", "some-other-service"),
         ("operation_type", "something-else"),
@@ -290,16 +368,144 @@ def main() -> int:
         )
 
     check(
-        "control_plane_results content is inside the signature",
+        "`version` is INSIDE the offline signature (it is a constant, so the "
+        "verifier must use 1)",
+        not _verifies_with_constants(as_dict, version=2),
+    )
+    check(
+        "`mode` is INSIDE the offline signature (it is a constant, so the "
+        "verifier must use \"offline\")",
+        not _verifies_with_constants(as_dict, mode="online"),
+    )
+
+    check(
+        "`control_plane_results` content is INSIDE the signature (editing it breaks it)",
         not verify_offline_receipt(
-            dict(
-                json.loads(json.dumps(with_cpr.model_dump(), default=str)),
-                control_plane_results={"policy": {"id": "tampered"}},
-            ),
+            dict(cpr_dict, control_plane_results={"policy": {"id": "tampered"}}),
             doc_input,
             doc_output,
         )[0],
     )
+    check(
+        "`control_plane_results` REMOVED breaks the check — losing it is as "
+        "fatal as editing it",
+        not verify_offline_receipt(
+            dict(cpr_dict, control_plane_results=None), doc_input, doc_output
+        )[0],
+        "this is the shape of the pre-0.8.1 storage defect",
+    )
+    check(
+        "`supersedes` is INSIDE the signature (editing it breaks the check)",
+        not still_verifies({"supersedes": "oatt_something-else"}, base=sup_dict),
+    )
+    check(
+        "`supersedes` ADDED to a receipt signed without one breaks the check",
+        not still_verifies({"supersedes": "oatt_invented"}),
+    )
+
+    # ------------------------------------------------------------------
+    # Verify › What a check proves — signed CPR has to survive storage
+    #
+    # `control_plane_results` is inside the signature, so a store that drops
+    # it produces a receipt nobody can verify. 0.8.0 dropped it. Both halves
+    # are pinned: the round trip that must work, and the 0.8.0-shaped row
+    # that must fail *by name* rather than by silently looking CPR-free.
+    # ------------------------------------------------------------------
+    cpr_dir = workdir / "cpr-roundtrip"
+    gc = Glacis(
+        mode="offline", signing_seed=seed, storage_backend="json", storage_path=cpr_dir
+    )
+    doc_cpr = {
+        "policy": {"id": "p", "version": "1.0", "environment": "development", "tags": []},
+        "determination": {"action": "forwarded"},
+        "controls": [],
+    }
+    stored_cpr_receipt = gc.attest(
+        service_id="svc",
+        operation_type="inference",
+        input=doc_input,
+        output=doc_output,
+        control_plane_results=doc_cpr,
+    )
+    reloaded = gc._storage.get_receipt(stored_cpr_receipt.id)
+
+    def _independently_verifies(att) -> bool:
+        return verify_offline_receipt(
+            json.loads(json.dumps(att.model_dump(), default=str)), doc_input, doc_output
+        )[0]
+
+    check(
+        "a receipt with control_plane_results verifies before it is stored",
+        _independently_verifies(stored_cpr_receipt),
+    )
+    if on_081:
+        check(
+            "a stored-and-reloaded receipt still carries its signed "
+            "control_plane_results (0.8.1)",
+            reloaded is not None and reloaded.control_plane_results == doc_cpr,
+        )
+        check(
+            "a stored-and-reloaded receipt still passes independent Ed25519 "
+            "verification (0.8.1)",
+            reloaded is not None and _independently_verifies(reloaded),
+        )
+    else:
+        check(
+            "0.8.0 loses control_plane_results on storage round-trip "
+            "(the documented defect)",
+            reloaded is not None and reloaded.control_plane_results is None,
+        )
+        check(
+            "0.8.0's reloaded receipt fails independent Ed25519 verification "
+            "(the documented defect)",
+            reloaded is not None and not _independently_verifies(reloaded),
+        )
+
+    # A row in the shape 0.8.0 wrote: cpr_hash present, content absent. This is
+    # executed on whichever SDK is installed, so the 0.8.0 behaviour stays
+    # pinned even when the fixed build is under test.
+    from glacis.storage import JsonStorageBackend
+
+    legacy_dir = workdir / "legacy-0.8.0-row"
+    legacy_dir.mkdir()
+    _legacy = {
+        k: v
+        for k, v in json.loads(
+            (cpr_dir / "receipts.jsonl").read_text().splitlines()[-1]
+        ).items()
+        if k != "control_plane_results"
+    }
+    (legacy_dir / "receipts.jsonl").write_text(json.dumps(_legacy) + "\n")
+    legacy = JsonStorageBackend(legacy_dir).get_receipt(stored_cpr_receipt.id)
+    check(
+        "a pre-0.8.1 row reconstructs WITHOUT the signed control-plane content",
+        legacy is not None and legacy.control_plane_results is None,
+    )
+    check(
+        "a pre-0.8.1 row fails independent Ed25519 verification",
+        legacy is not None and not _independently_verifies(legacy),
+        "the signed payload cannot be rebuilt from what was stored",
+    )
+    if on_081:
+        check(
+            "the loss is named, not inferred as 'this receipt had no CPR' (0.8.1)",
+            legacy is not None and bool(legacy.cpr_recovery_error),
+            (legacy.cpr_recovery_error or "")[:60] + "…" if legacy else "",
+        )
+        check(
+            "verify() fails closed on such a receipt, with the reason (0.8.1)",
+            legacy is not None
+            and gc.verify(legacy).valid is False
+            and gc.verify(legacy).error == legacy.cpr_recovery_error,
+        )
+    else:
+        check(
+            "0.8.0 reports no reason for the loss — it is indistinguishable "
+            "from a receipt that never had CPR (the documented defect)",
+            legacy is not None
+            and getattr(legacy, "cpr_recovery_error", None) is None,
+        )
+    gc.close()
 
     # ------------------------------------------------------------------
     # Connect › Quickstart — the canonicalisation actually used
@@ -337,6 +543,21 @@ def main() -> int:
             _raises(ValueError, canonical_json, v)
             for v in (float("nan"), float("inf"), float("-inf"))
         ),
+    )
+    check(
+        "canonical_json keeps integers at arbitrary precision "
+        "(RFC 8785 numbers are IEEE-754 doubles)",
+        canonical_json(10**30) == "1" + "0" * 30
+        and canonical_json(float(10**30)) == "1e+30"
+        and canonical_json(2**53 + 1) == str(2**53 + 1)
+        and canonical_json(float(2**53 + 1)) != str(2**53 + 1),
+        f"10**30 -> {canonical_json(10 ** 30)}, "
+        f"float(10**30) -> {canonical_json(float(10 ** 30))}",
+    )
+    check(
+        "an int and the double nearest to it hash differently past 2**53",
+        hash_payload(2**53 + 1) != hash_payload(float(2**53 + 1)),
+        "a JCS implementation would produce the double's hash for both",
     )
 
     # ------------------------------------------------------------------
@@ -390,6 +611,248 @@ def main() -> int:
     check(
         "the online attest path never writes to the local receipt store",
         "store_receipt" not in inspect.getsource(Glacis._attest_online),
+    )
+
+    # ------------------------------------------------------------------
+    # Connect › index — "fail-open" is about exceptions, not about latency
+    #
+    # The page states an added-latency ceiling. Everything below runs against
+    # a stubbed transport: no socket is opened and no host is contacted.
+    # ------------------------------------------------------------------
+    import httpx
+
+    from glacis.client import (
+        DEFAULT_BASE_DELAY,
+        DEFAULT_MAX_DELAY,
+        DEFAULT_MAX_RETRIES,
+        DEFAULT_TIMEOUT,
+    )
+    from glacis.integrations import attested_openai as _attested_openai
+    from glacis.integrations.base import create_glacis_client as _create_glacis_client
+    from glacis.models import GlacisApiError, GlacisRateLimitError
+
+    check(
+        "online retry/timeout defaults are 30.0s, 3 retries, 1.0s base, 30.0s max",
+        (DEFAULT_TIMEOUT, DEFAULT_MAX_RETRIES, DEFAULT_BASE_DELAY, DEFAULT_MAX_DELAY)
+        == (30.0, 3, 1.0, 30.0),
+    )
+    _sleeps = [
+        min(DEFAULT_BASE_DELAY * (2**i), DEFAULT_MAX_DELAY)
+        for i in range(DEFAULT_MAX_RETRIES)
+    ]
+    check(
+        "documented backoff sequence is 1s, 2s, 4s (7.0s, or 9.1s with maximum jitter)",
+        _sleeps == [1.0, 2.0, 4.0]
+        and round(sum(_sleeps), 1) == 7.0
+        and round(sum(s * 1.3 for s in _sleeps), 1) == 9.1,
+    )
+    check(
+        "documented worst case is 129.1s of added latency on one wrapped call",
+        round(
+            (DEFAULT_MAX_RETRIES + 1) * DEFAULT_TIMEOUT
+            + sum(s * 1.3 for s in _sleeps),
+            1,
+        )
+        == 129.1,
+    )
+
+    def _attempt_count(responder) -> int:
+        calls = {"n": 0}
+        probe = Glacis(
+            api_key="glsk_test_probe",
+            base_url="http://127.0.0.1:1",
+            base_delay=0.001,
+            max_delay=0.001,
+        )
+
+        def _stub(*a, **k):
+            calls["n"] += 1
+            return responder()
+
+        probe._client.request = _stub  # type: ignore[method-assign]
+        try:
+            probe.attest(
+                service_id="probe", operation_type="inference",
+                input={"a": 1}, output={"b": 2},
+            )
+        except Exception:
+            pass
+        return calls["n"]
+
+    def _connect_error():
+        raise httpx.ConnectError("refused")
+
+    check(
+        "a connect failure makes max_retries + 1 = 4 attempts, blocking the caller",
+        _attempt_count(_connect_error) == 4,
+    )
+    check(
+        "a 5xx is retried the same four times",
+        _attempt_count(lambda: httpx.Response(503, json={})) == 4,
+    )
+    check(
+        "a 4xx is NOT retried — one attempt only, so a bad key costs one round trip",
+        _attempt_count(lambda: httpx.Response(401, json={"error": "bad key"})) == 1,
+    )
+    check(
+        "a 429 is NOT retried — one attempt only",
+        _attempt_count(
+            lambda: httpx.Response(429, headers={"Retry-After": "1"}, json={})
+        )
+        == 1,
+    )
+
+    def _raises_from_stub(exc, responder) -> bool:
+        probe = Glacis(api_key="glsk_test_probe", base_url="http://127.0.0.1:1",
+                       base_delay=0.001, max_delay=0.001)
+        probe._client.request = lambda *a, **k: responder()  # type: ignore[method-assign]
+        return _raises(
+            exc,
+            probe.attest,
+            service_id="s", operation_type="t", input={}, output={},
+        )
+
+    check(
+        "a 4xx raises GlacisApiError",
+        _raises_from_stub(GlacisApiError, lambda: httpx.Response(401, json={"error": "x"})),
+    )
+    check(
+        "a 429 raises GlacisRateLimitError",
+        _raises_from_stub(
+            GlacisRateLimitError,
+            lambda: httpx.Response(429, headers={"Retry-After": "1"}, json={}),
+        ),
+    )
+
+    _base_src = inspect.getsource(sys.modules["glacis.integrations.base"].attest_and_store)
+    check(
+        "the wrapper attests synchronously — no thread, queue or task in "
+        "attest_and_store()",
+        not any(
+            token in _base_src
+            for token in ("Thread", "asyncio", "executor", "Queue", "spawn")
+        ),
+    )
+    _openai_src = inspect.getsource(sys.modules["glacis.integrations.openai"])
+    check(
+        "attest_and_store() runs after the provider response and before the "
+        "wrapper returns it",
+        _openai_src.index("response = original_create(")
+        < _openai_src.index("attest_and_store(ctx,")
+        < _openai_src.index("        return response"),
+    )
+    check(
+        "no wrapper factory accepts timeout/max_retries — the latency is not "
+        "bounded through the wrapper",
+        not (
+            {"timeout", "max_retries", "base_delay", "max_delay"}
+            & set(inspect.signature(_attested_openai).parameters)
+        )
+        and "timeout" not in inspect.getsource(_create_glacis_client),
+    )
+
+    # ------------------------------------------------------------------
+    # Connect › offline vs witnessed — the data boundary, exactly
+    # ------------------------------------------------------------------
+    _sent: dict[str, object] = {}
+
+    def _fake_server(method, url, json=None, params=None, headers=None):
+        _sent["body"] = json
+        _sent["headers"] = headers
+        return {
+            "id": "att_stub",
+            "operation_id": "op_stub",
+            "operation_sequence": 0,
+            "service_id": "svc",
+            "operation_type": "inference",
+            "evidence_hash": "0" * 64,
+            "public_key": "d" * 64,
+            "signature": "c" * 128,
+            "timestamp": 1754000000000,
+            "sampling_decision": {"level": "L1", "sample_value": 1, "prf_tag": []},
+        }
+
+    phi_shaped = {
+        "policy": {"id": "p", "version": "1.0", "environment": "production", "tags": []},
+        "determination": {"action": "forwarded"},
+        "controls": [],
+        "note": "PATIENT MRN 00-11-22, dob 1971-03-02",
+    }
+    stub_client = Glacis(api_key="glsk_test_stub", base_url="http://127.0.0.1:1")
+    stub_client._request_with_retry = _fake_server  # type: ignore[method-assign]
+    online_att = stub_client.attest(
+        service_id="svc",
+        operation_type="inference",
+        input={"prompt": "the whole prompt"},
+        output={"response": "the whole completion"},
+        control_plane_results=phi_shaped,
+    )
+    _body = _sent["body"]
+    check(
+        "the online body carries only the hash of input/output",
+        "input" not in _body and "output" not in _body and len(_body["evidence_hash"]) == 64,
+        "keys: " + ", ".join(sorted(_body)),
+    )
+    check(
+        "control_plane_results is transmitted VERBATIM, whatever is in it",
+        _body["control_plane_results"] == phi_shaped
+        and "PATIENT MRN" in json.dumps(_body),
+        "an arbitrary dict, unhashed and uninspected, including PHI-shaped fields",
+    )
+    check(
+        "cpr_hash is sent alongside the content, not instead of it",
+        _body.get("cpr_hash") == hash_payload(phi_shaped)
+        and "control_plane_results" in _body,
+    )
+    check(
+        "the GLACIS key travels in the X-Glacis-Key header",
+        (_sent["headers"] or {}).get("X-Glacis-Key") == "glsk_test_stub",
+    )
+    check(
+        "there is no timestamp in the online request body",
+        "timestamp" not in _body,
+    )
+    check(
+        "an L1/L2 online attestation carries your RAW input and output back on "
+        "the returned object",
+        online_att.evidence is not None
+        and online_att.evidence.data["input"] == {"prompt": "the whole prompt"}
+        and online_att.evidence.data["output"] == {"response": "the whole completion"},
+        "so 'online attest() retains nothing' is false for the object in memory",
+    )
+    check(
+        "model_dump() of such a receipt contains the prompt — excluding "
+        "`evidence`/`review` is the documented remedy",
+        "the whole prompt" in json.dumps(online_att.model_dump(), default=str)
+        and "the whole prompt"
+        not in json.dumps(
+            online_att.model_dump(exclude={"evidence", "review"}), default=str
+        ),
+    )
+    check(
+        "an offline attestation never populates `evidence`",
+        receipt.evidence is None and with_cpr.evidence is None,
+    )
+    stub_client.close()
+
+    check(
+        "the OpenAI wrapper stores a projection of your request, not your request",
+        'input_data = {"model": model, "messages": messages}' in _openai_src,
+        "model and messages only — temperature, tools, response_format etc. are dropped",
+    )
+    check(
+        "the OpenAI wrapper's stored response omits id/created/system_fingerprint/"
+        "tool_calls/logprobs",
+        not any(
+            tok in _openai_src
+            for tok in ("system_fingerprint", "tool_calls", "logprobs", "created")
+        ),
+    )
+    check(
+        "the wrapper hashes that same projection, so evidence_hash commits to it",
+        "attest_and_store(ctx, input_data, output_data" in _openai_src
+        and "input=input_data" in _base_src
+        and "output=output_data" in _base_src,
     )
     check(
         "the offline attest path stores 100-character previews, not full payloads",
@@ -701,7 +1164,7 @@ def main() -> int:
     check(
         "ControlExecution.version stamp is 0.7.0, not the package version "
         "(documented quirk)",
-        SDK_VERSION == "0.7.0" and glacis.__version__ == "0.8.0",
+        SDK_VERSION == "0.7.0" and SDK_VERSION != glacis.__version__,
         f"SDK_VERSION={SDK_VERSION}, __version__={glacis.__version__}",
     )
 
@@ -789,9 +1252,59 @@ def main() -> int:
         ),
     )
 
+    # ------------------------------------------------------------------
+    # What this run does NOT establish.
+    #
+    # Every line here is a claim on a published page that this script cannot
+    # execute. They are printed rather than omitted so that "the harness is
+    # green" can never be read as "every documented claim is checked".
+    # ------------------------------------------------------------------
+    print()
+    not_covered(
+        "witnessed (online) attestation end to end",
+        "needs a live api.glacis.io and a real workspace key; the request body, "
+        "retry behaviour and L1/L2 evidence above are pinned against a stubbed "
+        "transport, but no real server response has been seen",
+    )
+    not_covered(
+        "the 129.1s worst-case latency, measured",
+        "the arithmetic and the four-attempt count are checked; actually "
+        "observing four 30-second timeouts needs an endpoint that hangs, and "
+        "would make this script take over two minutes",
+    )
+    not_covered(
+        "provider wrappers end to end (OpenAI/Anthropic/Gemini/LiteLLM)",
+        "needs paid provider keys; the stored projections are pinned by reading "
+        "the wrapper source, not by making a call, so a change in a provider's "
+        "response shape would not be caught here",
+    )
+    not_covered(
+        "the browser verifier and the `#r=` permalink",
+        "lives in the glacis-plg repository and needs a browser; nothing in this "
+        "script exercises it",
+    )
+    not_covered(
+        "the portal's witnessed mint path",
+        "lives in the labs-plg repository and needs a deployed backend; the "
+        "witnessed tier described on /connect/offline-vs-witnessed/ is not "
+        "verified by anything here",
+    )
+    not_covered(
+        "SQLite receipts written by a genuinely old install",
+        "the pre-0.8.1 row above is reconstructed by hand in the shape 0.8.0 "
+        "wrote; the v4->v5 migration itself is covered by the SDK test suite "
+        "(tests/test_cpr_persistence.py), not by this script",
+    )
+    not_covered(
+        "PII/PHI and jailbreak controls",
+        "need presidio/spacy and transformers/torch; only the word filter, which "
+        "has no extra dependencies, is executed here",
+    )
+
     failed = [name for name, ok, _ in CHECKS if not ok]
     print()
     print(f"{len(CHECKS) - len(failed)}/{len(CHECKS)} checks passed")
+    print(f"{len(UNCOVERED)} documented claims NOT COVERED by this script")
     if failed:
         print("FAILED: " + ", ".join(failed))
         return 1

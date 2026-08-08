@@ -53,11 +53,19 @@ pip install pyyaml pynacl  # for the glacis.yaml and signature checks
 python scripts/verify-doc-snippets.py
 ```
 
-Every offline-mode behaviour these docs assert has a check in that script,
-including the ones that are unflattering. It exits non-zero when a page has
-gone out of date with the SDK. It cannot exercise witnessed mode or the provider
-wrappers end to end — those need live keys, and the pages that describe them say
-so.
+It exits non-zero when a page has gone out of date with the SDK, and it covers
+the unflattering behaviours as carefully as the flattering ones.
+
+**It does not claim complete coverage.** Claims it cannot execute — witnessed
+mode against a live endpoint, provider wrappers end to end, the browser
+verifier, the measured worst-case latency, the dependency-heavy controls — are
+printed as `NOT COVERED` lines with a reason and counted separately in the
+summary. A green run means every executed check passed; the NOT COVERED block
+is the list of things it does *not* establish. Never describe a green run as
+"everything is verified", on a page or in a review.
+
+Rule 4 above still applies to the gap: if a claim cannot be executed here, it is
+either cut, or the page carrying it says it is untested.
 
 ## Development
 
