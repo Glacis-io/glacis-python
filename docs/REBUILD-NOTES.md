@@ -18,8 +18,11 @@ script that runs the code.
 ## How snippets were verified
 
 `docs/scripts/verify-doc-snippets.py` executes the documented behaviour against
-the SDK in this repo. **77 checks, all passing** as of this commit
-(53 from the original rebuild, 24 added in Corrections round 2 below).
+the SDK in this repo. **117 checks, all passing** as of this commit
+(53 from the original rebuild, 24 added in round 2, 40 added in round 3), plus
+**7 `NOT COVERED` lines** — claims the script cannot execute, printed with a
+reason and counted separately so that a green run is never read as complete
+coverage.
 
 ```
 pip install -e .          # from the repo root
@@ -27,17 +30,23 @@ pip install pyyaml pynacl
 python docs/scripts/verify-doc-snippets.py
 ```
 
-It covers: offline attestation, canonical-JSON hashing and its key-order
-independence, `verify()` (including its gap), the published independent
-verification routine across four tamper cases plus the `control_plane_results`
-and `supersedes` variants, operation linking, `decompose()`, `supersedes`,
-`should_review()` determinism, both storage backends, the two storage path
-gotchas, the CLI on good and tampered receipts, `glacis.yaml` loading, the word
-filter and `ControlsRunner`, constructor validation, the declared extras in
-`pyproject.toml`, and the keyword signature of all four provider wrappers.
+It covers: offline attestation, canonical-JSON hashing and every documented
+divergence from RFC 8785, `verify()` (including its gap), the published
+independent verification routine across every tamper case plus the
+`control_plane_results` and `supersedes` variants, all sixteen rows of the
+signed/unsigned field tables, the persisted-CPR round trip and the pre-0.8.1
+loss of it, the online path's retry and latency behaviour and request body
+(against a stubbed transport), L1/L2 evidence retention, operation linking,
+`decompose()`, `supersedes`, `should_review()` determinism, both storage
+backends, the two storage path gotchas, the CLI on good and tampered receipts,
+`glacis.yaml` loading, the word filter and `ControlsRunner`, constructor
+validation, the declared extras in `pyproject.toml`, and the keyword signature
+of all four provider wrappers.
 
-It cannot cover: witnessed (online) mode, or an end-to-end provider call. Those
-need a live endpoint and paid keys. **Every page carrying such a snippet says so
+It cannot cover: witnessed (online) mode against a live endpoint, or an
+end-to-end provider call. Those need a live endpoint and paid keys, and the
+script prints them as NOT COVERED rather than leaving them out. **Every page
+carrying such a snippet says so
 explicitly** rather than implying it was tested.
 
 ---
@@ -442,6 +451,188 @@ back:
 | `grep -rniE "request[[:space:]]+access"` | **0 occurrences** |
 | `grep -rniE "compliant\|protected\|certified"` | 4 hits, all inside explicit negations |
 
+## Corrections — round 3 (Codex re-review, 2026-08-08)
+
+Second Codex launch-gate pass
+(`glacis-know/2026-08-08_codex-rereview-2.md`). It confirmed the round-2 fixes
+as real and found four things still wrong on this branch — plus one **SDK
+defect** the rebuilt docs and harness had both missed.
+
+This round is the first that changes SDK source. Those changes are staged as
+**0.8.1.dev0 and are NOT published**: `pip install glacis` still serves 0.8.0.
+Every page that describes a behaviour 0.8.1 changes says which version it is
+talking about.
+
+### 1 · Persisted offline receipts lost signed CPR content — **SDK defect** — fixed in source
+
+*Codex finding 4. `control_plane_results` is inside the offline signature
+(`client.py`), but SQLite `store_receipt` (`storage.py:336`) and
+`_row_to_attestation` (`storage.py:468`) both omitted it. A receipt that
+verified before storage failed independent Ed25519 verification after reload,
+and offline `verify()` did not notice because it only compares the locally
+derived public key.*
+
+Confirmed and reproduced here, on **both** backends — the JSONL line dropped it
+too, which the finding did not name. Fixed in the SDK, not documented around:
+
+- SQLite schema **v5** adds `offline_receipts.control_plane_json`, written whole
+  and never truncated, with a v4→v5 migration; the JSONL receipt line gains
+  `control_plane_results`; both backends reconstruct it on read.
+- Fixing the migration required fixing migrations: `version` is the primary key
+  of `schema_version`, so `INSERT OR REPLACE` **appended** a row instead of
+  replacing one and the reader took the oldest. The schema version never
+  advanced past the first migration and every migration re-ran on every open.
+  Now `MAX(version)` on read, one row on write.
+- **Legacy rows degrade by name.** The content was never written, so it cannot
+  be recovered. A row carrying a `cpr_hash` with no stored content is *not*
+  reconstructed as "this receipt had no control-plane results":
+  `Attestation.cpr_recovery_error` states the reason, and `verify()` fails
+  closed with that reason as its `error`. Receipts that genuinely had none are
+  untouched and still verify.
+- 17 new SDK tests in `tests/test_cpr_persistence.py`: round trip on both
+  backends, a hand-built schema-v4 database that migrates and then reads back as
+  a named degradation, a legacy JSONL line, and the proof that the marker never
+  reaches the signed payload.
+
+Documented on `/reference/storage/` (including a rule for anyone writing a
+custom backend), `/verify/what-a-check-proves/` and the retention table on
+`/connect/offline-vs-witnessed/`.
+
+### 2 · The wrapper published its receipt before storing evidence — **SDK defect** — fixed in source
+
+*Codex finding 2, second half. `attest_and_store()` called `set_last_receipt()`
+before `store_evidence()` (`base.py:957`), so a storage failure left a current
+receipt for a call the docs say produced none.*
+
+Order swapped: the receipt is published only after storage returns. The
+attestation may still exist after a storage failure — `attest()` writes the
+offline receipt row itself, and an online attestation is already on the server —
+so the honest statement is that the wrapper no longer presents it as complete.
+`connect/index.mdx` carries the 0.8.0 gap explicitly, because that is what
+readers have installed.
+
+### 3 · "Never blocks, delays" and "nothing anywhere retries" — **blocker** — fixed
+
+*Codex finding 2. `connect/index.mdx:117`. Both false: `attest_and_store()` runs
+synchronously after the provider response, and online attestation makes up to
+four attempts with 30-second timeouts and blocking exponential backoff.*
+
+Rewritten as arithmetic rather than reassurance. The page now states that
+attestation runs on the caller's thread between the provider response and the
+return; the four defaults from `client.py`; the 1s/2s/4s backoff with up to 30%
+jitter; the **129.1-second** worst case (4 × 30s + 1.3 + 2.6 + 5.2); and the
+measured common case — a probe against a closed local port makes exactly four
+attempts and returns after 8.4 seconds, all of it sleeping. It also says which
+failures do *not* retry: a 4xx raises `GlacisApiError` and a 429 raises
+`GlacisRateLimitError` on the first attempt.
+
+Bounding it is where the honesty matters. `Glacis(timeout=…, max_retries=…)`
+exists, but no wrapper factory accepts or forwards it and `glacis.yaml` has no
+such setting, so at 0.8.0 there are exactly two answers: run the wrapper
+offline, or construct your own client and call `attest()` yourself. The page
+says that instead of pointing at knobs the wrapper does not expose.
+
+### 4 · The corrected data-boundary tables still overclaimed — **blocker** — fixed
+
+*Codex finding 3. Three claims on `/connect/offline-vs-witnessed/`.*
+
+- **Direct online `attest()` retains "Nothing"** — false. It writes nothing to
+  disk, but when the server assigns L1 or L2, `_attest_online` attaches the raw
+  `input` and `output` to `attestation.evidence.data`. The table now separates
+  "written to disk" from "on the returned object", and a caution names the
+  consequence the docs themselves create: Quickstart shows
+  `json.dump(receipt.model_dump())` and `/verify/` shows sharing a receipt as a
+  `#r=` link, so an online L1/L2 receipt can publish a prompt by accident.
+  Remedy on the page: `model_dump(exclude={"evidence", "review"})`.
+- **Wrappers store "the complete request and response"** — false. Each stores
+  its own projection. OpenAI's is enumerated field by field alongside what is
+  dropped (every kwarg but `model`/`messages`; `id`, `created`,
+  `system_fingerprint`, `tool_calls`, `logprobs`, token-detail breakdowns), with
+  the consequence that matters: `evidence_hash` commits to the **projection**,
+  so recomputing over the provider's raw JSON will not reproduce it.
+- **"Prompts, documents, patient data are not transmitted"** — true of `input=`
+  and `output=`, which are hashed; false of `control_plane_results`, which
+  online mode puts in the body verbatim. A danger box now says so: it is an
+  arbitrary `dict[str, Any]`, nothing inspects or redacts it, `cpr_hash` is sent
+  *alongside* it rather than instead of it, and anything the caller puts there —
+  including PHI — leaves the machine. The wrapper-built structure is safe by
+  construction and its contents are enumerated, so that safety is not mistaken
+  for a property of the field.
+
+The same exception is now on the `connect/index.mdx` aside and on
+`/reference/api/`.
+
+### 5 · The snippet harness overstated its coverage — medium — fixed
+
+*Codex finding 5. The docstring claimed every documented behaviour and every
+canonicalisation divergence; `what-a-check-proves.mdx:48` said all twelve rows
+were tamper-tested. The tables have sixteen rows, and the omitted cases included
+`supersedes`, several unsigned fields, persisted CPR and the
+arbitrary-precision integer divergence.*
+
+All sixteen rows are now tamper-tested — ten signed fields that must break, six
+unsigned that must not — and the page says sixteen. The `public_key` row was
+also imprecise and is now split into the two things that are true of it:
+swapping it alone **breaks** the check, and a full re-sign under another key
+verifies perfectly, which is what "not bound to an identity" means.
+
+Added beyond the named gaps: the persisted-CPR round trip pinned in *both*
+directions (so the 0.8.0 loss stays pinned even when the fixed build is under
+test), the arbitrary-precision integer divergence and its hash consequence past
+2⁵³, the retry/latency claims, the online request body including verbatim CPR
+transmission, L1/L2 evidence retention, and the wrapper projections. Everything
+network-shaped runs against a stubbed transport — no socket is opened and no
+host is contacted.
+
+And the structural fix: **the script now prints `NOT COVERED` lines.** Where a
+documented claim cannot be executed, it is named with a reason and counted
+separately from passes. Seven today (live witnessed mode, the measured 129.1s
+worst case, provider wrappers end to end, the browser verifier, the portal mint
+path, receipts from a genuinely old install, the dependency-heavy controls). A
+green run means every executed check passed; the NOT COVERED block is the list
+of what it does not establish. `docs/README.md` says the same, and says never to
+describe a green run as "everything is verified".
+
+### What the round-3 checks pin
+
+40 new executable checks, 77 → **117**, plus 7 NOT COVERED lines:
+
+| Finding | Checks added |
+| --- | --- |
+| 5 — the sixteen-row boundary | 8 (`version`, `mode`, `supersedes` edited, `supersedes` added, CPR removed, `evidence`/`review`/`sampling_decision`, `public_key` swapped, `public_key` re-signed) |
+| 4 — persisted CPR | 7 (verifies before storage; carries CPR after reload; verifies after reload; a pre-0.8.1 row loses it; that row fails independent verification; the loss is named; `verify()` fails closed with the reason) |
+| 2 — retry and latency | 11 (the four defaults; the backoff sequence; the 129.1s arithmetic; four attempts on connect failure and on 5xx; one attempt on 4xx and 429; both exception types; no thread/queue in `attest_and_store`; ordering inside the wrapper; no timeout knob on any factory) |
+| 3 — the data boundary | 11 (body carries only hashes; CPR verbatim including PHI-shaped fields; `cpr_hash` alongside not instead; key in the header; no timestamp; L1/L2 raw I/O on the object; `model_dump` leaks it and `exclude=` fixes it; offline never populates `evidence`; three wrapper-projection checks) |
+| 5 — canonicalisation | 2 (arbitrary-precision integers; an int and its nearest double hash differently past 2⁵³) |
+| version scope | 1 (the SDK under test is 0.8.0 or the unpublished 0.8.1) |
+
+### Round-3 verification run
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (SDK) | **499 passed, 63 skipped** (481 before; +18) |
+| `python docs/scripts/verify-doc-snippets.py` | **117/117 checks pass, 7 NOT COVERED** |
+| `cd docs && npm run build` | Green — 25 pages, 42 HTML files |
+| Internal link check over `dist/` | **0 broken links** |
+| Cross-page anchor check over `dist/` | **0 missing anchors** |
+| `ruff check` on every file this round touched | Clean |
+| `grep -rniE "request[[:space:]]+access"` | **0 occurrences** |
+| `grep -rniE "compliant\|protected\|certified"` | 8 hits, all inside explicit negations |
+
+### The 0.8.1 changes, in one place
+
+Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
+
+| File | Change |
+| --- | --- |
+| `glacis/storage.py` | Schema v5 + v4→v5 migration; persist and reconstruct `control_plane_results` on both backends; `_recover_cpr()` names the loss on legacy rows; `MAX(version)` schema-version read |
+| `glacis/models.py` | `Attestation.cpr_recovery_error` — SDK convenience, never signed, never transmitted |
+| `glacis/client.py` | `_verify_offline` fails closed on a receipt whose signed CPR could not be recovered |
+| `glacis/integrations/base.py` | `attest_and_store()` publishes the receipt after storage, not before |
+| `pyproject.toml`, `glacis/__init__.py` | `0.8.0` → `0.8.1.dev0` |
+| `tests/test_cpr_persistence.py` | New — 17 tests |
+| `tests/test_integration_base.py` | One test: a storage failure leaves no current receipt |
+
 ## Residuals
 
 1. **The LiteLLM "config-only path" is config-*first*, not code-free.** The plan
@@ -526,3 +717,49 @@ back:
     say the docstrings are wrong; correcting the docstrings is an SDK change.
     Round-2 checks pin each divergence, so the docs cannot drift back to the
     docstring's claim.
+
+### Added in round 3
+
+12. **0.8.1 is staged, not published.** Publishing is Joe's decision, so
+    everything in the table above sits in this worktree at `0.8.1.dev0` while
+    PyPI still serves 0.8.0. Every page that describes a behaviour 0.8.1 changes
+    names the version it is talking about, and describes 0.8.0 as what the
+    reader has installed. **Until it ships, the persisted-CPR defect is live for
+    every user who attaches control-plane results and relies on the local store.
+    Nothing in the docs can fix that; only a release can.**
+
+13. **Receipts already written under 0.8.0 cannot be repaired.** The
+    control-plane content was never stored, so there is nothing to migrate. The
+    fix is forward-looking: old rows read back with `cpr_recovery_error` set and
+    fail verification honestly. If anyone shipped 0.8.0 receipts to a
+    counterparty as verifiable evidence, that is a support conversation, not a
+    code change.
+
+14. **`glacis.verify()` still does not check a signature.** Round 3 added
+    exactly one fail-closed case (unrecoverable signed CPR); the rest of the
+    offline branch is unchanged and still compares only the locally derived
+    public key. `Ed25519Runtime` still has no `verify()`. That remains the
+    highest-value SDK fix, and three pages get shorter when it lands.
+
+15. **The retry and request-body claims are pinned against a stub, not a
+    server.** Round 3 executes the retry loop and captures the online request
+    body by replacing the transport, which proves what the SDK *sends* and how
+    long it waits. It does not prove what `api.glacis.io` does with it. The
+    harness prints that as a NOT COVERED line rather than implying otherwise.
+
+16. **The 129.1-second worst case is arithmetic, not a measurement.** The
+    constants, the backoff sequence and the four-attempt count are each
+    executed; the ceiling is computed from them. Observing four consecutive
+    30-second timeouts needs an endpoint that hangs and would add two minutes to
+    every harness run, so the harness names it as NOT COVERED instead.
+
+17. **The wrapper still cannot bound its own latency.** The honest workaround is
+    on the page — go offline, or construct your own client — but the real fix is
+    an SDK change: let the factories forward `timeout` / `max_retries`, or move
+    attestation off the request path. Out of scope for this round, which was
+    already stretching a documentation task into SDK source.
+
+18. **`docs/dist` ships a `<link rel="icon" href="/favicon.svg">` for a file
+    that does not exist.** Pre-existing, cosmetic, and untouched here: it comes
+    from the Starlight default and `docs/public/` has no `favicon.svg`. Noted
+    because a link check will keep reporting it.
