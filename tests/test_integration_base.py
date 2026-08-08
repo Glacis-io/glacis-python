@@ -839,6 +839,40 @@ class TestAttestAndStore:
         assert receipt is not None
         assert receipt.id is not None
 
+    def test_storage_failure_leaves_no_current_receipt(self, signing_seed, monkeypatch):
+        """A failed store must not publish a current receipt.
+
+        The docs promise that when the attestation step fails you get the model
+        response and no receipt. Publishing the receipt before storage made a
+        storage failure look like a complete, stored attestation.
+        """
+        import contextvars
+
+        from glacis.integrations import base as base_mod
+
+        ctx = self._make_ctx(signing_seed)
+        acc = ControlResultsAccumulator()
+        cpr = create_control_plane_results(acc, ctx.cfg, "gpt-4", "openai")
+
+        def boom(**kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(base_mod, "store_evidence", boom)
+
+        def run():
+            before = base_mod.get_last_receipt()
+            base_mod.attest_and_store(
+                ctx,
+                input_data={"model": "gpt-4", "messages": []},
+                output_data={"model": "gpt-4", "choices": []},
+                metadata={"provider": "openai", "model": "gpt-4"},
+                control_plane_results=cpr,
+            )
+            return before, base_mod.get_last_receipt()
+
+        before, after = contextvars.copy_context().run(run)
+        assert after is before
+
     def test_exception_swallowed(self):
         """Attestation errors are swallowed silently."""
         ctx = IntegrationContext(
