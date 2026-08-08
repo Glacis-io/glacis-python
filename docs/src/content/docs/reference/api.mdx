@@ -61,7 +61,7 @@ with Glacis(api_key="glsk_live_...") as glacis:
 
 ### glacis.attest()
 
-Create an attestation for an AI operation. Input and output are hashed locally using RFC 8785 canonical JSON + SHA-256. Only the hash is sent to the server -- the actual data never leaves your infrastructure.
+Create an attestation for an AI operation. Input and output are hashed locally using the SDK's canonical JSON + SHA-256 (see [the canonicalisation actually used](/connect/quickstart/#the-canonicalisation-actually-used) -- the docstrings call it RFC 8785, and it is not quite). Only the hash is sent to the server -- the actual data never leaves your infrastructure.
 
 ```python
 attestation = glacis.attest(
@@ -296,7 +296,7 @@ r2 = glacis.attest(
 
 ### glacis.hash()
 
-Hash a payload using RFC 8785 canonical JSON + SHA-256. Produces identical hashes across Python, TypeScript, and Rust runtimes.
+Hash a payload using `glacis.crypto` canonical JSON + SHA-256. Reproducible across runtimes for ASCII strings and integers; see the [divergences from RFC 8785](/connect/quickstart/#the-canonicalisation-actually-used) before relying on cross-language agreement for anything else.
 
 ```python
 h = glacis.hash({"b": 2, "a": 1})
@@ -364,7 +364,7 @@ async with AsyncGlacis(api_key="glsk_live_...") as glacis:
 
 | Method | Description |
 |--------|-------------|
-| `hash(payload)` | RFC 8785 + SHA-256. Returns `str`. |
+| `hash(payload)` | `glacis.crypto` canonical JSON + SHA-256. Returns `str`. |
 
 <Aside type="note">
   `AsyncGlacis` is online-only. The following `Glacis` methods are not available on `AsyncGlacis`: `decompose`, `should_review`, `operation`, `get_last_receipt`. Note that `decompose` works in both online and offline mode on the synchronous `Glacis` client; `should_review` requires offline mode (uses the `policy_key` or `signing_seed` for HMAC).
@@ -908,7 +908,7 @@ Importable from `glacis.crypto`.
 
 ### hash_payload()
 
-Hash a payload using RFC 8785 canonical JSON + SHA-256. This is the primary hashing function for the transparency log. Produces identical hashes across Python, TypeScript, and Rust runtimes.
+Hash a payload using `glacis.crypto` canonical JSON + SHA-256. This is the primary hashing function for the transparency log. It reproduces across Python, TypeScript and Rust for ASCII strings and integers, but **not** in general -- see [the canonicalisation actually used](/connect/quickstart/#the-canonicalisation-actually-used).
 
 ```python
 from glacis.crypto import hash_payload
@@ -929,7 +929,7 @@ assert hash1 == hash2
 
 ### canonical_json()
 
-Serialize data to RFC 8785 canonical JSON. Deterministic JSON that is identical across all runtimes.
+Serialize data to the SDK's canonical JSON: keys sorted by Unicode code point, no whitespace, values rendered by Python's `json.dumps`. The module docstring calls this RFC 8785; it diverges for non-ASCII strings, several float forms and supplementary-plane keys.
 
 ```python
 from glacis.crypto import canonical_json
@@ -948,8 +948,8 @@ canonical_json({"b": 2, "a": 1})
 
 **Raises:** `ValueError` if data contains non-serializable values (`NaN`, `Infinity`)
 
-<Aside type="note">
-  RFC 8785 ensures that the same logical JSON object produces the same hash across Python, TypeScript, and Rust implementations.
+<Aside type="caution">
+  Canonicalisation makes key order irrelevant, so the same logical JSON object hashes the same way *within* this implementation. It does **not** guarantee agreement with a strict RFC 8785 implementation in another language: escaping of non-ASCII text, the rendering of whole-number floats and very large magnitudes, and the ordering of supplementary-plane keys all differ. [The exact list](/connect/quickstart/#the-canonicalisation-actually-used).
 </Aside>
 
 ---
