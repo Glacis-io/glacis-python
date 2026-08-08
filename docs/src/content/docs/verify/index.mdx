@@ -28,23 +28,40 @@ verdict:
 | Check | What it establishes |
 | --- | --- |
 | Structural integrity | The required fields are present and well-formed |
-| Signature (Ed25519) | The bytes have not changed since they were signed by the holder of that key |
+| Signature (Ed25519) | The **signed** fields have not changed since they were signed by the holder of the key the receipt carries |
+| Signed field coverage | Which fields are inside the signature and which ride alongside it — informational, never a pass or a fail |
 | Hash binding | The parts of the receipt are bound together — you cannot swap one out |
 | Merkle inclusion | The record was in the transparency log at the tree head shown — only when the receipt carries a transparency proof |
 
 A missing check shows as *skipped*, never as passed.
 
-<Aside type="caution" title="Which receipts the browser verifier reads">
-  The verifier accepts GLACIS platform and gateway receipts — the format the
-  hosted product and your workspace produce, which is also the shape described
-  by [OVERT](/overt/).
+<Aside type="note" title="Which receipts the browser verifier reads — as of the launch build">
+  As of the launch build of [glacis.io/verify](https://glacis.io/verify), the
+  page detects and verifies **both** shapes:
 
-  **Receipts produced by the Python SDK's offline mode are a different, flatter
-  shape, and the browser verifier does not currently parse them.** Pasting an
-  `oatt_…` receipt in returns *"Unrecognized receipt format"*. Verify those with
-  the ten-line PyNaCl snippet in
-  [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself) — it does
-  a real signature check, which is more than the CLI does.
+  - **GLACIS platform and gateway receipts** — the format the hosted product and
+    your workspace produce, which is also the shape described by
+    [OVERT](/overt/).
+  - **Python SDK offline receipts** — the flat `oatt_…` shape. The page
+    recognises them (`is_offline`, or an `id` beginning `oatt_`, plus a
+    `signature` and a `public_key`), re-derives the exact bytes the SDK signed,
+    and runs a **real Ed25519 check** with WebCrypto. It also prints a *signed
+    field coverage* line naming which fields are inside the signature and which
+    are not, so a green check is never read as covering the whole file.
+
+  Earlier builds returned *"Unrecognized receipt format"* for `oatt_…` receipts.
+  If the build you hit still does, verify with the ten-line PyNaCl snippet in
+  [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself), which
+  performs the same check locally.
+</Aside>
+
+<Aside type="caution" title="What the browser check does not settle">
+  For an SDK offline receipt the page verifies the signature against the public
+  key **carried in that same receipt**. That establishes internal consistency —
+  the signed fields were not edited after signing — and nothing about who holds
+  the key. Anyone can generate a keypair and sign their own receipt. Tying a key
+  to an organisation is a separate problem; see
+  [what a check proves](/verify/what-a-check-proves/).
 </Aside>
 
 ## From a permalink
@@ -66,8 +83,10 @@ breakdown.
 
 <Aside type="note">
   The `#r=` fragment form ships with the launch build of
-  [glacis.io/verify](https://glacis.io/verify). If the build you hit does not
-  pick it up, paste the receipt into the box instead — same verification, same
+  [glacis.io/verify](https://glacis.io/verify), which reads the token, decodes
+  it, and verifies on load; the older `?receipt=` query form still opens, for
+  links already in circulation. If the build you hit does not pick up a
+  fragment, paste the receipt into the box instead — same verification, same
   client-side execution.
 </Aside>
 
@@ -83,17 +102,24 @@ The same page has a real verification routine that needs nothing but PyNaCl.
 
 ## Before you show anyone a green check
 
-The three receipt states are not degrees of the same thing:
-
-<ReceiptBadge kind="sample" gloss />
+The two signing tiers are not degrees of the same thing:
 
 <ReceiptBadge kind="self-signed" gloss />
 
 <ReceiptBadge kind="witnessed" gloss />
 
-A valid signature on a self-signed receipt tells a third party that the bytes
-have not been edited. It tells them nothing about when the record was made, and
-nothing about whether the event described happened.
+And SAMPLE is a separate axis, not a third tier — it says the subject matter is
+synthetic, not that the signature is:
+
+<ReceiptBadge kind="sample" gloss />
+
+A sample receipt passes exactly the checks its tier earns
+(<ReceiptBadge kind="self-signed" sample />), which is why a green check on one
+proves the verifier works and nothing else.
+
+A valid signature on a self-signed receipt tells a third party that the signed
+fields have not been edited. It tells them nothing about when the record was
+made, and nothing about whether the event described happened.
 [What a check proves](/verify/what-a-check-proves/) sets out the boundary
 precisely — it is the page to read before a receipt goes into a customer
 questionnaire or a regulatory filing.
