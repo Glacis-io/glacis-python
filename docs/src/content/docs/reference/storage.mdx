@@ -1,6 +1,6 @@
 ---
-title: Storage Backends
-description: Configure local storage for attestation receipts and evidence using SQLite or JSONL backends.
+title: Storage
+description: Where receipts and evidence are persisted locally — SQLite or JSONL — and how to point them somewhere else.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -39,15 +39,27 @@ Each line is a self-contained JSON object. For duplicate attestation IDs, the la
 
 ```python
 import os
+from pathlib import Path
+
 from glacis import Glacis
 
 glacis = Glacis(
     mode="offline",
     signing_seed=os.urandom(32),
     storage_backend="json",
-    storage_path="/path/to/storage",
+    storage_path=Path("/path/to/storage"),   # a Path, not a str
 )
 ```
+
+<Aside type="caution" title="`storage_path` and `db_path` must be `Path` objects">
+  Both are passed straight through to the backend, which calls `.mkdir()` /
+  `.parent` on them. A plain string raises
+  `AttributeError: 'str' object has no attribute 'mkdir'` at construction time.
+  Wrap it in `pathlib.Path`.
+
+  The `path` value in `glacis.yaml` **is** a string — the config loader converts
+  it. This only applies to the constructor arguments.
+</Aside>
 
 ## Configuration
 
@@ -57,13 +69,13 @@ glacis = Glacis(
 version: "1.3"
 evidence_storage:
   backend: "sqlite"     # "sqlite" or "json"
-  path: "~/.glacis/glacis.db"  # For sqlite: full .db file path; for json: directory path
+  # path: "/var/lib/glacis/glacis.db"   # omit for the default
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `backend` | `str` | `"sqlite"` | Storage backend: `"sqlite"` or `"json"` |
-| `path` | `str \| None` | `None` | For SQLite: full `.db` file path (default: `~/.glacis/glacis.db`). For JSON: directory containing `.jsonl` files (default: `~/.glacis`) |
+| `path` | `str \| None` | `None` | For SQLite: full `.db` file path (default: `~/.glacis/glacis.db`). For JSON: directory containing `.jsonl` files (default: `~/.glacis`). `~` is not expanded — see below. |
 
 ### Via Constructor
 
@@ -106,8 +118,17 @@ storage = create_storage(backend="sqlite", path=Path("/custom/path/glacis.db"))
 storage = create_storage(backend="json", path=Path("/custom/path"))
 ```
 
-<Aside type="note">
-  Both `create_storage()`, the constructor's `db_path` parameter, and the `evidence_storage.path` in `glacis.yaml` expect the **full file path** for SQLite (e.g., `~/.glacis/glacis.db`). For JSONL, the path is a **directory** containing `.jsonl` files.
+<Aside type="caution" title="Two things to get right about paths">
+  **SQLite wants a file, JSONL wants a directory.** `create_storage()`, the
+  constructor's `db_path`, and `evidence_storage.path` in `glacis.yaml` all
+  expect the full `.db` file path for SQLite, and a directory for JSONL.
+
+  **`~` is not expanded.** The defaults are already resolved against your home
+  directory, so leaving `path` unset gives you `~/.glacis/glacis.db` correctly.
+  An *explicit* `"~/.glacis/glacis.db"` is taken literally and creates a
+  directory actually named `~` next to your process's working directory. Use an
+  absolute path, or `str(Path.home() / ".glacis" / "glacis.db")`. Verified
+  against 0.8.0.
 </Aside>
 
 ## Receipt Methods
@@ -177,7 +198,12 @@ records = storage.query_evidence(service_id="my-service", mode="offline", limit=
 ```
 
 <Aside type="note">
-  Evidence is intentionally append-only -- there is no `delete_evidence` method. This ensures a complete audit trail.
+  Evidence is append-only by design: there is no `delete_evidence` method on
+  either backend. That removes one way of quietly losing records — it does not
+  by itself make the trail complete. Nothing stops the file being deleted, the
+  process failing before a write, or a call never being attested in the first
+  place. Completeness is a property of your deployment, not of the storage
+  layer.
 </Aside>
 
 ## StorageBackend Protocol
@@ -269,6 +295,6 @@ The `StorageBackend` protocol is `@runtime_checkable`, so you can verify your im
 
 ## See Also
 
-- [Configuration](/sdk/python/configuration/) -- `evidence_storage` section in `glacis.yaml`
-- [Offline Mode](/sdk/python/offline/) -- how offline receipts use local storage
-- [Sampling & Evidence](/sdk/python/sampling/) -- how evidence collection works
+- [Configuration](/connect/configuration/) -- `evidence_storage` section in `glacis.yaml`
+- [Offline Mode](/connect/offline-vs-witnessed/) -- how offline receipts use local storage
+- [Sampling & Evidence](/reference/sampling-and-evidence/) -- how evidence collection works

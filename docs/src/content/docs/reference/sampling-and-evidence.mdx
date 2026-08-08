@@ -1,6 +1,6 @@
 ---
-title: Sampling & Evidence
-description: Configure L0/L1/L2 attestation tiers for control plane results, evidence collection, and deep inspection with deterministic sampling.
+title: Sampling & evidence
+description: L0/L1/L2 tiers, deterministic auditor-reproducible sampling, and where the full payloads are actually retained.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -104,7 +104,11 @@ decision = glacis.should_review(receipt, sampling_rate=0.5)
 </Aside>
 
 <Aside type="note">
-  `should_review()` requires offline mode (it uses the `policy_key` or `signing_seed` for HMAC computation).
+  `should_review()` needs an HMAC key. It uses `policy_key` if you gave the
+  client one, otherwise `signing_seed`. In offline mode the seed is always
+  present, so it just works; in witnessed mode you must pass `policy_key`
+  explicitly or the call raises `ValueError: should_review requires policy_key
+  or signing_seed (offline mode)`.
 </Aside>
 
 ## SamplingDecision Reference
@@ -119,31 +123,34 @@ The `SamplingDecision` model returned by `should_review()`:
 
 ## Evidence Model
 
-When an attestation is promoted to L1 or above, an `Evidence` object is attached:
-
-```python
-receipt = glacis.attest(
-    service_id="my-service",
-    operation_type="inference",
-    input={"prompt": "Hello"},
-    output={"response": "Hi!"},
-)
-
-if receipt.evidence:
-    print(f"Sample probability: {receipt.evidence.sample_probability}")
-    print(f"Data: {receipt.evidence.data}")
-```
+`Attestation.evidence` holds the sampled payload when one is attached:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `sample_probability` | `float` | Probability this evidence was sampled (0.0-1.0) |
 | `data` | `dict` | The evidence payload (typically `{"input": ..., "output": ...}`) |
 
+<Aside type="caution" title="Which mode populates it">
+  In **witnessed (online) mode**, the server returns a `sampling_decision`; when
+  that decision is `L1` or `L2`, the SDK attaches `receipt.evidence` with the
+  raw input and output for local retention.
+
+  In **offline mode**, `attest()` sets neither `sampling_decision` nor
+  `evidence` — `receipt.evidence` is always `None`. Offline sampling is
+  something you evaluate yourself with
+  [`should_review()`](#should_review), and the full payloads are persisted
+  through the storage layer rather than hung off the attestation object. Do not
+  write code that branches on `receipt.evidence` being truthy offline; it never
+  will be.
+
+  Verified against 0.8.0.
+</Aside>
+
 ## How Evidence Gets Stored
 
-When using integration wrappers (OpenAI, Anthropic, Gemini), evidence is stored automatically. The integration calls `store_evidence()` after each attestation, persisting the full input, output, and control plane results to local storage.
+When using integration wrappers (OpenAI, Anthropic, Gemini, LiteLLM), evidence is stored automatically. The integration calls `store_evidence()` after each attestation, persisting the full input, output, and control plane results to local storage.
 
-Evidence is stored alongside receipts in the configured storage backend (SQLite or JSONL). See [Storage Backends](/sdk/python/storage/) for details on storage location and configuration.
+Evidence is stored alongside receipts in the configured storage backend (SQLite or JSONL). See [Storage Backends](/reference/storage/) for details on storage location and configuration.
 
 The stored evidence record includes:
 
@@ -166,7 +173,7 @@ The stored evidence record includes:
 Retrieve stored evidence using the `get_evidence()` helper from the integrations module:
 
 ```python
-from glacis.integrations.base import get_evidence
+from glacis.integrations import get_evidence
 
 evidence = get_evidence("att_abc123")
 if evidence:
@@ -187,7 +194,7 @@ evidence = get_evidence(
 
 ## See Also
 
-- [Configuration](/sdk/python/configuration/) -- full `glacis.yaml` reference with sampling section
-- [Storage Backends](/sdk/python/storage/) -- where evidence is persisted
-- [Judges Framework](/sdk/python/judges/) -- L2 judge evaluation pipeline
-- [Controls](/sdk/python/controls/) -- how control plane results are generated
+- [Configuration](/connect/configuration/) -- full `glacis.yaml` reference with sampling section
+- [Storage Backends](/reference/storage/) -- where evidence is persisted
+- [Judges Framework](/reference/judges/) -- L2 judge evaluation pipeline
+- [Controls](/reference/controls/) -- how control plane results are generated

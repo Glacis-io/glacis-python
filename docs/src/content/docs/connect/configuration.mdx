@@ -1,6 +1,8 @@
 ---
 title: Configuration
-description: Configure the Glacis Python SDK with glacis.yaml -- controls, sampling, judges, attestation, and evidence storage.
+description: Everything glacis.yaml controls — policy, controls, sampling, judges, attestation mode and evidence storage.
+sidebar:
+  order: 8
 ---
 
 import { Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
@@ -102,7 +104,10 @@ attestation:
 # --- Evidence storage ---
 evidence_storage:
   backend: "sqlite"       # "sqlite" or "json"
-  path: "~/.glacis/glacis.db"  # For sqlite: full .db file path; for json: directory for .jsonl files
+  # path: "/var/lib/glacis/glacis.db"
+  #   Omit for the default (~/.glacis/glacis.db for sqlite, ~/.glacis for json).
+  #   An explicit path is used literally — `~` is NOT expanded to your home
+  #   directory. Write an absolute path, or leave it out.
 ```
 
 ## Section Reference
@@ -178,8 +183,14 @@ Both stages support the same seven built-in controls: `pii_phi`, `word_filter`, 
 | `categories` | `list[str]` | `[]` | Toxicity categories to check. Empty = all |
 | `if_detected` | `"forward"` \| `"flag"` \| `"block"` | `"flag"` | Action when harmful content is detected |
 
-<Aside type="tip">
-  Requires the `transformers` package: `pip install glacis[content-safety]`
+<Aside type="caution">
+  Content safety needs `transformers` (and a model download at first use).
+
+  The SDK's own `ImportError` tells you to run `pip install glacis[content-safety]`
+  — **that extra does not exist in 0.8.0**. The published extras are `openai`,
+  `anthropic`, `gemini`, `litellm`, `redaction`, `jailbreak`, `controls`, `dev`
+  and `all`. Install `transformers` directly, or take it as part of
+  `glacis[jailbreak]`.
 </Aside>
 
 **`topic` -- Topic Enforcement**
@@ -253,7 +264,7 @@ Thresholds for the judge pipeline that evaluates sampled attestations. Works for
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `backend` | `"sqlite"` \| `"json"` | `"sqlite"` | Storage backend. `"sqlite"` = SQLite database, `"json"` = JSONL append-only log |
-| `path` | `str \| null` | `null` (defaults to `~/.glacis/glacis.db` for SQLite, `~/.glacis` for JSON) | For SQLite: full `.db` file path. For JSON: directory containing `.jsonl` files |
+| `path` | `str \| null` | `null` (defaults to `~/.glacis/glacis.db` for SQLite, `~/.glacis` for JSON) | For SQLite: full `.db` file path. For JSON: directory containing `.jsonl` files. **`~` is not expanded** — give an absolute path or omit the key. |
 
 ## Loading Configuration Programmatically
 
@@ -333,16 +344,16 @@ If no `glacis.yaml` is found, `load_config()` returns a `glacis.config.GlacisCon
   <LinkCard
     title="Quickstart"
     description="Create your first attestation in under 5 minutes."
-    href="/sdk/python/quickstart/"
+    href="/connect/quickstart/"
   />
   <LinkCard
     title="Controls"
     description="PII detection, word filtering, and jailbreak protection."
-    href="/sdk/python/controls/"
+    href="/reference/controls/"
   />
   <LinkCard
     title="CLI Reference"
     description="Verify receipts from the command line."
-    href="/sdk/python/cli/"
+    href="/verify/cli/"
   />
 </CardGrid>

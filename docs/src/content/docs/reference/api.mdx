@@ -1,9 +1,12 @@
 ---
-title: API Reference
-description: Complete API reference for the Glacis Python SDK.
+title: API reference
+description: Every public class, method and model in the glacis Python SDK 0.8.0.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+
+The full public surface of `glacis` 0.8.0. If you are getting started, read
+[Connect](/connect/) first — this page assumes you know what an attestation is.
 
 ## Glacis Client
 
@@ -98,7 +101,8 @@ attestation = glacis.attest(
 
 ### glacis.verify()
 
-Verify an attestation. For online attestations, calls the server API. For offline attestations, verifies the Ed25519 signature locally.
+Verify an attestation. For online attestations, calls the server API. For offline
+attestations, see the caveat below — 0.8.0 does **not** check the signature.
 
 ```python
 # Verify with an Attestation object
@@ -118,6 +122,22 @@ if isinstance(result, OfflineVerifyResult):
     print(result.signature_valid)
     print(result.witness_status)  # "UNVERIFIED"
 ```
+
+<Aside type="caution" title="Offline `verify()` is not a signature check in 0.8.0">
+  The offline branch derives a public key from the client's own `signing_seed`
+  and compares it to `attestation.public_key`. If they match it returns
+  `valid=True` — **without looking at `signature` at all**. Replace the
+  signature with zeroes and it still passes. If the client has no seed (a
+  receipt loaded from local storage), `signature_valid` is hardcoded `True`.
+
+  `glacis.crypto.Ed25519Runtime` has `sign()` and `get_public_key_hex()` but no
+  `verify()`, so the SDK cannot perform this check today.
+
+  For a real verification, use the PyNaCl routine in
+  [Verify from Python](/verify/cli/#verify-a-receipt-yourself). This behaviour
+  is pinned by `docs/scripts/verify-doc-snippets.py` so the page cannot go
+  stale silently.
+</Aside>
 
 **Parameters:**
 
@@ -543,9 +563,9 @@ class OfflineVerifyResult(BaseModel):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `valid` | `bool` | Whether the signature is valid |
+| `valid` | `bool` | Mirrors `signature_valid` |
 | `witness_status` | `Literal["UNVERIFIED"]` | Always `"UNVERIFIED"` for offline attestations |
-| `signature_valid` | `bool` | Whether the Ed25519 signature is valid |
+| `signature_valid` | `bool` | **Not** an Ed25519 check in 0.8.0 — see the caveat under [`verify()`](#glacisverify) |
 | `attestation` | `Optional[Attestation]` | The verified attestation |
 | `error` | `Optional[str]` | Error message if invalid |
 
@@ -1020,5 +1040,5 @@ except CryptoError as e:
 ```python
 from glacis import __version__
 
-print(__version__)  # "0.5.0"
+print(__version__)  # "0.8.0"
 ```
