@@ -41,8 +41,9 @@ receipt = get_last_receipt()
 print(receipt.id, receipt.witness_status)
 ```
 
-For witnessed receipts, drop `offline`/`signing_seed` and pass
-`glacis_api_key="glsk_live_…"` instead.
+For online mode (the server signs — not the same as
+[witnessed](/connect/offline-vs-witnessed/)), drop `offline`/`signing_seed` and
+pass `glacis_api_key="glsk_live_…"` instead.
 
 The returned object **is** an `anthropic.Anthropic` client.
 
