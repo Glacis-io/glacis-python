@@ -103,6 +103,7 @@ rewritten, and had specific false claims fixed.
 | `src/components/ReceiptBadge.astro` | The three states, rendered identically everywhere. Each badge carries a glyph *and* a word, so the distinction survives greyscale, colour-blindness and screenshots. |
 | `src/components/Screenshot.astro` | Obvious placeholder for captures that do not exist yet — never a mock-up passed off as a screenshot. |
 | `scripts/verify-doc-snippets.py` | New. See above. |
+| `src/styles/custom.css` | Unchanged theme, one addition: wide tables now scroll inside themselves below 50rem instead of pushing the page sideways. The Start section has to work at 375px. |
 | `README.md` | Rewritten: IA, the five editorial rules, how to run the verification script. |
 
 ---
