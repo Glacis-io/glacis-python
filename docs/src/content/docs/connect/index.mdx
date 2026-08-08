@@ -138,6 +138,15 @@ Witnessed mode needs a key. Create a workspace at
 The key is shown once. Store it in your secrets manager; pass it as
 `api_key=` / `glacis_api_key=` or read it from the environment.
 
+<Aside type="note" title="Offline needs none of this">
+  Key minting and the hosted witness ship with the launch build of
+  app.glacis.dev. Everything on the offline path — `pip install glacis`, local
+  Ed25519 signing, the provider wrappers with `offline=True`, the whole of
+  [Verify from Python](/verify/cli/) — works today with no account at all.
+  Build against offline first; the switch to witnessed is one constructor
+  argument.
+</Aside>
+
 ## Next
 
 <CardGrid>
