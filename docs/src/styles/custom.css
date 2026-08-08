@@ -632,3 +632,23 @@ starlight-toc a[aria-current="true"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ========================================
+   NARROW SCREENS
+   The Start section has to be readable on a phone, so a wide reference
+   table must scroll inside itself rather than pushing the whole page
+   sideways. display:block is what makes overflow-x apply to a table.
+   ======================================== */
+@media (max-width: 50rem) {
+  .sl-markdown-content table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
+
+/* The three-state legend reads as one block, not three loose rows. */
+.badge-legend {
+  margin-block: 1.5rem;
+}
