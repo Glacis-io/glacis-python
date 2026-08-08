@@ -1,6 +1,6 @@
 ---
 title: Gemini
-description: Swap genai.Client() for attested_gemini() and every generate_content call produces a receipt.
+description: Swap genai.Client() for attested_gemini(). Every wrapped generate_content call attempts a receipt — best effort, never blocking your call.
 sidebar:
   order: 6
 ---
@@ -10,6 +10,13 @@ import { Aside } from '@astrojs/starlight/components';
 ```bash
 pip install "glacis[gemini]"
 ```
+
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
 
 Uses the `google-genai` SDK (`google.genai.Client`), not the older
 `google-generativeai` package.

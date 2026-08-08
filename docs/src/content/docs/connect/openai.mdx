@@ -1,6 +1,6 @@
 ---
 title: OpenAI
-description: Swap OpenAI() for attested_openai() and every chat completion produces a receipt.
+description: Swap OpenAI() for attested_openai(). Every wrapped chat completion attempts a receipt — best effort, never blocking your call.
 sidebar:
   order: 4
 ---
@@ -10,6 +10,13 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 ```bash
 pip install "glacis[openai]"
 ```
+
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
 
 ## Wrap the client
 

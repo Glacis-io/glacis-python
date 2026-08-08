@@ -1,6 +1,6 @@
 ---
 title: Anthropic
-description: Swap Anthropic() for attested_anthropic() and every message produces a receipt.
+description: Swap Anthropic() for attested_anthropic(). Every wrapped message attempts a receipt — best effort, never blocking your call.
 sidebar:
   order: 5
 ---
@@ -10,6 +10,13 @@ import { Aside } from '@astrojs/starlight/components';
 ```bash
 pip install "glacis[anthropic]"
 ```
+
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
 
 ## Wrap the client
 

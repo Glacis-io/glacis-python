@@ -11,6 +11,13 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 pip install "glacis[litellm]"
 ```
 
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
+
 LiteLLM exposes module-level functions rather than a client object, so
 `attested_litellm()` returns a small wrapper with `.completion()` and
 `.acompletion()` that take the same arguments as `litellm.completion()` and
@@ -138,7 +145,10 @@ code change. Reading the file needs `pyyaml` — see
 
 ```python
 import asyncio
+import os
 from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])  # 64 hex chars
 
 
 async def main():
@@ -147,7 +157,8 @@ async def main():
         model="gpt-4o",
         messages=[{"role": "user", "content": "Hello!"}],
     )
-    print(get_last_receipt().id)
+    receipt = get_last_receipt()
+    print(receipt.id if receipt else "no receipt for that call")
 
 
 asyncio.run(main())

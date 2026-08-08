@@ -23,8 +23,11 @@ pip install glacis
 <Tabs>
   <TabItem label="Wrap your provider">
 
-Swap your provider's constructor for the attested one. Every call through it is
-attested; nothing else in your code changes.
+Swap your provider's constructor for the attested one. Nothing else in your code
+changes, and the wrapper attempts a receipt on every wrapped call — **best
+effort, never blocking**: if attestation or storage fails, the exception is
+swallowed by design and you still get the model response, with no receipt. See
+[what "best effort" costs you](#attestation-is-best-effort-never-a-gate) below.
 
 ```python
 import os
@@ -71,10 +74,18 @@ evidence_storage:
 ```
 
 ```python
+import os
 from glacis.integrations.litellm import attested_litellm
+
+seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])  # 64 hex chars
 
 client = attested_litellm(config="glacis.yaml", signing_seed=seed)
 ```
+
+`attestation.offline: true` in the YAML means the factory needs a seed: without
+one it raises `ValueError: signing_seed is required for offline mode`. The
+config file cannot supply it — a signing key does not belong in a file you
+commit.
 
 [Configuration reference](/connect/configuration/)
 
@@ -103,33 +114,60 @@ receipt = glacis.attest(
   </TabItem>
 </Tabs>
 
-## Decide one thing first: offline or witnessed
+## Attestation is best effort, never a gate
 
-This is the only decision that changes what your receipts are worth to somebody
-else.
+The wrapper path is deliberately fail-open. `attest_and_store()` in
+`glacis/integrations/base.py` wraps the whole attestation-and-storage step in a
+`try` and catches **every** exception, printing only when `debug=True`:
 
-| | Offline <ReceiptBadge kind="self-signed" /> | Online <ReceiptBadge kind="witnessed" /> |
+- Your provider call is made and its response is returned regardless. GLACIS
+  never blocks, delays or fails an LLM call because attestation had a problem.
+- If attestation fails, no receipt exists for that call. `get_last_receipt()`
+  then returns `None` — or, worse to read past, the **previous** call's receipt
+  from the same context.
+- Nothing anywhere retries, and nothing surfaces the failure to your code.
+
+So the accurate sentence is *the wrapper attempts a receipt on every wrapped
+call*, not *every call is attested*. If a missing receipt matters to you, check
+that `get_last_receipt()` returned one and that its `id` is not one you have
+already seen, and run with `debug=True` while you are diagnosing.
+
+The one place the wrapper *does* raise is a blocking control:
+`GlacisBlockedError` stops the provider call before it is made. That is a
+policy decision you configured, not an attestation failure.
+
+## Decide one thing first: offline or online
+
+This is the decision that changes what your receipts are worth to somebody else.
+
+| | Offline <ReceiptBadge kind="self-signed" /> | Online |
 | --- | --- | --- |
 | Needs | A 32-byte signing seed you keep | A workspace key (`glsk_…`) |
 | Network | None. Nothing leaves the process. | Hash + metadata to `api.glacis.io` |
-| Signed by | You | You, then countersigned |
-| `witness_status` | `"UNVERIFIED"` | `"WITNESSED"` |
-| Worth to a third party | It is your diary | It is evidence |
+| Signed by | You | The GLACIS service, with its key |
+| `witness_status` on the returned object | `"UNVERIFIED"` | `"WITNESSED"` — a **mode label**, not a proof |
+| Second signature or inclusion proof | None | Not exposed on the returned object |
+| Worth to a third party | It is your diary | A record signed by someone other than you |
 
-Start offline — it works this second, with no account. Move to witnessed when
-somebody outside your organisation needs to believe the record.
-[Offline vs witnessed](/connect/offline-vs-witnessed/) is the long version.
+Start offline — it works this second, with no account. Move to online when
+somebody outside your organisation needs a signer who is not you.
+[Offline vs online](/connect/offline-vs-witnessed/) is the long version, and it
+is worth reading before you put a <ReceiptBadge kind="witnessed" /> badge on
+anything: at 0.8.0 that tier comes from the portal's mint path, not from an SDK
+`witness_status` string.
 
 <Aside type="caution" title="What never leaves your process">
-  `attest()` hashes `{"input": …, "output": …}` with RFC 8785 canonical JSON
-  and SHA-256, and sends **only the hash**. Prompts, completions, documents and
-  patient data are not transmitted in either mode. Your provider API keys are
-  never sent to GLACIS either.
+  `attest()` hashes `{"input": …, "output": …}` with canonical JSON and SHA-256,
+  and sends **only the hash**. Prompts, completions, documents and patient data
+  are not transmitted in either mode. Your provider API keys are never sent to
+  GLACIS either. The exact canonicalisation, and where it diverges from RFC
+  8785, is written out in
+  [Quickstart](/connect/quickstart/#the-canonicalisation-actually-used).
 </Aside>
 
 ## Get a workspace key
 
-Witnessed mode needs a key. Create a workspace at
+Online mode needs a key. Create a workspace at
 [app.glacis.dev](https://app.glacis.dev), open workspace settings, and mint one:
 
 - `glsk_test_…` for development
@@ -143,7 +181,7 @@ The key is shown once. Store it in your secrets manager; pass it as
   app.glacis.dev. Everything on the offline path — `pip install glacis`, local
   Ed25519 signing, the provider wrappers with `offline=True`, the whole of
   [Verify from Python](/verify/cli/) — works today with no account at all.
-  Build against offline first; the switch to witnessed is one constructor
+  Build against offline first; the switch to online is one constructor
   argument.
 </Aside>
 
@@ -161,8 +199,8 @@ The key is shown once. Store it in your secrets manager; pass it as
     href="/connect/quickstart/"
   />
   <LinkCard
-    title="Offline vs witnessed"
-    description="Diary or evidence — and how to move between them."
+    title="Offline vs online"
+    description="What each mode actually returns, and where the witnessed tier comes from."
     href="/connect/offline-vs-witnessed/"
   />
   <LinkCard
