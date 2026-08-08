@@ -630,6 +630,18 @@ class Glacis:
         """Verify an offline attestation's signature locally."""
         self._debug(f"Verifying (offline): {attestation.id}")
 
+        # Fail closed, with the reason, when the receipt reached us through a
+        # store that dropped signed control-plane content. Nothing downstream
+        # can rebuild the signed payload, so nothing downstream can verify it.
+        if attestation.cpr_recovery_error:
+            return OfflineVerifyResult(
+                valid=False,
+                witness_status="UNVERIFIED",
+                signature_valid=False,
+                attestation=attestation,
+                error=attestation.cpr_recovery_error,
+            )
+
         try:
             if self._ed25519 and self._signing_seed:
                 derived_pubkey = self._ed25519.get_public_key_hex(self._signing_seed)

@@ -105,6 +105,55 @@ class StorageBackend(Protocol):
 # ==============================================================================
 
 
+CPR_LOST_IN_STORAGE = (
+    "control_plane_results is missing from the stored row while cpr_hash is set. "
+    "The content is inside the offline signature, so the signed payload cannot be "
+    "rebuilt from this row and independent Ed25519 verification will fail. "
+    "Receipts written by glacis <= 0.8.0 never persisted this field; it cannot be "
+    "recovered from the receipt store."
+)
+
+
+def _recover_cpr(
+    stored_cpr: Optional[Any],
+    cpr_hash: Optional[str],
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Reconstruct control_plane_results from a stored row, or name the loss.
+
+    Returns ``(control_plane_results, cpr_recovery_error)``.
+
+    Three cases, and none of them fabricate content:
+
+    * The row carries the CPR: it is returned as stored.
+    * The row carries neither CPR nor ``cpr_hash``: the receipt was signed
+      without control-plane results. Absent stays absent, no error.
+    * The row carries a ``cpr_hash`` but no CPR: signed content that this
+      store cannot return. Absent stays absent **and** the reason is set, so
+      the caller can see the degradation instead of inferring "no CPR".
+    """
+    if isinstance(stored_cpr, str):
+        try:
+            parsed: Optional[Any] = json.loads(stored_cpr)
+        except json.JSONDecodeError:
+            return None, (
+                "control_plane_results is present in storage but is not valid JSON; "
+                "the signed payload cannot be rebuilt from this row."
+            )
+    else:
+        parsed = stored_cpr
+
+    if isinstance(parsed, dict):
+        return parsed, None
+    if parsed is not None:
+        return None, (
+            "control_plane_results is present in storage but is not a JSON object; "
+            "the signed payload cannot be rebuilt from this row."
+        )
+    if cpr_hash:
+        return None, CPR_LOST_IN_STORAGE
+    return None, None
+
+
 def create_storage(
     backend: str = "sqlite",
     path: Optional[Path] = None,
@@ -130,7 +179,7 @@ def create_storage(
 # SQLite Backend
 # ==============================================================================
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS offline_receipts (
@@ -148,7 +197,10 @@ CREATE TABLE IF NOT EXISTS offline_receipts (
     operation_id TEXT,
     operation_sequence INTEGER DEFAULT 0,
     supersedes TEXT,
-    cpr_hash TEXT
+    cpr_hash TEXT,
+    -- control_plane_results is INSIDE the offline signature. It has to be
+    -- stored verbatim or the signed payload cannot be rebuilt on reload.
+    control_plane_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_service_id ON offline_receipts(service_id);
@@ -214,6 +266,14 @@ MIGRATION_V2_TO_V3 = """
 ALTER TABLE evidence ADD COLUMN sampling_level TEXT NOT NULL DEFAULT 'L0';
 """
 
+# Migration from v4 to v5: persist the signed control_plane_results on the
+# receipt row. Rows written before this migration cannot be back-filled — the
+# content was never stored — so they stay NULL and are reported as an explicit
+# degradation on read rather than being silently reconstructed as "no CPR".
+MIGRATION_V4_TO_V5 = """
+ALTER TABLE offline_receipts ADD COLUMN control_plane_json TEXT;
+"""
+
 
 class ReceiptStorage:
     """
@@ -254,10 +314,15 @@ class ReceiptStorage:
             )
             conn.commit()
         else:
-            cursor.execute("SELECT version FROM schema_version LIMIT 1")
+            # MAX(), not LIMIT 1: `version` is the primary key, so an upgrade
+            # adds a row rather than replacing one. Reading the first row read
+            # the *oldest* version back and re-ran every migration on every
+            # open. _run_migrations now collapses the table to one row.
+            cursor.execute("SELECT MAX(version) FROM schema_version")
             row = cursor.fetchone()
-            if row is None or row[0] < SCHEMA_VERSION:
-                self._run_migrations(row[0] if row else 0)
+            current = row[0] if row and row[0] is not None else 0
+            if current < SCHEMA_VERSION:
+                self._run_migrations(current)
 
     def _run_migrations(self, from_version: int) -> None:
         """Run schema migrations."""
@@ -280,8 +345,16 @@ class ReceiptStorage:
         if from_version < 4:
             self._migrate_v3_to_v4(cursor)
 
+        # Migration v4 to v5: add control_plane_json to offline_receipts
+        if from_version < 5:
+            try:
+                cursor.executescript(MIGRATION_V4_TO_V5)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        cursor.execute("DELETE FROM schema_version")
         cursor.execute(
-            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+            "INSERT INTO schema_version (version) VALUES (?)",
             (SCHEMA_VERSION,),
         )
         conn.commit()
@@ -358,8 +431,9 @@ class ReceiptStorage:
             (attestation_id, timestamp, service_id, operation_type,
              evidence_hash, signature, public_key, created_at,
              input_preview, output_preview, metadata_json,
-             operation_id, operation_sequence, supersedes, cpr_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             operation_id, operation_sequence, supersedes, cpr_hash,
+             control_plane_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 receipt.id,
@@ -377,6 +451,10 @@ class ReceiptStorage:
                 receipt.operation_sequence,
                 receipt.supersedes,
                 receipt.cpr_hash,
+                # Signed content, so it is stored whole and never truncated.
+                json.dumps(receipt.control_plane_results, separators=(",", ":"))
+                if receipt.control_plane_results is not None
+                else None,
             ),
         )
         conn.commit()
@@ -477,6 +555,14 @@ class ReceiptStorage:
             else row["payload_hash"] if "payload_hash" in keys else ""
         )
 
+        cpr_hash = row["cpr_hash"] if "cpr_hash" in keys else None
+        # Pre-v5 rows have no column at all; migrated rows have it as NULL.
+        # Either way there is nothing to recover — _recover_cpr says so.
+        control_plane_results, cpr_recovery_error = _recover_cpr(
+            row["control_plane_json"] if "control_plane_json" in keys else None,
+            cpr_hash,
+        )
+
         return Attestation(
             id=row["attestation_id"],
             evidence_hash=evidence_hash,
@@ -498,7 +584,9 @@ class ReceiptStorage:
                 else 0
             ),
             supersedes=row["supersedes"] if "supersedes" in keys else None,
-            cpr_hash=row["cpr_hash"] if "cpr_hash" in keys else None,
+            cpr_hash=cpr_hash,
+            control_plane_results=control_plane_results,
+            cpr_recovery_error=cpr_recovery_error,
         )
 
     def count_receipts(self, service_id: Optional[str] = None) -> int:
@@ -814,6 +902,8 @@ class JsonStorageBackend:
             "operation_sequence": receipt.operation_sequence,
             "supersedes": receipt.supersedes,
             "cpr_hash": receipt.cpr_hash,
+            # Signed content, so it is stored whole and never truncated.
+            "control_plane_results": receipt.control_plane_results,
         }
         self._append_line(self._receipts_path, data)
 
@@ -880,6 +970,12 @@ class JsonStorageBackend:
         """Convert a stored dict to an Attestation object."""
         from glacis.models import Attestation
 
+        cpr_hash = data.get("cpr_hash")
+        # Lines written before 0.8.1 have no control_plane_results key at all.
+        control_plane_results, cpr_recovery_error = _recover_cpr(
+            data.get("control_plane_results"), cpr_hash
+        )
+
         return Attestation(
             id=data["attestation_id"],
             evidence_hash=data.get("evidence_hash", ""),
@@ -892,7 +988,9 @@ class JsonStorageBackend:
             operation_id=data.get("operation_id", ""),
             operation_sequence=data.get("operation_sequence", 0),
             supersedes=data.get("supersedes"),
-            cpr_hash=data.get("cpr_hash"),
+            cpr_hash=cpr_hash,
+            control_plane_results=control_plane_results,
+            cpr_recovery_error=cpr_recovery_error,
         )
 
     # =========================================================================
