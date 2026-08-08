@@ -1,6 +1,6 @@
 ---
 title: OpenAI
-description: Swap OpenAI() for attested_openai(). Every wrapped chat completion attempts a receipt — best effort, never blocking your call.
+description: Swap OpenAI() for attested_openai(). Every wrapped chat completion attempts a receipt — best effort, never fatal, and never free.
 sidebar:
   order: 4
 ---
@@ -99,6 +99,14 @@ if receipt:
   `None`, or the *previous* receipt from that context. A receipt is not
   guaranteed for every call. If a missing receipt matters to you, check for it
   and handle it, and turn on `debug=True` while you are diagnosing.
+
+  **Fail-open is about exceptions, not about time.** `attest_and_store()` runs
+  synchronously between the provider response and this function's return. In
+  offline mode that is a signature and a local write. In online mode it is an
+  HTTP round trip that retries up to four times with 30-second timeouts and
+  blocking backoff — a ceiling of **129.1 seconds** added to one call. The
+  arithmetic, and the only two ways to bound it at 0.8.0, are on
+  [Connect](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
 </Aside>
 
 ## Controls

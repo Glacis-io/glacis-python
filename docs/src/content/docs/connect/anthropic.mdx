@@ -1,6 +1,6 @@
 ---
 title: Anthropic
-description: Swap Anthropic() for attested_anthropic(). Every wrapped message attempts a receipt — best effort, never blocking your call.
+description: Swap Anthropic() for attested_anthropic(). Every wrapped message attempts a receipt — best effort, never fatal, and never free.
 sidebar:
   order: 5
 ---
@@ -101,6 +101,12 @@ Output controls read the first text block of the response.
   having a bad day. The consequence: `get_last_receipt()` may return `None` or
   the previous receipt from that context. If a missing receipt matters, check
   for it. `debug=True` prints what was swallowed.
+
+  Fail-open is about exceptions, not about time: attestation runs synchronously
+  before this call returns, and online mode retries up to four times with
+  30-second timeouts and blocking backoff — a ceiling of **129.1 seconds** on
+  one call. See
+  [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
 </Aside>
 
 ## Metadata, evidence, pipelines

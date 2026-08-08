@@ -190,6 +190,12 @@ Receipt tracking uses `contextvars`, so concurrent tasks under
   A failed attestation is swallowed and the model response is returned anyway.
   `get_last_receipt()` may then be `None` or stale. Check for it if a missing
   receipt matters; `debug=True` prints what was swallowed.
+
+  Fail-open is about exceptions, not about time: attestation runs synchronously
+  before this call returns, and online mode retries up to four times with
+  30-second timeouts and blocking backoff — a ceiling of **129.1 seconds** on
+  one call. See
+  [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
 </Aside>
 
 ## `attested_litellm()` reference

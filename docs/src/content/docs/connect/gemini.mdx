@@ -1,6 +1,6 @@
 ---
 title: Gemini
-description: Swap genai.Client() for attested_gemini(). Every wrapped generate_content call attempts a receipt — best effort, never blocking your call.
+description: Swap genai.Client() for attested_gemini(). Every wrapped generate_content call attempts a receipt — best effort, never fatal, and never free.
 sidebar:
   order: 6
 ---
@@ -98,6 +98,12 @@ control raises `GlacisBlockedError`.
   A failed attestation is swallowed and the model response is returned anyway.
   `get_last_receipt()` may then be `None` or stale. Check for it if it matters;
   `debug=True` prints what was swallowed.
+
+  Fail-open is about exceptions, not about time: attestation runs synchronously
+  before this call returns, and online mode retries up to four times with
+  30-second timeouts and blocking backoff — a ceiling of **129.1 seconds** on
+  one call. See
+  [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
 </Aside>
 
 ## `attested_gemini()` reference
