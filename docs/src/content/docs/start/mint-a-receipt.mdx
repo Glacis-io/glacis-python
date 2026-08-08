@@ -1,0 +1,76 @@
+---
+title: Mint a receipt
+description: Produce a real receipt from the browser — no terminal, no SDK, no card — and check it yourself.
+sidebar:
+  order: 3
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+import Screenshot from '../../../components/Screenshot.astro';
+
+Sample receipts show you the format. This produces one that is actually yours,
+still without leaving the browser.
+
+<Steps>
+
+1. **Open *Mint a receipt* in your workspace.**
+
+2. **Describe the event, or paste a payload.**
+
+   Either a short description of an AI operation your system performs, or a
+   JSON payload with the input and output you want committed to. Both end up in
+   the same place: hashed locally, with only the hash leaving the page.
+
+   <Screenshot shape="phone" caption="Mint a receipt — describe an event or paste a payload." />
+
+3. **Mint.**
+
+   The workspace calls the witness on your behalf and returns the receipt bound
+   to your workspace.
+
+4. **Check it.**
+
+   Use the verify action on the receipt, or copy its verification permalink and
+   open it somewhere else entirely — a different browser, a colleague's phone.
+   Verification is client-side; the receipt is checked wherever it is opened.
+
+</Steps>
+
+## What you get back
+
+<ReceiptBadge kind="witnessed" gloss />
+
+A witnessed receipt is countersigned by a party that did not author it. That is
+the property that makes it worth showing to someone who has no reason to trust
+you: you could not have chosen its timestamp after the fact, and you cannot
+quietly revise it later.
+
+<Aside type="caution" title="When witnessing is not live, the button says so">
+  Witnessing depends on the hosted witness being up. When it is not — during a
+  deploy, or before the service goes live in your region — the mint action
+  returns an honest *"witnessing is not available yet"* state, or a receipt
+  explicitly badged <ReceiptBadge kind="self-signed" />.
+
+  It never shows you a green <ReceiptBadge kind="witnessed" /> check that
+  nothing backs. If you see a witnessed badge, a countersignature exists and you
+  can check it.
+</Aside>
+
+## What this proves, exactly
+
+It proves that at a particular time, your workspace submitted a commitment to a
+particular input/output pair, and an independent party recorded it.
+
+It does not prove the operation described actually ran in production, that the
+output was correct, or that anything is compliant. You typed this one into a
+form. That is fine for learning what the artefact is — it is not evidence about
+your system.
+
+Receipts become evidence about your system when your system emits them, which
+is the next page.
+
+## Next
+
+- [Connect](/connect/) — receipts from your own inference path, config-only or three lines of Python.
+- [What a check proves](/verify/what-a-check-proves/) — before you show a receipt to anyone.

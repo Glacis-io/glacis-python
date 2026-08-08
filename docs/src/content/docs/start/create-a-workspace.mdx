@@ -1,0 +1,76 @@
+---
+title: Create a workspace
+description: Sign up at app.glacis.dev, verify your email, and answer a short profile. No card, no call, no install.
+sidebar:
+  order: 1
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Screenshot from '../../../components/Screenshot.astro';
+
+<Steps>
+
+1. **Go to [app.glacis.dev](https://app.glacis.dev).**
+
+   The sign-in page has a **Create account** panel underneath it. Work email
+   and a password of at least 8 characters is the whole form.
+
+   <Screenshot shape="phone" caption="app.glacis.dev — sign in, with Create account below it." />
+
+2. **Check your email.**
+
+   Signup does not sign you in. A verification link is sent first, and the
+   account is inert until you click it. If the mail has not arrived in a few
+   minutes, check spam and then request a new link from the same page.
+
+   <Aside type="note">
+     The signup response is deliberately identical whether or not the address
+     already has an account. It tells you a link is on its way either way, so
+     the form cannot be used to test whether someone has an account here.
+   </Aside>
+
+3. **Sign in.**
+
+   Your **personal workspace** already exists — it was created with the
+   account. You can add or join a company workspace afterwards from inside the
+   product.
+
+4. **Answer the profile.**
+
+   A handful of questions: what you build, which model providers you use, how
+   it is deployed, whether regulated data is involved, roughly how big the
+   team is. It shapes what the workspace shows you next. Skip it if you would
+   rather just look around.
+
+</Steps>
+
+## What you get
+
+- A workspace of your own, with sample receipts already in it — see
+  [The sample workspace](/start/sample-workspace/).
+- The ability to mint a receipt from the browser — see
+  [Mint a receipt](/start/mint-a-receipt/).
+- Workspace API keys (`glsk_…`) when you are ready to connect a real system —
+  see [Connect](/connect/).
+
+## What it costs
+
+Nothing to start, and there is no card in this flow.
+
+Self-signed receipts from the SDK are free forever and do not involve us at
+all — they are produced entirely inside your own process. Witnessed receipts
+have a free tier. **Receipts are not metered.** Any rate limit you meet is
+abuse control, not billing.
+
+<Aside type="caution" title="This is not a compliance product">
+  Creating a workspace does not make anything compliant, protected, or
+  certified, and neither does a receipt. A receipt is evidence that a claim was
+  generated, verifiable by someone who does not trust you. What that evidence
+  is worth in a given regime is a judgement for the person reading it — see
+  [what a check proves](/verify/what-a-check-proves/).
+</Aside>
+
+## Next
+
+- [The sample workspace](/start/sample-workspace/) — read a receipt before you make one.
+- [Connect](/connect/) — get receipts out of your own system in about ten minutes.

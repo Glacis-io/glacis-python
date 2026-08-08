@@ -1,0 +1,91 @@
+---
+title: Start
+description: Go from nothing to a receipt you can verify — in a browser, on a phone, without installing anything.
+sidebar:
+  order: 0
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+You do not need to install anything to see what a GLACIS receipt is and check
+one for yourself. Three steps, all in a browser, all of it fine on a phone.
+
+<Steps>
+
+1. **[Create a workspace](/start/create-a-workspace/)** — email and a password at
+   [app.glacis.dev](https://app.glacis.dev). About a minute, including the
+   verification email.
+
+2. **[Look at the sample receipts](/start/sample-workspace/)** — your new workspace
+   is not empty. It comes with synthetic receipts, every one badged
+   <ReceiptBadge kind="sample" />, so you can see the shape of the thing before
+   you produce one.
+
+3. **[Mint a real one](/start/mint-a-receipt/)** — describe an event, get back a
+   receipt bound to your workspace, and check it yourself.
+
+</Steps>
+
+Then, when you want receipts to come out of your own system instead of a form,
+[Connect](/connect/) is the ten-minute version: a config block or three lines of
+Python.
+
+## What a receipt is
+
+A receipt is a signed, tamper-evident record that a specific AI operation
+happened and that specific controls ran around it. It carries hashes of the
+input and output, not the input and output — so it can be handed to someone
+outside your organisation without handing over the data.
+
+A receipt is **evidence a claim was generated**. It is not a compliance
+certificate, it is not an audit result, and it does not say the model was right.
+[What a green check does and does not establish](/verify/what-a-check-proves/)
+is worth three minutes of your time before you show one to anybody.
+
+## The three states, and why they are never mixed
+
+<div class="badge-legend">
+
+| State | Meaning | What you can do with it |
+| --- | --- | --- |
+| <ReceiptBadge kind="sample" /> | Synthetic. No inference happened. | Learn the format. Nothing else. |
+| <ReceiptBadge kind="self-signed" /> | You signed your own record. | Internal record-keeping. It is a diary. |
+| <ReceiptBadge kind="witnessed" /> | Countersigned by a party that did not author it. | Hand to a third party as evidence. |
+
+</div>
+
+A self-signed receipt is not a weaker witnessed receipt. It is a different
+claim: *"I say this happened."* A witnessed receipt says *"I say this happened,
+and someone who is not me recorded that I said it, at a time I could not choose
+after the fact."* Everything in these docs keeps those two apart.
+
+<Aside type="note" title="What is live today">
+  These Start pages describe the browser flow at
+  [app.glacis.dev](https://app.glacis.dev). The [Connect](/connect/) path — the
+  Python SDK, offline signing, provider wrappers — is published on PyPI as
+  `glacis` 0.8.0 and works today regardless of what the portal is doing.
+</Aside>
+
+<CardGrid>
+  <LinkCard
+    title="Create a workspace"
+    description="Signup, verification, and the short system profile."
+    href="/start/create-a-workspace/"
+  />
+  <LinkCard
+    title="Connect your system"
+    description="Config-only, or three lines of Python."
+    href="/connect/"
+  />
+  <LinkCard
+    title="Verify a receipt"
+    description="In your browser, with nothing uploaded anywhere."
+    href="/verify/"
+  />
+  <LinkCard
+    title="The OVERT standard"
+    description="The open receipt format underneath all of this."
+    href="/overt/"
+  />
+</CardGrid>
