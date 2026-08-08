@@ -16,7 +16,7 @@ Glacis uses a three-tier sampling model to balance observability with cost and s
 | **L2** | Deep inspection | L1 + eligible for judge evaluation | Sampled at `l2_rate` (implies L1) |
 
 - **L0** runs on every attestation. Only hashes leave your infrastructure.
-- **L1** retains the full input and output locally for audit. The data never leaves your environment.
+- **L1** retains the full input and output locally for audit, **through the provider wrappers**, which call `store_evidence()`. The data never leaves your environment. A direct `attest()` call does not write full evidence: offline it stores 100-character previews, and the online path writes nothing locally at all. See [what is retained locally](/connect/offline-vs-witnessed/#what-is-retained-locally).
 - **L2** is a subset of L1. Every L2 attestation also gets L1 evidence collection, and is flagged for judge evaluation. Judges must be run separately using `JudgeRunner` -- they are not invoked automatically by the sampling tier.
 
 ## Configuration
@@ -106,7 +106,7 @@ decision = glacis.should_review(receipt, sampling_rate=0.5)
 <Aside type="note">
   `should_review()` needs an HMAC key. It uses `policy_key` if you gave the
   client one, otherwise `signing_seed`. In offline mode the seed is always
-  present, so it just works; in witnessed mode you must pass `policy_key`
+  present, so it just works; in online mode you must pass `policy_key`
   explicitly or the call raises `ValueError: should_review requires policy_key
   or signing_seed (offline mode)`.
 </Aside>
@@ -131,7 +131,7 @@ The `SamplingDecision` model returned by `should_review()`:
 | `data` | `dict` | The evidence payload (typically `{"input": ..., "output": ...}`) |
 
 <Aside type="caution" title="Which mode populates it">
-  In **witnessed (online) mode**, the server returns a `sampling_decision`; when
+  In **online mode**, the server returns a `sampling_decision`; when
   that decision is `L1` or `L2`, the SDK attaches `receipt.evidence` with the
   raw input and output for local retention.
 

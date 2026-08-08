@@ -98,7 +98,7 @@ judges:
 
 # --- Attestation settings ---
 attestation:
-  offline: true           # true = offline (local signing), false = online (server-witnessed)
+  offline: true           # true = offline (local signing), false = online (server signs)
   service_id: "my-service"
 
 # --- Evidence storage ---
@@ -256,7 +256,7 @@ Thresholds for the judge pipeline that evaluates sampled attestations. Works for
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `offline` | `bool` | `true` | `true` = offline mode (local Ed25519 signing), `false` = online mode (server-witnessed) |
+| `offline` | `bool` | `true` | `true` = offline mode (local Ed25519 signing), `false` = online mode (the server signs; [not the same as witnessed](/connect/offline-vs-witnessed/)) |
 | `service_id` | `str` | `"openai"` | Default service identifier for attestations |
 
 ### `evidence_storage`

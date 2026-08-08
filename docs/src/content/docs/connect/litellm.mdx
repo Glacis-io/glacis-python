@@ -74,7 +74,7 @@ policy:
   environment: "production"
 
 attestation:
-  offline: true            # flip to false and supply a key for witnessed
+  offline: true            # flip to false and supply a key for online mode
   service_id: "router"
 
 sampling:
@@ -196,7 +196,7 @@ Receipt tracking uses `contextvars`, so concurrent tasks under
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `glacis_api_key` | `str \| None` | `None` | Workspace key. Required for witnessed mode. |
+| `glacis_api_key` | `str \| None` | `None` | Workspace key. Required for online mode. |
 | `glacis_base_url` | `str` | `"https://api.glacis.io"` | API base URL. |
 | `service_id` | `str` | `"litellm"` | Service identifier on the receipt. |
 | `debug` | `bool` | `False` | Debug logging, including swallowed attestation errors. |
