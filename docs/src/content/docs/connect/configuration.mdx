@@ -312,10 +312,14 @@ The returned `glacis.config.GlacisConfig` object is a Pydantic model, so you get
 Provider integrations (OpenAI, Anthropic, Gemini) accept a `config` parameter to load a `glacis.yaml` file:
 
 ```python
+import os
 from glacis.integrations.openai import attested_openai
 
-# Pass the path to your config file
-client = attested_openai(config="./glacis.yaml")
+client = attested_openai(
+    config="./glacis.yaml",
+    # attestation.offline defaults to true, so a seed is required.
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+)
 
 # Controls, sampling, and attestation settings
 # are all applied automatically
@@ -324,6 +328,23 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
+
+<Aside type="caution" title="The config file cannot supply the signing key">
+  `attestation.offline` defaults to **true** — both in the SDK's built-in
+  defaults and in a `glacis.yaml` that does not say otherwise. Offline mode
+  needs a 32-byte seed, and `glacis.yaml` has no field for one, on purpose: a
+  signing key does not belong in a file you commit.
+
+  So a wrapper constructed with `config=` and nothing else raises at
+  construction time:
+
+  ```
+  ValueError: signing_seed is required for offline mode
+  ```
+
+  Pass `signing_seed=` from your environment or secrets manager, or set
+  `attestation.offline: false` in the YAML and pass `glacis_api_key=`.
+</Aside>
 
 ## Defaults When No Config File Exists
 
