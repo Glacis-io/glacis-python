@@ -15,34 +15,70 @@ nobody has to guess where it is.
 
 ## What a green check does establish
 
-**The bytes have not changed since they were signed.** Alter one character of
-the receipt and the signature check fails. This is the core property and it is
-absolute.
+**The signed fields have not changed since they were signed.** A signature
+covers a specific payload, not "the file". For an SDK offline receipt that
+payload is built in `Glacis._attest_offline` and signed as
+`json.dumps(payload, sort_keys=True, separators=(",", ":"))`. These are the
+fields inside it:
+
+| Inside the signature | Source |
+| --- | --- |
+| `version` | Constant `1` |
+| `mode` | Constant `"offline"` |
+| `service_id` | What you passed |
+| `operation_type` | What you passed |
+| `evidence_hash` | SHA-256 over canonical `{"input": …, "output": …}` |
+| `timestamp_ms` | `str()` of the receipt's `timestamp` — so editing `timestamp` does break the check |
+| `operation_id` | UUID grouping related attestations |
+| `operation_sequence` | Position within that group |
+| `control_plane_results` | Only when non-empty — the whole structure, not a hash of it |
+| `supersedes` | Only when set |
+
+**And these fields ride alongside the signature, not inside it:**
+
+| Outside the signature | Consequence of editing it |
+| --- | --- |
+| `id` (`oatt_…`) | The receipt still verifies. The identifier is not bound to the signed content. |
+| `cpr_hash` | The receipt still verifies. The control-plane *content* is signed; this convenience hash of it is not. |
+| `public_key` | The receipt verifies against whatever key it carries — see *not that the signer is who they say they are*, below. |
+| `is_offline` | The receipt still verifies. |
+| `evidence`, `review`, `sampling_decision` | Not present on offline receipts; adding them changes nothing about the check. |
+| Any extra key you add to the JSON | Ignored entirely by the signature. |
+
+All twelve rows above were checked by tampering with a real receipt and
+re-running the verification; the check script in `docs/scripts/` does it on
+every run. **"Altering any character breaks the signature" is false**, and a
+verifier that implies otherwise is overclaiming. What is true is that altering
+any *signed* field breaks it.
 
 **The signature was made by the holder of that private key.** The public key on
 the receipt verifies the signature. Nobody without that private key could have
 produced it.
 
 **The input and output are committed to.** `evidence_hash` is SHA-256 over the
-RFC 8785 canonical JSON of `{"input": …, "output": …}`. If you hold the original
-input and output, recompute the hash and compare — that binds the receipt to
-*that specific exchange* and no other. Change a single character of the prompt
-and the hashes diverge.
+canonical JSON of `{"input": …, "output": …}`. If you hold the original input
+and output, recompute the hash and compare — that binds the receipt to *that
+specific exchange* and no other. Change a single character of the prompt and the
+hashes diverge. (The exact canonicalisation, and where it diverges from RFC
+8785, is on
+[Quickstart](/connect/quickstart/#the-canonicalisation-actually-used).)
 
 **Which controls ran, and what they returned.** When control-plane results are
-attached, they are covered by `cpr_hash` and by the signature. The record of
-what scanned the text is as tamper-evident as the rest.
+attached, the structure itself is inside the signed payload. The record of what
+scanned the text is as tamper-evident as the rest of the signed fields.
 
-**For witnessed receipts only: that the record existed at a time you did not
-choose.** The countersignature and the transparency-log inclusion proof come
-from a party that is not the author. That is the property that makes the
-timestamp mean anything to an outsider.
+**For a witnessed artifact only: that the record existed at a time the author
+did not choose.** The countersignature and the transparency-log inclusion proof
+come from a party that is not the author. That is the property that makes the
+timestamp mean anything to an outsider — and it is a property of the artifact
+you are holding, not of a status string. See
+[offline vs online](/connect/offline-vs-witnessed/).
 
 ## What a green check does not establish
 
 **Not that the model output is correct.** A receipt over a hallucination is a
-perfectly valid receipt. It records that the exchange happened, not that it was
-any good.
+perfectly valid receipt. It records that the claim was generated, not that the
+claim was any good.
 
 **Not that the described operation ever ran in production.** Someone can attest
 anything they can serialise. A receipt binds a *claim* to a signer; it does not
@@ -84,13 +120,25 @@ entered into an append-only log. The author cannot pick the time and cannot
 quietly remove the entry later. That is the difference, and it is the only
 difference that matters to a reader who does not already trust the author.
 
-## Three states, three different claims
+## Two tiers, two different claims
 
 | | The claim | Safe to hand to |
 | --- | --- | --- |
-| <ReceiptBadge kind="sample" /> | "This is what a receipt looks like." | Anyone, as an illustration. Never as evidence. |
-| <ReceiptBadge kind="self-signed" /> | "I say this happened, and I have not edited the record since." | Yourself, your team, an internal reviewer. |
+| <ReceiptBadge kind="self-signed" /> | "I say this happened, and I have not edited the signed fields since." | Yourself, your team, an internal reviewer. |
 | <ReceiptBadge kind="witnessed" /> | "I say this happened; someone who is not me recorded that I said it, when I said it." | A customer, an auditor, an insurer, a regulator. |
+
+## And one flag that cuts across both
+
+| | The claim | Safe to hand to |
+| --- | --- | --- |
+| <ReceiptBadge kind="sample" /> | "This is what a receipt looks like. The signature over it is real; the operation it describes never ran." | Anyone, as an illustration. Never as evidence of an event. |
+
+SAMPLE is not a third tier and it is not the opposite of "signed". A sample
+receipt is <ReceiptBadge kind="self-signed" sample /> or
+<ReceiptBadge kind="witnessed" sample />, and it passes exactly the checks its
+tier earns. What it lacks is subject matter, not cryptography — which is why a
+green check on a sample receipt is a demonstration of the verifier, and not a
+statement about the world.
 
 ## How to read someone else's receipt
 
