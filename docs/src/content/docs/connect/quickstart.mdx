@@ -1,0 +1,179 @@
+---
+title: Quickstart
+description: Your first receipt, offline, with no account and no network. Then the two-line change to witnessed.
+sidebar:
+  order: 2
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+## One receipt, right now
+
+No account, no key, no network call. This runs entirely inside your process.
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="claims-triage",
+    operation_type="inference",
+    input={"prompt": "Summarise claim C-1029"},
+    output={"response": "Escalate: missing prior authorisation."},
+)
+
+print(receipt.id)              # oatt_ba66750e-f49d-4f27-9f18-fafaf039a313
+print(receipt.witness_status)  # UNVERIFIED
+print(receipt.evidence_hash)   # e5dc4948185bce53...  (64 hex chars)
+```
+
+That receipt is <ReceiptBadge kind="self-signed" />. You signed your own record.
+It is tamper-evident and it is yours; it is not yet something a stranger has any
+reason to believe. [Two lines change that](#make-it-witnessed).
+
+<Aside type="caution" title="`os.urandom(32)` is a new key every run">
+  A fresh seed each time is fine for the five minutes you are reading this page.
+  In anything real, generate the seed **once**, put it in your secrets manager,
+  and load it every run — receipts signed with a seed you have thrown away
+  cannot be tied back to you afterwards.
+
+  ```python
+  seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])  # 64 hex chars
+  glacis = Glacis(mode="offline", signing_seed=seed)
+  ```
+</Aside>
+
+## What just happened
+
+<Steps>
+
+1. **Your input and output were hashed locally.**
+
+   `attest()` builds `{"input": …, "output": …}`, serialises it as RFC 8785
+   canonical JSON, and takes the SHA-256. That is `evidence_hash`. The payload
+   itself is never transmitted — in offline mode nothing is transmitted at all.
+
+   You can recompute it yourself, which is the whole point:
+
+   ```python
+   from glacis.crypto import hash_payload
+
+   hash_payload({
+       "input": {"prompt": "Summarise claim C-1029"},
+       "output": {"response": "Escalate: missing prior authorisation."},
+   }) == receipt.evidence_hash   # True
+   ```
+
+   Canonicalisation means key order does not matter:
+   `hash_payload({"b": 2, "a": 1}) == hash_payload({"a": 1, "b": 2})`.
+
+2. **The record was signed with Ed25519.**
+
+   A 32-byte seed derives the keypair. The signature covers the service, the
+   operation, the evidence hash, the timestamp and the operation linkage — not
+   your data.
+
+3. **It was written to local storage.**
+
+   SQLite at `~/.glacis/glacis.db` by default. Nothing leaves the machine.
+   See [Storage](/reference/storage/).
+
+</Steps>
+
+## What you get back
+
+`attest()` returns an `Attestation`:
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `id` | `str` | `oatt_…` offline, `att_…` witnessed |
+| `service_id` | `str` | What you passed |
+| `operation_type` | `str` | What you passed |
+| `evidence_hash` | `str` | SHA-256 over canonical `{input, output}`, 64 hex chars |
+| `cpr_hash` | `str \| None` | SHA-256 over the control-plane results, when present |
+| `control_plane_results` | `dict \| None` | Which controls ran and what they returned |
+| `operation_id` | `str` | UUID grouping related attestations |
+| `operation_sequence` | `int` | Position within that group |
+| `supersedes` | `str \| None` | The attestation this one replaces |
+| `public_key` | `str` | Ed25519 public key, hex |
+| `signature` | `str` | Ed25519 signature, hex (128 chars) |
+| `timestamp` | `int \| None` | Unix milliseconds |
+| `is_offline` | `bool` | Whether this was signed locally |
+| `witness_status` | `str` | Computed: `"UNVERIFIED"` or `"WITNESSED"` |
+
+<Aside type="note">
+  `witness_status` is a **computed property**, derived from `is_offline`. It is
+  not a field, so it does not appear in `receipt.model_dump()` — a serialised
+  receipt carries `is_offline` instead. Anything reading receipts off disk
+  should look at `is_offline`, or at the `oatt_` / `att_` prefix on `id`.
+</Aside>
+
+## Save it, check it
+
+```python
+import json
+
+with open("receipt.json", "w") as f:
+    json.dump(receipt.model_dump(), f, indent=2, default=str)
+```
+
+```bash
+python -m glacis verify receipt.json
+```
+
+```
+Receipt: oatt_ba66750e-f49d-4f27-9f18-fafaf039a313
+Type: Offline
+
+Status: VALID
+  Signature: PASS
+```
+
+<Aside type="caution" title="`Signature: PASS` here is weaker than it looks">
+  For offline receipts, both the CLI and `Glacis.verify()` in 0.8.0 check
+  **structure**, not the Ed25519 signature. A receipt with its signature
+  replaced by zeroes still prints `Signature: PASS`. Real signature checking is
+  ten lines with PyNaCl, and
+  [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself) has them.
+</Aside>
+
+## Make it witnessed
+
+Two lines. Everything else — `attest()`, the fields, the storage — is identical.
+
+<Tabs>
+  <TabItem label="Offline">
+    ```python
+    glacis = Glacis(mode="offline", signing_seed=seed)
+    ```
+  </TabItem>
+  <TabItem label="Witnessed">
+    ```python
+    glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])  # glsk_live_…
+    ```
+  </TabItem>
+</Tabs>
+
+In witnessed mode the SDK sends the hash and metadata to `api.glacis.io`
+(`POST /v1/attest`, authenticated with an `X-Glacis-Key` header) and the
+returned receipt carries `witness_status == "WITNESSED"`. Your input and output
+are still not transmitted.
+
+Get a key by creating a workspace at
+[app.glacis.dev](https://app.glacis.dev) and minting one in workspace settings.
+
+<Aside type="note" title="Not exercised in CI">
+  Every offline snippet on this page is executed against the published SDK by
+  `docs/scripts/verify-doc-snippets.py`. The witnessed snippets are **not** —
+  they need a live key and a live endpoint. The shapes come from the SDK source,
+  but treat them as untested until you have run them with your own key.
+</Aside>
+
+## Next
+
+- [Offline vs witnessed](/connect/offline-vs-witnessed/) — what each one is worth to somebody else.
+- [Wrap a provider](/connect/openai/) — stop writing `attest()` calls by hand.
+- [Configuration](/connect/configuration/) — move the decisions into `glacis.yaml`.

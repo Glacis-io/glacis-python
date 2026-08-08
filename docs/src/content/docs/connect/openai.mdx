@@ -1,0 +1,178 @@
+---
+title: OpenAI
+description: Swap OpenAI() for attested_openai() and every chat completion produces a receipt.
+sidebar:
+  order: 4
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+```bash
+pip install "glacis[openai]"
+```
+
+## Wrap the client
+
+```python
+import os
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    openai_api_key=os.environ["OPENAI_API_KEY"],
+    offline=True,
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+    service_id="claims-triage",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+receipt = get_last_receipt()
+print(receipt.id, receipt.witness_status)
+```
+
+For witnessed receipts, drop `offline`/`signing_seed` and pass
+`glacis_api_key="glsk_live_…"` instead.
+
+The returned object **is** an `openai.OpenAI` client. Everything you already do
+with it keeps working.
+
+## What is wrapped, and what is not
+
+Only `client.chat.completions.create` is wrapped. Every other method on the
+client — embeddings, images, files, assistants, the responses API — passes
+straight through to OpenAI **and produces no receipt**. If you need those
+attested, call [`glacis.attest()`](/connect/quickstart/) around them yourself.
+
+<Aside type="caution" title="Streaming is not supported">
+  The wrapper reads `response.choices[…].message.content` and
+  `response.usage` from a completed response object. Passing `stream=True`
+  yields a stream, not that object — expect errors or a missing receipt.
+</Aside>
+
+## What ends up in the receipt
+
+| Thing | Treatment |
+| --- | --- |
+| Request messages | Hashed into `evidence_hash`. Never transmitted. |
+| Response content | Hashed into `evidence_hash`. Never transmitted. |
+| System prompt | SHA-256 hash recorded in the control-plane results |
+| Model, provider | Recorded as metadata (`provider` is always `"openai"`) |
+| Temperature | Recorded in the control-plane results |
+| Token counts | Kept in local evidence |
+| Control results | Which controls ran, their verdicts, and whether the call was forwarded or blocked |
+
+`operation_type` is always `"completion"` for wrapper calls. For anything else,
+call `attest()` directly.
+
+## Where receipts come from
+
+```python
+from glacis.integrations.openai import get_last_receipt
+
+receipt = get_last_receipt()
+if receipt:
+    print(receipt.id)
+    print(receipt.evidence_hash)
+    print(receipt.witness_status)
+```
+
+`get_last_receipt()` reads a `contextvars.ContextVar`, so each thread and each
+`asyncio.Task` has its own. Read it immediately after the call you care about.
+
+<Aside type="caution" title="Attestation is fail-open, on purpose">
+  If attestation fails — network down, key rejected, disk full — the wrapper
+  **swallows the error and returns the model response anyway**. Your application
+  does not break because our service is having a bad day.
+
+  The consequence you have to design for: `get_last_receipt()` then returns
+  `None`, or the *previous* receipt from that context. A receipt is not
+  guaranteed for every call. If a missing receipt matters to you, check for it
+  and handle it, and turn on `debug=True` while you are diagnosing.
+</Aside>
+
+## Controls
+
+Controls scan input before the call and output after it, and record what they
+found in the receipt. Configure them in
+[`glacis.yaml`](/connect/configuration/):
+
+```python
+from glacis.integrations.openai import attested_openai, GlacisBlockedError
+
+client = attested_openai(config="glacis.yaml", glacis_api_key="glsk_live_…")
+
+try:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": user_text}],
+    )
+except GlacisBlockedError as e:
+    print(f"blocked by {e.control_type} (score={e.score})")
+```
+
+<Aside type="caution">
+  Input controls scan **only the last user message**. Earlier turns in a
+  multi-turn conversation are not scanned. Controls are also scan-only — they
+  never rewrite your text. See [Controls](/reference/controls/).
+</Aside>
+
+## Metadata
+
+```python
+client = attested_openai(
+    glacis_api_key="glsk_live_…",
+    metadata={"department": "claims", "use_case": "triage"},
+)
+
+with client.glacis_tags({"batch_id": "b-2291"}):
+    response = client.chat.completions.create(model="gpt-4o", messages=[...])
+```
+
+Merge order is provider defaults → client `metadata` → per-call
+`glacis_tags`. `provider` and `model` are reserved; trying to set either raises
+`ValueError`. Metadata is stored with local evidence — it is not part of the
+signed attestation body.
+
+## Local evidence
+
+```python
+from glacis.integrations.openai import get_last_receipt, get_evidence
+
+receipt = get_last_receipt()
+evidence = get_evidence(receipt.id)
+print(evidence["input"])   # {"model": ..., "messages": [...]}
+print(evidence["output"])  # {"model": ..., "choices": [...], "usage": {...}}
+```
+
+Evidence stays on your infrastructure. `get_evidence()` reads the backend and
+path from your `glacis.yaml`, or from the arguments you pass it.
+
+## `attested_openai()` reference
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `glacis_api_key` | `str \| None` | `None` | Workspace key. Required for witnessed mode. |
+| `openai_api_key` | `str \| None` | `None` | Falls back to `OPENAI_API_KEY`. |
+| `glacis_base_url` | `str` | `"https://api.glacis.io"` | API base URL. |
+| `service_id` | `str` | `"openai"` | Service identifier on the receipt. |
+| `debug` | `bool` | `False` | Debug logging, including swallowed attestation errors. |
+| `offline` | `bool \| None` | `None` | `None` → inferred from config, or from whether `glacis_api_key` was given. |
+| `signing_seed` | `bytes \| None` | `None` | 32 bytes. Required when offline. |
+| `policy_key` | `bytes \| None` | `None` | 32-byte HMAC key for sampling. Falls back to `signing_seed`. |
+| `config` | `str \| None` | `None` | Path to `glacis.yaml`. |
+| `input_controls` | `list[BaseControl] \| None` | `None` | Extra controls before the call. |
+| `output_controls` | `list[BaseControl] \| None` | `None` | Extra controls after the call. |
+| `metadata` | `dict[str, str] \| None` | `None` | Merged into every attestation. |
+| `**openai_kwargs` | | | Passed through to `OpenAI(...)` — `base_url`, `organization`, Azure settings, and so on. |
+
+Raises `GlacisBlockedError` when a control blocks the request.
+
+<Aside type="note" title="Untested against a live provider">
+  These snippets are checked against the SDK's function signatures by
+  `docs/scripts/verify-doc-snippets.py`, which cannot call OpenAI. The
+  end-to-end flow is not exercised in CI — run it once with your own keys before
+  you rely on it.
+</Aside>

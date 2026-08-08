@@ -1,0 +1,136 @@
+---
+title: Offline vs witnessed
+description: A self-signed receipt is a diary. A witnessed receipt is evidence. The difference is not a feature tier.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+## The diary problem
+
+Keep a diary. Write in it every day, in ink, and never tear a page out. It is a
+genuine record — you can prove to yourself nothing was altered, because you would
+notice.
+
+Now hand it to somebody who suspects you of something. They have one question
+you cannot answer: *what stops you from having written all of this last night?*
+
+That is the entire distinction between a self-signed receipt and a witnessed
+one, and no amount of cryptography inside your own boundary closes it. A
+signature proves *the bytes have not changed since they were signed*. It says
+nothing about **when** they were signed or **who else knew**. Both of those come
+from someone who is not you.
+
+## The two modes
+
+### Offline
+
+<ReceiptBadge kind="self-signed" gloss />
+
+```python
+glacis = Glacis(mode="offline", signing_seed=seed)
+```
+
+- Requires a 32-byte Ed25519 seed you generate and keep.
+- Makes **no network calls at all**. Works air-gapped.
+- Signs locally, stores locally (`~/.glacis/glacis.db` by default).
+- `receipt.id` starts `oatt_`; `receipt.witness_status == "UNVERIFIED"`.
+- Free, forever, and not a trial of anything. It never involves us.
+
+Good for: local development, CI, air-gapped estates, internal record-keeping,
+and any case where the reader of the receipt already trusts the writer.
+
+Not good for: handing to a customer, an auditor, an insurer or a regulator as
+proof of what happened. They are being asked to trust your clock.
+
+### Witnessed
+
+<ReceiptBadge kind="witnessed" gloss />
+
+```python
+glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
+```
+
+- Requires a workspace key (`glsk_test_…` / `glsk_live_…`) from
+  [app.glacis.dev](https://app.glacis.dev).
+- Sends the **hash and metadata** to `api.glacis.io` — never the payload.
+- The record is countersigned and entered into a transparency log, so a third
+  party can check both the signature and that the entry was there at the time
+  claimed.
+- `receipt.id` starts `att_`; `receipt.witness_status == "WITNESSED"`.
+
+Good for: anything that leaves your organisation.
+
+<Aside type="caution" title="Neither mode makes anything compliant">
+  A witnessed receipt is stronger evidence than a self-signed one. It is still
+  evidence *that a claim was generated* — not a finding that the claim is true,
+  not an audit, not a certification. See
+  [what a check proves](/verify/what-a-check-proves/).
+</Aside>
+
+## What is actually sent
+
+Identical in both modes, except that offline sends nothing:
+
+| | Transmitted in witnessed mode? |
+| --- | --- |
+| Prompts, documents, patient data | No — SHA-256 only |
+| Model outputs | No — SHA-256 only |
+| Your provider API keys | No |
+| Your GLACIS key | Yes — as the `X-Glacis-Key` request header |
+| `service_id`, `operation_type` | Yes |
+| `evidence_hash`, `cpr_hash` | Yes |
+| Control-plane results (which controls ran, verdicts) | Yes, when you attach them |
+| Timestamp | Yes |
+
+The full input and output are retained **locally**, in your own storage, when
+evidence collection is on. They are what lets you later prove the receipt
+refers to a particular exchange: recompute the hash, compare. See
+[Sampling and evidence](/reference/sampling-and-evidence/).
+
+## Moving between them
+
+The `attest()` call does not change. Only the constructor does:
+
+```python
+import os
+from glacis import Glacis
+
+
+def make_client():
+    key = os.environ.get("GLACIS_API_KEY")
+    if key:
+        return Glacis(api_key=key)
+    return Glacis(
+        mode="offline",
+        signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+    )
+```
+
+The provider wrappers take the same decision through `offline=` /
+`glacis_api_key=`, or from `attestation.offline` in
+[`glacis.yaml`](/connect/configuration/).
+
+<Aside type="note" title="Receipts do not retroactively become witnessed">
+  There is no upgrade path for an existing offline receipt. Witnessing happens
+  at the moment of attestation, because the value of it is that the time was not
+  yours to choose. Receipts you signed offline last month stay self-signed.
+</Aside>
+
+## Constructor rules, exactly
+
+Verified against 0.8.0:
+
+| Call | Result |
+| --- | --- |
+| `Glacis()` | `ValueError: api_key is required for online mode` |
+| `Glacis(mode="offline")` | `ValueError: signing_seed is required for offline mode` |
+| `Glacis(mode="offline", signing_seed=os.urandom(16))` | `ValueError: signing_seed must be exactly 32 bytes` |
+| `Glacis(api_key="glsk_live_…")` | Witnessed mode |
+| `Glacis(mode="offline", signing_seed=<32 bytes>)` | Offline mode |
+
+The SDK fails loudly on a missing key rather than silently downgrading to
+offline. A silent downgrade would hand you a pile of self-signed receipts you
+believed were witnessed, which is the worst outcome available.

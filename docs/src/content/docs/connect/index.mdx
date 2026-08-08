@@ -1,0 +1,164 @@
+---
+title: Connect
+description: Get receipts out of your own system — a provider wrapper, a YAML file, or a direct attest call. About ten minutes.
+sidebar:
+  order: 0
+---
+
+import { Aside, CardGrid, LinkCard, Tabs, TabItem } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+Receipts you typed into a form are a demo. Receipts your system emits are
+evidence. This section is the shortest path from one to the other.
+
+```bash
+pip install glacis
+```
+
+`glacis` 0.8.0, Python 3.9+. Three runtime dependencies (`httpx`, `pydantic`,
+`pynacl`); provider SDKs are optional extras.
+
+## Pick a path
+
+<Tabs>
+  <TabItem label="Wrap your provider">
+
+Swap your provider's constructor for the attested one. Every call through it is
+attested; nothing else in your code changes.
+
+```python
+import os
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    openai_api_key=os.environ["OPENAI_API_KEY"],
+    offline=True,
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+receipt = get_last_receipt()
+```
+
+[OpenAI](/connect/openai/) · [Anthropic](/connect/anthropic/) ·
+[Gemini](/connect/gemini/) · [LiteLLM](/connect/litellm/)
+
+  </TabItem>
+  <TabItem label="Config-first">
+
+Put mode, service identity, controls, sampling and storage in a `glacis.yaml`
+next to your app. The only Python is the factory call, which reads the file.
+
+```yaml
+# glacis.yaml
+version: "1.3"
+attestation:
+  offline: true
+  service_id: "claims-triage"
+sampling:
+  l1_rate: 0.1
+controls:
+  input:
+    pii_phi:
+      enabled: true
+      if_detected: "flag"
+evidence_storage:
+  backend: "sqlite"
+```
+
+```python
+from glacis.integrations.litellm import attested_litellm
+
+client = attested_litellm(config="glacis.yaml", signing_seed=seed)
+```
+
+[Configuration reference](/connect/configuration/)
+
+  </TabItem>
+  <TabItem label="Attest directly">
+
+For anything that is not a chat completion — an embedding job, a retrieval step,
+a human review, a batch decision — call `attest()` yourself.
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="claims-triage",
+    operation_type="classification",
+    input={"claim_id": "C-1029", "text": "..."},
+    output={"decision": "escalate", "score": 0.82},
+)
+```
+
+[Quickstart](/connect/quickstart/)
+
+  </TabItem>
+</Tabs>
+
+## Decide one thing first: offline or witnessed
+
+This is the only decision that changes what your receipts are worth to somebody
+else.
+
+| | Offline <ReceiptBadge kind="self-signed" /> | Online <ReceiptBadge kind="witnessed" /> |
+| --- | --- | --- |
+| Needs | A 32-byte signing seed you keep | A workspace key (`glsk_…`) |
+| Network | None. Nothing leaves the process. | Hash + metadata to `api.glacis.io` |
+| Signed by | You | You, then countersigned |
+| `witness_status` | `"UNVERIFIED"` | `"WITNESSED"` |
+| Worth to a third party | It is your diary | It is evidence |
+
+Start offline — it works this second, with no account. Move to witnessed when
+somebody outside your organisation needs to believe the record.
+[Offline vs witnessed](/connect/offline-vs-witnessed/) is the long version.
+
+<Aside type="caution" title="What never leaves your process">
+  `attest()` hashes `{"input": …, "output": …}` with RFC 8785 canonical JSON
+  and SHA-256, and sends **only the hash**. Prompts, completions, documents and
+  patient data are not transmitted in either mode. Your provider API keys are
+  never sent to GLACIS either.
+</Aside>
+
+## Get a workspace key
+
+Witnessed mode needs a key. Create a workspace at
+[app.glacis.dev](https://app.glacis.dev), open workspace settings, and mint one:
+
+- `glsk_test_…` for development
+- `glsk_live_…` for production
+
+The key is shown once. Store it in your secrets manager; pass it as
+`api_key=` / `glacis_api_key=` or read it from the environment.
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Install"
+    description="Extras, versions, and what each one pulls in."
+    href="/connect/install/"
+  />
+  <LinkCard
+    title="Quickstart"
+    description="Your first receipt, offline, in about a minute."
+    href="/connect/quickstart/"
+  />
+  <LinkCard
+    title="Offline vs witnessed"
+    description="Diary or evidence — and how to move between them."
+    href="/connect/offline-vs-witnessed/"
+  />
+  <LinkCard
+    title="Configuration"
+    description="Everything glacis.yaml controls."
+    href="/connect/configuration/"
+  />
+</CardGrid>

@@ -1,0 +1,102 @@
+---
+title: Install
+description: Install the glacis Python SDK, and know exactly which extra pulls in what.
+sidebar:
+  order: 1
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Requirements
+
+- Python 3.9 or newer
+- pip, poetry, or uv
+
+## Install
+
+<Tabs syncKey="pkg">
+  <TabItem label="pip">
+    ```bash
+    pip install glacis
+    ```
+  </TabItem>
+  <TabItem label="poetry">
+    ```bash
+    poetry add glacis
+    ```
+  </TabItem>
+  <TabItem label="uv">
+    ```bash
+    uv pip install glacis
+    ```
+  </TabItem>
+</Tabs>
+
+```python
+import glacis
+
+print(glacis.__version__)  # 0.8.0
+```
+
+The base install pulls in three packages: `httpx`, `pydantic` (v2) and
+`pynacl`. That is the whole dependency surface for signing, hashing and
+talking to the API.
+
+## Extras
+
+<Tabs syncKey="pkg">
+  <TabItem label="pip">
+    ```bash
+    pip install "glacis[openai]"
+    pip install "glacis[openai,anthropic]"
+    pip install "glacis[all]"
+    ```
+  </TabItem>
+  <TabItem label="poetry">
+    ```bash
+    poetry add "glacis[openai]"
+    ```
+  </TabItem>
+  <TabItem label="uv">
+    ```bash
+    uv pip install "glacis[openai]"
+    ```
+  </TabItem>
+</Tabs>
+
+| Extra | Pulls in | For |
+| --- | --- | --- |
+| `openai` | `openai>=1.0.0` | [OpenAI wrapper](/connect/openai/) |
+| `anthropic` | `anthropic>=0.18.0` | [Anthropic wrapper](/connect/anthropic/) |
+| `gemini` | `google-genai>=1.0.0` | [Gemini wrapper](/connect/gemini/) |
+| `litellm` | `litellm>=1.0.0` | [LiteLLM wrapper](/connect/litellm/) |
+| `redaction` | `presidio-analyzer`, `presidio-anonymizer`, `spacy`, `pyyaml` | PII/PHI scanning |
+| `jailbreak` | `transformers`, `torch`, `pyyaml` | Jailbreak / prompt-injection scanning |
+| `controls` | `redaction` + `jailbreak` | Both control families |
+| `all` | Everything above plus dev tooling | Trying things out |
+
+<Aside type="caution" title="`controls` is heavy">
+  `glacis[controls]` installs PyTorch, spaCy and Transformers. That is a
+  multi-gigabyte download and is not something to put in a lambda by accident.
+  Install only the extra you use; the word filter, policy metadata and custom
+  controls need none of them.
+</Aside>
+
+<Aside type="note" title="glacis.yaml needs pyyaml">
+  Reading a `glacis.yaml` config file requires `pyyaml`, which is **not** a core
+  dependency — it arrives with `redaction`, `jailbreak`, `controls` or `dev`.
+  If you want config-file support without the ML extras, install `pyyaml`
+  directly. Without it, `load_config()` raises `ImportError` with that
+  instruction. (Verified against 0.8.0.)
+</Aside>
+
+## Where receipts go
+
+Offline receipts are written to a local store, SQLite by default, at
+`~/.glacis/glacis.db`. Nothing is uploaded. See
+[Storage](/reference/storage/) to change the backend or the path.
+
+## Next
+
+- [Quickstart](/connect/quickstart/) — first receipt.
+- [Offline vs witnessed](/connect/offline-vs-witnessed/) — pick a mode deliberately.
