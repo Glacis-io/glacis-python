@@ -1,50 +1,107 @@
 ---
 /**
- * The three receipt states, rendered the same way everywhere in these docs.
+ * Receipt badges. Two INDEPENDENT axes, never collapsed into one label.
  *
- * They are never interchangeable and the difference is never cosmetic:
- *   sample      — synthetic. Nothing happened. Demo data.
- *   self-signed — one party signed its own record. A diary.
- *   witnessed   — countersigned by a party that is not the author. Evidence.
+ *   TIER — what was cryptographically established about the record
+ *     self-signed  the author signed its own record and nobody else did. A diary.
+ *     witnessed    countersigned by a party that did not author it. Evidence.
  *
- * Each badge carries a glyph and a word, so the distinction survives
- * greyscale printing, colour-blindness, and screenshots.
+ *   PROVENANCE — what the record is about
+ *     sample       synthetic subject matter: the operation it describes never ran.
+ *
+ * SAMPLE is a flag, not a third tier. A sample receipt is really signed — the
+ * signature over it is a genuine Ed25519 signature and it verifies — so a
+ * sample receipt always ALSO has a tier. `<ReceiptBadge kind="self-signed" sample />`
+ * renders both chips, because that is exactly what a sample receipt in a
+ * workspace is: a real signature over an event that did not happen.
+ *
+ * `kind="sample"` on its own renders the provenance flag with the tier
+ * deliberately unstated. Use it only where the tier genuinely is not the point
+ * (a legend entry, a "this row is synthetic" marker), never as a way of saying
+ * "unsigned".
  */
 interface Props {
+  /** Signing tier, or `sample` to render the provenance flag with the tier unstated. */
   kind: 'sample' | 'self-signed' | 'witnessed';
-  /** Set false to render the badge alone, without its one-line gloss. */
+  /** Orthogonal provenance flag: synthetic subject matter. Combine with a tier. */
+  sample?: boolean;
+  /** Set true to render the one-line gloss after the badge. */
   gloss?: boolean;
 }
 
-const { kind, gloss = false } = Astro.props;
+const { kind, sample = false, gloss = false } = Astro.props;
 
-const COPY = {
-  sample: {
-    glyph: '▨',
-    label: 'SAMPLE',
-    gloss: 'Synthetic. Nothing was inferred, nothing was signed for real.',
-  },
+const SAMPLE_CHIP = {
+  slug: 'sample',
+  glyph: '▨',
+  label: 'SAMPLE',
+} as const;
+
+const TIER_CHIPS = {
   'self-signed': {
+    slug: 'self-signed',
     glyph: '✎',
     label: 'SELF-SIGNED',
-    gloss: 'One party signed its own record. A diary, not evidence.',
   },
   witnessed: {
+    slug: 'witnessed',
     glyph: '✓',
     label: 'WITNESSED',
-    gloss: 'Countersigned by a party that did not author it.',
   },
 } as const;
 
-const copy = COPY[kind];
+const TIER_GLOSS = {
+  'self-signed': 'Signed by its own author and by nobody else. A diary.',
+  witnessed: 'Countersigned by a party that did not author it.',
+} as const;
+
+const SAMPLE_GLOSS =
+  'Synthetic subject matter — the operation it describes never ran. ' +
+  'The signature over it is still a real signature.';
+
+const COMBINED_GLOSS = {
+  'self-signed':
+    'Synthetic subject matter, genuinely signed by its author: a real signature ' +
+    'over an operation that never ran.',
+  witnessed:
+    'Synthetic subject matter, genuinely signed and countersigned: a real ' +
+    'signature over an operation that never ran.',
+} as const;
+
+const showSample = sample || kind === 'sample';
+const tierKey = kind === 'sample' ? null : kind;
+const tierChip = tierKey ? TIER_CHIPS[tierKey] : null;
+
+const chips = [
+  ...(showSample ? [SAMPLE_CHIP] : []),
+  ...(tierChip ? [tierChip] : []),
+];
+
+const glossText = tierKey
+  ? showSample
+    ? COMBINED_GLOSS[tierKey]
+    : TIER_GLOSS[tierKey]
+  : SAMPLE_GLOSS;
 ---
 
-<span class={`glacis-badge glacis-badge--${kind}`}>
-  <span class="glacis-badge__glyph" aria-hidden="true">{copy.glyph}</span>
-  <span class="glacis-badge__label">{copy.label}</span>
-</span>{gloss && <span class="glacis-badge__gloss">{copy.gloss}</span>}
+<span class="glacis-badge-group">{
+  chips.map((chip) => (
+    <span class={`glacis-badge glacis-badge--${chip.slug}`}>
+      <span class="glacis-badge__glyph" aria-hidden="true">{chip.glyph}</span>
+      <span class="glacis-badge__label">{chip.label}</span>
+    </span>
+  ))
+}</span>{gloss && <span class="glacis-badge__gloss">{glossText}</span>}
 
 <style>
+  .glacis-badge-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    flex-wrap: wrap;
+    vertical-align: baseline;
+  }
+
   .glacis-badge {
     display: inline-flex;
     align-items: center;

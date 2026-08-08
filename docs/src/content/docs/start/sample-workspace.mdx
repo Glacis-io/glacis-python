@@ -21,17 +21,32 @@ Every one of them is badged <ReceiptBadge kind="sample" />.
 
 <ReceiptBadge kind="sample" gloss />
 
-Sample receipts are generated data. No model was called. No control ran. The
-timestamps, service names and control results are fabricated for illustration.
+SAMPLE describes the **subject matter**, not the cryptography. Sample receipts
+are generated data: no model was called, no control ran, and the timestamps,
+service names and control results are fabricated for illustration.
+
+**The signature over that fabricated content is real.** A sample receipt is
+signed the same way any other receipt is, by a real key, and it verifies. That
+is the point of it — you can run a real verification and watch a real check
+pass, on a record whose contents were invented.
+
+So SAMPLE is a flag that rides *alongside* the signing tier, not instead of it.
+A sample receipt is always also one of the two tiers:
+
+<ReceiptBadge kind="self-signed" sample gloss />
+
+<ReceiptBadge kind="witnessed" sample gloss />
 
 They are badged in the list, badged on the detail view, and badged in anything
 you export. There is no view in which a sample receipt is presented as though
-something happened. If you ever find one that is not badged, that is a bug
-worth reporting.
+the operation it describes happened. If you ever find one that is not badged,
+that is a bug worth reporting.
 
 <Aside type="caution">
   Do not send a sample receipt to a customer, auditor or regulator as evidence
-  of anything. It is a worked example of a file format.
+  of anything. A passing signature check on it proves the bytes were not edited
+  after signing — it says nothing about an event, because there was no event.
+  It is a worked example of a file format.
 </Aside>
 
 ## What to look at
@@ -61,11 +76,12 @@ the receipt is not uploaded anywhere — and it reports each check separately:
 structure, signature, hash binding, and log inclusion where a receipt carries a
 transparency proof.
 
-A sample receipt with a valid signature will pass its signature check. That is
-not a statement that the event described happened. It is a statement that the
-bytes have not been altered since they were signed. Which is precisely the
-distinction the rest of these docs is about: see
-[what a green check proves](/verify/what-a-check-proves/).
+A sample receipt passes its signature check, because it was really signed. That
+is not a statement that the event described happened. It is a statement that
+the bytes have not been altered since they were signed. Which is precisely the
+distinction the rest of these docs is about: the cryptography and the subject
+matter are separate questions, and a green check only ever answers the first
+one. See [what a green check proves](/verify/what-a-check-proves/).
 
 ## Next
 
