@@ -1,0 +1,119 @@
+---
+title: What a check proves
+description: A green check is a narrow, precise claim. Here is exactly where it stops.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+Cryptographic verification is unusually honest for a security control: it either
+holds or it does not, and there is no partial credit. What gets lost is that the
+statement it makes is *narrow*. This page is the boundary, written down, so
+nobody has to guess where it is.
+
+## What a green check does establish
+
+**The bytes have not changed since they were signed.** Alter one character of
+the receipt and the signature check fails. This is the core property and it is
+absolute.
+
+**The signature was made by the holder of that private key.** The public key on
+the receipt verifies the signature. Nobody without that private key could have
+produced it.
+
+**The input and output are committed to.** `evidence_hash` is SHA-256 over the
+RFC 8785 canonical JSON of `{"input": …, "output": …}`. If you hold the original
+input and output, recompute the hash and compare — that binds the receipt to
+*that specific exchange* and no other. Change a single character of the prompt
+and the hashes diverge.
+
+**Which controls ran, and what they returned.** When control-plane results are
+attached, they are covered by `cpr_hash` and by the signature. The record of
+what scanned the text is as tamper-evident as the rest.
+
+**For witnessed receipts only: that the record existed at a time you did not
+choose.** The countersignature and the transparency-log inclusion proof come
+from a party that is not the author. That is the property that makes the
+timestamp mean anything to an outsider.
+
+## What a green check does not establish
+
+**Not that the model output is correct.** A receipt over a hallucination is a
+perfectly valid receipt. It records that the exchange happened, not that it was
+any good.
+
+**Not that the described operation ever ran in production.** Someone can attest
+anything they can serialise. A receipt binds a *claim* to a signer; it does not
+audit the system that made the claim. This is precisely why a receipt from a
+form is a demo and a receipt from your inference path is evidence.
+
+**Not that the input was honest.** The SDK hashes what your code hands it. If
+your code hands it a sanitised version of what the model actually saw, the
+receipt faithfully commits to the sanitised version. Receipts are only as
+trustworthy as their position in the call path.
+
+**Not compliance with anything.** No receipt makes a system compliant,
+protected or certified, and this documentation will never say otherwise. A
+receipt is evidence that a claim was generated. Whether that evidence satisfies
+a particular obligation is a judgement for the person holding the obligation.
+
+**Not that the signer is who they say they are.** A signature binds a record to
+a *key*, not to an organisation. Tying that key to a legal entity is a separate
+problem — key registration and workspace identity. Verifying a signature against
+a public key you found in the same file you are verifying establishes internal
+consistency, nothing more.
+
+**Not, on its own, when it was signed.** A self-signed timestamp is a claim by
+the signer about the signer. See below.
+
+## The self-signed timestamp problem
+
+<ReceiptBadge kind="self-signed" gloss />
+
+The timestamp on a self-signed receipt is a field the signer chose. It is inside
+the signature, so it cannot be changed *afterwards* — but nothing stopped it
+being anything at all at the moment of signing, and nothing stops a whole batch
+being produced this afternoon and dated last year.
+
+<ReceiptBadge kind="witnessed" gloss />
+
+A witnessed receipt is countersigned by a party that did not author it and
+entered into an append-only log. The author cannot pick the time and cannot
+quietly remove the entry later. That is the difference, and it is the only
+difference that matters to a reader who does not already trust the author.
+
+## Three states, three different claims
+
+| | The claim | Safe to hand to |
+| --- | --- | --- |
+| <ReceiptBadge kind="sample" /> | "This is what a receipt looks like." | Anyone, as an illustration. Never as evidence. |
+| <ReceiptBadge kind="self-signed" /> | "I say this happened, and I have not edited the record since." | Yourself, your team, an internal reviewer. |
+| <ReceiptBadge kind="witnessed" /> | "I say this happened; someone who is not me recorded that I said it, when I said it." | A customer, an auditor, an insurer, a regulator. |
+
+## How to read someone else's receipt
+
+If a vendor hands you one:
+
+1. **Check it yourself**, at [glacis.io/verify](https://glacis.io/verify) or with
+   your own code. Do not accept a screenshot of a green check.
+2. **Look at the badge.** Self-signed means you are being asked to trust their
+   clock. Decide whether you do.
+3. **Ask what the receipt covers.** `service_id` and `operation_type` say which
+   system and which kind of operation. A receipt from a staging service is not
+   about production.
+4. **Ask for the coverage rate.** One receipt proves one event. A meaningful
+   claim about a system is about the *proportion* of operations that produce
+   receipts — a number that receipts alone cannot tell you.
+5. **If it matters, verify the binding.** Ask for the input and output and
+   recompute `evidence_hash` yourself. That is the step that turns "a signed
+   record exists" into "a signed record about *this*".
+
+<Aside type="caution" title="The failure mode to watch for">
+  The dangerous reading of a receipt is not "this is forged". Forgery is what
+  the cryptography actually prevents. The dangerous reading is a valid receipt
+  about a narrower thing than the reader assumes: a real signature over a real
+  record of a test call, presented as evidence about a production system. Read
+  the fields, not the checkmark.
+</Aside>
