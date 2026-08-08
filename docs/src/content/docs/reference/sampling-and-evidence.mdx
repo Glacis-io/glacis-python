@@ -16,7 +16,7 @@ Glacis uses a three-tier sampling model to balance observability with cost and s
 | **L2** | Deep inspection | L1 + eligible for judge evaluation | Sampled at `l2_rate` (implies L1) |
 
 - **L0** runs on every attestation. Only hashes leave your infrastructure.
-- **L1** retains the full input and output locally for audit, **through the provider wrappers**, which call `store_evidence()`. The data never leaves your environment. A direct `attest()` call does not write full evidence: offline it stores 100-character previews, and the online path writes nothing locally at all. See [what is retained locally](/connect/offline-vs-witnessed/#what-is-retained-locally).
+- **L1** retains input and output locally for audit, **through the provider wrappers**, which call `store_evidence()`. What they store is a projection of the request and response, not everything the provider saw. The data never leaves your environment. A direct `attest()` call does not write full evidence: offline it stores 100-character previews, and the online path writes nothing locally at all — but an online L1/L2 attestation comes back with your **raw** input and output attached to `attestation.evidence.data` in memory, so serialising that object serialises the prompt. See [what is retained locally](/connect/offline-vs-witnessed/#what-is-retained-locally).
 - **L2** is a subset of L1. Every L2 attestation also gets L1 evidence collection, and is flagged for judge evaluation. Judges must be run separately using `JudgeRunner` -- they are not invoked automatically by the sampling tier.
 
 ## Configuration

@@ -164,6 +164,36 @@ receipts = storage.query_receipts(service_id="my-service", limit=10)
 total = storage.count_receipts()
 ```
 
+### A receipt row has to keep `control_plane_results`
+
+`control_plane_results` is **inside the offline signature** — the whole
+structure, not a hash of it. A store that drops it returns an attestation whose
+signed payload can no longer be rebuilt, so nobody can verify it. See
+[what a check proves](/verify/what-a-check-proves/).
+
+<Aside type="danger" title="Up to 0.8.0 the built-in backends dropped it">
+  Neither `ReceiptStorage` nor `JsonStorageBackend` persisted
+  `control_plane_results`. A receipt that verified when `attest()` returned it
+  came back from `get_receipt()` / `get_last_receipt()` without the content its
+  signature covered, and independent Ed25519 verification failed.
+  `Glacis.verify()` did not catch it, because the offline branch only compares
+  the locally derived public key and never checks a signature.
+
+  Fixed in this repository and staged as **0.8.1, unpublished** —
+  `pip install glacis` still gives you 0.8.0. SQLite schema v5 adds
+  `offline_receipts.control_plane_json` (with a v4→v5 migration) and the JSONL
+  line gains `control_plane_results`.
+
+  **Rows already written cannot be repaired**: the content was never stored.
+  Reading one gives you an attestation with `control_plane_results` still absent
+  and `cpr_recovery_error` set to the reason, and `verify()` fails closed with
+  that reason rather than reporting a receipt that simply had no control-plane
+  results. Receipts that genuinely had none are unaffected.
+
+  If you wrote your own backend against the old shape, add the field before you
+  rely on those receipts being checkable by anyone else.
+</Aside>
+
 ## Evidence Methods
 
 Evidence methods store and retrieve the full input/output payloads for audit:
@@ -209,6 +239,12 @@ records = storage.query_evidence(service_id="my-service", mode="offline", limit=
 ## StorageBackend Protocol
 
 To implement a custom storage backend, implement the `StorageBackend` protocol defined in `glacis/storage.py`. Your backend must implement all receipt and evidence methods listed above, plus a `close()` method.
+
+**Store `receipt.control_plane_results` verbatim and return it from
+`get_receipt()`.** It is signed content, so truncating it, normalising it or
+dropping it makes the receipt unverifiable — see the warning above. If your
+store cannot return it for a record it holds, say so explicitly rather than
+returning an attestation that looks as though it never had any.
 
 ```python
 from typing import Any, Optional

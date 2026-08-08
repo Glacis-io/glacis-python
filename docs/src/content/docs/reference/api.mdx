@@ -61,7 +61,9 @@ with Glacis(api_key="glsk_live_...") as glacis:
 
 ### glacis.attest()
 
-Create an attestation for an AI operation. Input and output are hashed locally using the SDK's canonical JSON + SHA-256 (see [the canonicalisation actually used](/connect/quickstart/#the-canonicalisation-actually-used) -- the docstrings call it RFC 8785, and it is not quite). Only the hash is sent to the server -- the actual data never leaves your infrastructure.
+Create an attestation for an AI operation. `input` and `output` are hashed locally using the SDK's canonical JSON + SHA-256 (see [the canonicalisation actually used](/connect/quickstart/#the-canonicalisation-actually-used) -- the docstrings call it RFC 8785, and it is not quite). Only their hash is sent to the server -- those two payloads never leave your infrastructure.
+
+`control_plane_results` is the exception: online mode sends it **verbatim** in the request body, uninspected and unhashed, alongside `cpr_hash`. Anything you put in it leaves the machine. See [the data boundary](/connect/offline-vs-witnessed/#what-is-actually-sent).
 
 ```python
 attestation = glacis.attest(
@@ -137,6 +139,12 @@ if isinstance(result, OfflineVerifyResult):
   [Verify from Python](/verify/cli/#verify-a-receipt-yourself). This behaviour
   is pinned by `docs/scripts/verify-doc-snippets.py` so the page cannot go
   stale silently.
+
+  0.8.1 (unpublished) adds exactly one case where the offline branch returns
+  `valid=False`: a receipt reconstructed from a store that could not return its
+  signed `control_plane_results`. That is not a signature check either — it is
+  the SDK refusing to report a verdict on a payload it knows cannot be rebuilt.
+  The `error` field carries the reason.
 </Aside>
 
 **Parameters:**
@@ -446,6 +454,7 @@ class Attestation(BaseModel):
     sampling_decision: Optional[SamplingDecision]
     is_offline: bool
     timestamp: Optional[int]
+    cpr_recovery_error: Optional[str]   # 0.8.1, unpublished
 
     @property
     def witness_status(self) -> str: ...  # "WITNESSED" or "UNVERIFIED"
@@ -461,14 +470,15 @@ class Attestation(BaseModel):
 | `evidence_hash` | `str` | SHA-256 of canonical JSON `{"input": ..., "output": ...}` |
 | `cpr_hash` | `Optional[str]` | SHA-256 of canonical JSON control plane results |
 | `supersedes` | `Optional[str]` | Attestation ID this replaces (revision chains) |
-| `control_plane_results` | `Optional[dict[str, Any]]` | Control plane results (dict on wire) |
-| `evidence` | `Optional[Evidence]` | L1 sampled evidence payload |
+| `control_plane_results` | `Optional[dict[str, Any]]` | Control plane results (dict on wire). **Inside the offline signature**, and transmitted verbatim in online mode |
+| `evidence` | `Optional[Evidence]` | L1 sampled evidence payload. On an online L1/L2 attestation this holds the **raw** `input` and `output` you passed — check before serialising a receipt you intend to share |
 | `review` | `Optional[Review]` | L2 deep review record |
 | `public_key` | `str` | Arbiter Ed25519 public key (hex) |
 | `signature` | `str` | Arbiter Ed25519 signature (hex) |
 | `sampling_decision` | `Optional[SamplingDecision]` | Server-assigned sampling tier |
 | `is_offline` | `bool` | Whether this is an offline attestation |
 | `timestamp` | `Optional[int]` | Unix timestamp in milliseconds |
+| `cpr_recovery_error` | `Optional[str]` | 0.8.1 (unpublished). Set only by storage reconstruction, when a stored receipt carries a `cpr_hash` but the signed `control_plane_results` could not be returned. The signed payload cannot be rebuilt, so `verify()` fails closed with this string as its `error`. Never signed, never transmitted |
 | `witness_status` | `str` (property) | `"WITNESSED"` if online, `"UNVERIFIED"` if offline |
 
 ---

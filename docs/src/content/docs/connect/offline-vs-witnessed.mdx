@@ -160,40 +160,122 @@ Offline sends nothing. Online sends exactly this request body to
 
 | | Transmitted in online mode? |
 | --- | --- |
-| Prompts, documents, patient data | No — SHA-256 only |
-| Model outputs | No — SHA-256 only |
+| Whatever you passed as `input=` | No — SHA-256 only |
+| Whatever you passed as `output=` | No — SHA-256 only |
 | Your provider API keys | No |
 | Your GLACIS key | Yes — as the `X-Glacis-Key` request header |
 | `service_id`, `operation_type` | Yes |
 | `evidence_hash` | Yes |
 | `cpr_hash` | Yes, when control-plane results were attached |
-| Control-plane results (which controls ran, verdicts) | Yes, when you attach them |
+| `control_plane_results` | Yes, **verbatim**, when you attach them — see below |
 | `operation_id`, `operation_sequence`, `supersedes` | Yes, when set |
 
 **There is no timestamp in the request body.** The online attestation's
 timestamp is whatever the server returns. (An earlier version of this page
 listed a timestamp row; the SDK never sent one.)
 
+<Aside type="danger" title="control_plane_results is transmitted as you supplied it">
+  The rows above say "prompts and documents are not transmitted" about `input=`
+  and `output=`, which are hashed. `control_plane_results` is **not** hashed on
+  the way out. `_attest_online` puts it into the request body unchanged:
+
+  ```python
+  if control_plane_results:
+      body["control_plane_results"] = control_plane_results
+  ```
+
+  It is typed `Optional[dict[str, Any]]` — an arbitrary dictionary. Nothing in
+  the SDK inspects it, redacts it, truncates it or checks it for anything.
+  `cpr_hash` is sent *alongside* it, not instead of it.
+
+  So: **anything you put in `control_plane_results` leaves your machine in
+  online mode, including PHI, prompt text or a whole document if you put one
+  there.** A probe confirmed raw patient-shaped fields arriving in the request
+  body untouched.
+
+  This is not hypothetical for anyone building their own control plane. The
+  wrapper-built structure is safe by construction — it carries policy id and
+  version, environment, tags, model id and provider, the **hash** of the system
+  prompt, the temperature, and per-control id/type/version/provider/latency/
+  status/score/`result_hash` — no prompt or completion text. But that safety is
+  a property of what the wrapper puts there, not of the field. If you build the
+  dictionary yourself, you own that boundary.
+
+  Offline mode transmits nothing at all, so none of this applies to it.
+</Aside>
+
 ## What is retained locally
 
 This differs by mode *and* by how you call the SDK, so it is worth being exact:
 
-| Call path | Kept on your machine |
+| Call path | Written to disk | Also on the returned object |
+| --- | --- | --- |
+| `attest()`, offline | The receipt row, plus a **100-character preview** of `str(input)` and `str(output)` — not the full payload. Signed `control_plane_results` is stored whole (0.8.1; see below) | — |
+| `attest()`, online | **Nothing.** The online path never writes to the local receipt store | Your **raw** `input` and `output`, in memory, whenever the server assigns L1 or L2 |
+| Provider wrappers (`attested_openai` and friends), either mode | A **projection** of the request and response, via `store_evidence()` into the `evidence` table — not everything the provider saw | Same L1/L2 rule in online mode |
+
+Three corrections to the version of this table that said "nothing" and "the
+complete request and response":
+
+**Online `attest()` writes nothing to disk, but it can hand you back your own
+payload.** When the server's response carries a `sampling_decision` of `L1` or
+`L2`, `_attest_online` attaches the raw values you passed to
+`attestation.evidence.data` as `{"input": …, "output": …}`
+(`glacis/client.py`). Nothing is written, but the object you are holding now
+contains the prompt and the completion in full.
+
+<Aside type="caution" title="Serialising an online receipt can serialise your prompt">
+  [Quickstart](/connect/quickstart/) shows `json.dump(receipt.model_dump(), …)`,
+  and `/verify/` shows sharing a receipt as a `#r=` link. For an offline receipt
+  those are safe: `evidence` is never populated. For an **online L1/L2** receipt
+  the dump contains `evidence.data.input` and `evidence.data.output` — the whole
+  exchange. Check `receipt.evidence is None` before you write a receipt to a
+  file you intend to send anywhere, or drop the field:
+  `receipt.model_dump(exclude={"evidence", "review"})`.
+</Aside>
+
+**The wrappers store a projection, not the exchange.** Each wrapper builds its
+own `input_data` / `output_data` dictionaries and stores those. For
+`attested_openai` (`glacis/integrations/openai.py`) that is exactly:
+
+| Stored | Not stored |
 | --- | --- |
-| `attest()`, offline | The attestation row, plus a **100-character preview** of `str(input)` and `str(output)` — not the full payload |
-| `attest()`, online | **Nothing.** The online path never writes to the local receipt store |
-| Provider wrappers (`attested_openai` and friends), either mode | The full request and response, via `store_evidence()` into the `evidence` table |
+| `model`, `messages` | Every other keyword you passed — `temperature`, `top_p`, `max_tokens`, `tools`, `tool_choice`, `response_format`, `seed`, `stop`, `n`, `user`… |
+| Response `model`; per choice `message.role`, `message.content`, `finish_reason`; `usage` as `prompt_tokens` / `completion_tokens` / `total_tokens` | Response `id`, `created`, `object`, `system_fingerprint`, `service_tier`, choice `index` and `logprobs`, `message.tool_calls`, `message.refusal`, and the token-detail breakdowns |
 
-So "the full input and output are retained locally" is true of the **wrapper**
-path, which calls `store_evidence()` with the complete request and response. It
-is not true of a direct `attest()` call: offline keeps 100 characters of each
-for orientation, and online keeps nothing at all. If you call `attest()`
-directly and want to be able to prove the hash binding later, you must retain
-the input and output yourself.
+The other wrappers project differently — Anthropic adds a `system` key and keeps
+`content` blocks, `stop_reason` and its own token counts; Gemini keeps
+`system_instruction` and `candidates` — but every one of them is a projection.
+**A tool call your model made is not in your evidence.**
 
-Retention is what lets you later prove a receipt refers to a particular
-exchange: recompute the hash, compare. See
+**And the receipt commits to the projection, not to the exchange.** The wrapper
+passes those same dictionaries to `attest()`, so `evidence_hash` is computed
+over the projection. To prove later that a receipt refers to a particular call,
+you have to rebuild the same projection — recomputing over the provider's raw
+JSON will not reproduce the hash. See
 [Sampling and evidence](/reference/sampling-and-evidence/).
+
+If you call `attest()` directly and want to prove the hash binding later, retain
+the input and output yourself: offline keeps 100 characters for orientation, and
+online keeps nothing on disk.
+
+<Aside type="caution" title="Offline storage lost signed content up to 0.8.0">
+  `control_plane_results` is *inside* the offline signature. Up to and including
+  0.8.0 — the version `pip install glacis` gives you today — neither storage
+  backend wrote it. A receipt reloaded with `get_last_receipt()` or
+  `get_receipt()` came back without the content its own signature covered, so a
+  third party could not verify it, and `Glacis.verify()` did not notice because
+  it never checks a signature.
+
+  Fixed in this repository and staged as 0.8.1, **not published**: both backends
+  now persist and reconstruct the field. Rows already written cannot be repaired
+  — the content was never stored. Reading one of them gives you an attestation
+  with `cpr_recovery_error` set, naming the loss, and `verify()` fails closed
+  with that reason rather than pretending the receipt had no control-plane
+  results. If you attached control-plane results under 0.8.0 and relied on the
+  local store as your copy of record, treat those receipts as unverifiable by
+  anyone else.
+</Aside>
 
 ## Moving between them
 
