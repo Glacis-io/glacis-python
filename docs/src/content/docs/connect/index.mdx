@@ -25,8 +25,9 @@ pip install glacis
 
 Swap your provider's constructor for the attested one. Nothing else in your code
 changes, and the wrapper attempts a receipt on every wrapped call — **best
-effort, never blocking**: if attestation or storage fails, the exception is
-swallowed by design and you still get the model response, with no receipt. See
+effort, never fatal**: if attestation or storage fails, the exception is
+swallowed by design and you still get the model response, with no receipt. It is
+not free, though: the attempt happens *before* your call returns. See
 [what "best effort" costs you](#attestation-is-best-effort-never-a-gate) below.
 
 ```python
@@ -120,12 +121,12 @@ The wrapper path is deliberately fail-open. `attest_and_store()` in
 `glacis/integrations/base.py` wraps the whole attestation-and-storage step in a
 `try` and catches **every** exception, printing only when `debug=True`:
 
-- Your provider call is made and its response is returned regardless. GLACIS
-  never blocks, delays or fails an LLM call because attestation had a problem.
+- Your provider call is made and its response is returned regardless. No
+  attestation problem can fail your LLM call or change what it returns.
 - If attestation fails, no receipt exists for that call. `get_last_receipt()`
   then returns `None` — or, worse to read past, the **previous** call's receipt
   from the same context.
-- Nothing anywhere retries, and nothing surfaces the failure to your code.
+- Nothing surfaces the failure to your code.
 
 So the accurate sentence is *the wrapper attempts a receipt on every wrapped
 call*, not *every call is attested*. If a missing receipt matters to you, check
@@ -135,6 +136,86 @@ already seen, and run with `debug=True` while you are diagnosing.
 The one place the wrapper *does* raise is a blocking control:
 `GlacisBlockedError` stops the provider call before it is made. That is a
 policy decision you configured, not an attestation failure.
+
+<Aside type="caution" title="0.8.0 has one gap in that second bullet">
+  In 0.8.0, `attest_and_store()` publishes the receipt *before* it writes
+  evidence. So if the attestation succeeded and only the **storage** step failed,
+  `get_last_receipt()` hands back that call's receipt anyway — a receipt the
+  paragraph above says does not exist. The receipt is real and its signature is
+  good; what is missing is the stored evidence you would need to prove what it
+  covers.
+
+  Fixed in this repository by publishing the receipt only after storage returns,
+  staged for 0.8.1 and **not published** — `pip install glacis` still gives you
+  0.8.0. Until then, treat `get_last_receipt()` as "an attestation happened",
+  not as "an attestation happened and was stored", and check `get_evidence()`
+  if the stored copy matters to you.
+</Aside>
+
+### Fail-open means no exception. It does not mean no delay.
+
+`attest_and_store()` runs **synchronously, on your thread, after the provider
+response has arrived and before the wrapper hands it back**
+(`glacis/integrations/openai.py`, and the same shape in every wrapper). There is
+no queue, no background thread, no task. Whatever attestation costs, your caller
+waits for it.
+
+In **offline** mode that cost is a hash, an Ed25519 signature and a local write:
+sub-millisecond, no network. In **online** mode it is an HTTP round trip to
+`api.glacis.io` — and that round trip retries.
+
+`Glacis._request_with_retry` makes up to `max_retries + 1` attempts. At the
+defaults in `glacis/client.py`:
+
+| Constant | Default |
+| --- | --- |
+| `DEFAULT_TIMEOUT` | `30.0` seconds, per attempt |
+| `DEFAULT_MAX_RETRIES` | `3` → **four attempts** |
+| `DEFAULT_BASE_DELAY` | `1.0` second |
+| `DEFAULT_MAX_DELAY` | `30.0` seconds |
+
+Between attempts it calls `time.sleep(delay + jitter)` on your thread, where
+`delay = min(base_delay * 2**attempt, max_delay)` and `jitter` is up to 30% of
+it: **1s, then 2s, then 4s**, so 7.0–9.1 seconds of sleeping across a full run.
+
+So the honest arithmetic for the worst case — four attempts that each hang until
+the timeout expires:
+
+```
+4 × 30s (timeouts) + 1.3s + 2.6s + 5.2s (backoff with maximum jitter)
+= 129.1 seconds added to a single wrapped call
+```
+
+That is the ceiling, not the norm. A refused connection fails each attempt
+instantly, which is the common failure and costs only the backoff: a probe
+against a closed local port made **exactly four attempts** and returned after
+**8.4 seconds**, all of it sleeping. Expect anywhere in the 7.0–9.1 second band,
+because the jitter is random.
+
+Not every failure retries. Reading `_request_with_retry`, only
+`httpx.ConnectError` and `httpx.TimeoutException` are caught for another go,
+along with 5xx responses. A 4xx raises `GlacisApiError` and a 429 raises
+`GlacisRateLimitError` on the **first** attempt, so a bad key costs you one
+round trip, not four.
+
+<Aside type="caution" title="At 0.8.0 the wrapper does not let you bound this">
+  `Glacis(timeout=…, max_retries=…, base_delay=…, max_delay=…)` are real
+  constructor arguments, but `attested_openai()` and its siblings do not accept
+  or forward them — `create_glacis_client()` in
+  `glacis/integrations/base.py` passes only mode, key, base URL, debug, storage
+  and sampling. `glacis.yaml` has no timeout or retry setting either. So at
+  0.8.0 there are exactly two ways to bound the latency a wrapper adds:
+
+  - **Run the wrapper offline** (`offline=True`, or `attestation.offline` in
+    YAML). No network call happens at all, so no retry can.
+  - **Do not use the wrapper for online mode.** Construct
+    `Glacis(api_key=…, timeout=2.0, max_retries=0)` yourself and call
+    `attest()` where you want it — including from a queue or a background
+    thread, which is the only way to get attestation off the request path.
+
+  If you need online attestation inside a latency budget, the second one is the
+  only answer today.
+</Aside>
 
 ## Decide one thing first: offline or online
 
@@ -156,13 +237,24 @@ is worth reading before you put a <ReceiptBadge kind="witnessed" /> badge on
 anything: at 0.8.0 that tier comes from the portal's mint path, not from an SDK
 `witness_status` string.
 
-<Aside type="caution" title="What never leaves your process">
+<Aside type="caution" title="What never leaves your process — and the one thing that does">
   `attest()` hashes `{"input": …, "output": …}` with canonical JSON and SHA-256,
-  and sends **only the hash**. Prompts, completions, documents and patient data
-  are not transmitted in either mode. Your provider API keys are never sent to
-  GLACIS either. The exact canonicalisation, and where it diverges from RFC
-  8785, is written out in
-  [Quickstart](/connect/quickstart/#the-canonicalisation-actually-used).
+  and sends **only the hash**. Prompts, completions and documents you pass as
+  `input=` / `output=` are not transmitted in either mode, and your provider API
+  keys are never sent to GLACIS.
+
+  **`control_plane_results` is the exception.** Online mode puts it in the
+  request body *verbatim*, exactly as you supplied it
+  (`glacis/client.py`). It is an untyped `dict[str, Any]` — nothing inspects,
+  redacts or hashes it on the way out. Whatever you put there leaves the
+  machine. The wrapper-built structure holds only policy identifiers, control
+  verdicts, a system-prompt **hash** and the temperature, but if you hand
+  `attest()` your own dictionary with prompt text or patient data inside, that
+  text is transmitted. See
+  [the data boundary](/connect/offline-vs-witnessed/#what-is-actually-sent).
+
+  The exact canonicalisation, and where it diverges from RFC 8785, is written
+  out in [Quickstart](/connect/quickstart/#the-canonicalisation-actually-used).
 </Aside>
 
 ## Get a workspace key
