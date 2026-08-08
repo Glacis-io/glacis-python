@@ -1,9 +1,9 @@
 ---
 title: GLACIS Documentation
-description: Prove what your AI system did, to someone who does not trust you, without your data leaving your environment.
+description: Cryptographic evidence that specific claims about an AI operation were generated at a point in time — checkable by someone who does not trust you, without your data leaving your environment.
 template: splash
 hero:
-  tagline: Receipts for AI operations. Signed, checkable by anyone, and produced without your prompts or outputs ever leaving your environment.
+  tagline: A receipt is cryptographic evidence that the claims stated in it were generated for a given event, at a point in time. Checkable by anyone, produced without your prompts or outputs ever leaving your environment.
   image:
     file: ../../assets/glacis-hero.svg
   actions:
@@ -65,27 +65,41 @@ print(receipt.witness_status)  # UNVERIFIED
 | Your prompts | No — SHA-256 hash only |
 | Model outputs | No — SHA-256 hash only |
 | Your provider API keys | No |
-| `service_id`, `operation_type` | Yes, in witnessed mode |
-| Hashes and timestamp | Yes, in witnessed mode |
+| `service_id`, `operation_type` | Yes, in online mode |
+| `evidence_hash`, `cpr_hash` | Yes, in online mode |
 
 In offline mode, nothing is transmitted at all. The SDK makes no network calls.
+The exact online request body is listed in
+[offline vs online](/connect/offline-vs-witnessed/#what-is-actually-sent) —
+it does not include a timestamp.
 
-## Three receipt states, never blurred
-
-<ReceiptBadge kind="sample" gloss />
+## Two signing tiers, never blurred
 
 <ReceiptBadge kind="self-signed" gloss />
 
 <ReceiptBadge kind="witnessed" gloss />
 
 A self-signed receipt is not a cheaper witnessed receipt — it is a different
-claim. Read [offline vs witnessed](/connect/offline-vs-witnessed/) before you
+claim. Read [offline vs online](/connect/offline-vs-witnessed/) before you
 show one to anybody.
 
+## And one flag that cuts across both
+
+<ReceiptBadge kind="sample" gloss />
+
+SAMPLE is about the *subject matter*, not the cryptography: the operation it
+describes never ran. It is not a third tier and it does not mean "unsigned" — a
+sample receipt is really signed and really verifies, so it always carries a tier
+too (<ReceiptBadge kind="self-signed" sample /> or
+<ReceiptBadge kind="witnessed" sample />). A green check on one establishes that
+the bytes are unedited, and nothing at all about an event.
+
 <Aside type="caution" title="What a receipt is not">
-  A receipt is **evidence that a claim was generated**. It is not a compliance
-  certificate, not an audit result, and not a statement that the model was
-  right. Nothing here makes a system compliant, protected or certified.
+  A receipt is **cryptographic evidence that the claims stated in it were
+  generated** for a given event. It is not a compliance certificate, not an
+  audit result, not a guarantee that a control was effective, and not a
+  statement that the model was right. Nothing here makes a system compliant,
+  protected or certified.
   [What a check proves](/verify/what-a-check-proves/) draws the line precisely.
 </Aside>
 
@@ -109,7 +123,7 @@ show one to anybody.
   />
   <LinkCard
     title="OVERT"
-    description="The open standard the receipt format implements."
+    description="The open standard GLACIS builds its receipt format against — and which artifacts conform."
     href="/overt/"
   />
   <LinkCard

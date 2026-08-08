@@ -59,13 +59,17 @@ quietly revise it later.
 
 ## What this proves, exactly
 
-It proves that at a particular time, your workspace submitted a commitment to a
-particular input/output pair, and an independent party recorded it.
+It is cryptographic evidence that at a particular time your workspace generated
+a specific claim — a commitment to a particular input/output pair — and that the
+hosted witness recorded that claim and returned a proof of where it sits in the
+log.
 
 It does not prove the operation described actually ran in production, that the
 output was correct, or that anything is compliant. You typed this one into a
 form. That is fine for learning what the artefact is — it is not evidence about
-your system.
+your system. And how much the countersignature is worth to a sceptical reader
+depends on how independent the witness is of you; that is a question about the
+deployment, not about the format.
 
 Receipts become evidence about your system when your system emits them, which
 is the next page.
