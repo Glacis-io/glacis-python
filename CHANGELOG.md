@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1.dev0] - Unreleased
+
+Not published. `pip install glacis` still serves 0.8.0, which has the defect
+described below.
+
+### Fixed
+
+- **Persisted offline receipts lost signed control-plane content.**
+  `control_plane_results` is *inside* the offline signature —
+  `Glacis._attest_offline` puts the whole structure into the payload it signs —
+  but neither storage backend persisted it. A receipt that verified perfectly
+  when returned no longer carried the content its own signature covered once it
+  had been through `store_receipt()` / `get_receipt()`, so rebuilding the signed
+  payload from a reloaded receipt produced different bytes and **independent
+  Ed25519 verification failed**. The SDK's own offline `verify()` did not notice,
+  because it only compares the locally derived public key and never checks a
+  signature.
+
+  Present in every release that had `control_plane_results`, up to and including
+  0.8.0. Anyone who attached control-plane results and relied on the local store
+  as their copy of record has receipts that a third party cannot verify. The
+  content was never written, so it cannot be recovered from the store; the fix is
+  forward-looking only.
+
+  - SQLite: schema v5 adds `offline_receipts.control_plane_json`, written whole
+    and never truncated, with a v4→v5 migration.
+  - JSONL: the receipt line now carries `control_plane_results`.
+  - Both backends reconstruct it on read.
+  - **Rows written before this release stay honest rather than convenient.** A
+    row with a `cpr_hash` but no stored content is *not* reconstructed as "this
+    receipt had no control-plane results". `Attestation.cpr_recovery_error`
+    carries the reason in words, and `Glacis.verify()` fails closed on such a
+    receipt with that reason as its `error`. Receipts that genuinely had no
+    control-plane results are unaffected and still verify.
+
+- **Schema version never advanced past the first migration.** `version` is the
+  primary key of `schema_version`, so `INSERT OR REPLACE` appended a row instead
+  of replacing one, and the reader took the *first* row — the oldest version.
+  Every migration re-ran on every connection open. The reader now takes
+  `MAX(version)` and the writer collapses the table to a single row.
+
+- **The wrapper published its receipt before storing evidence.**
+  `attest_and_store()` called `set_last_receipt()` before `store_evidence()`, so
+  a storage failure left `get_last_receipt()` handing back a receipt for a call
+  the docs say produced none. The receipt is now published only after storage
+  returns. When storage fails, `get_last_receipt()` keeps returning whatever it
+  returned before — nothing, or the previous call's receipt — which is what the
+  documentation describes. The attestation itself may still exist (an offline
+  receipt row is written by `attest()`, an online one is on the server); what
+  changed is that the wrapper no longer presents it as complete.
+
+### Added
+
+- `Attestation.cpr_recovery_error` — SDK convenience, never signed and never
+  transmitted. Set only by storage reconstruction, to name a loss instead of
+  hiding it.
+
 ## [0.5.0] - 2025-02-24
 
 ### Breaking Changes
