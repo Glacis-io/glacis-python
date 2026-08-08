@@ -1,125 +1,131 @@
 ---
 title: GLACIS Documentation
-description: Cryptographic attestation for AI systems. Prove what your models did without your data leaving.
+description: Prove what your AI system did, to someone who does not trust you, without your data leaving your environment.
 template: splash
 hero:
-  tagline: Zero-egress AI attestation. Create cryptographic proofs of AI operations without sensitive data leaving your environment.
+  tagline: Receipts for AI operations. Signed, checkable by anyone, and produced without your prompts or outputs ever leaving your environment.
   image:
     file: ../../assets/glacis-hero.svg
   actions:
-    - text: Get Started
-      link: /sdk/python/quickstart/
+    - text: Start — no code, no install
+      link: /start/
       icon: right-arrow
       variant: primary
-    - text: View on GitHub
-      link: https://github.com/Glacis-io/glacis-python
-      icon: external
+    - text: Connect the SDK
+      link: /connect/
+      icon: seti:python
+      variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../components/ReceiptBadge.astro';
 
-## Install
+## Two ways in
 
-```bash
-pip install glacis
-```
+<CardGrid>
+  <Card title="Nothing installed" icon="laptop">
+    Create a workspace at [app.glacis.dev](https://app.glacis.dev), look at
+    receipts that are already there, mint one, and check it. Browser only, fine
+    on a phone, about two minutes. → **[Start](/start/)**
+  </Card>
+  <Card title="Something installed" icon="seti:python">
+    ```bash
+    pip install glacis
+    ```
+    Three lines around your provider call, or a `glacis.yaml` and one factory
+    call. About ten minutes. → **[Connect](/connect/)**
+  </Card>
+</CardGrid>
 
-## Quick Example
+## The smallest useful example
+
+Works right now, with no account, no key and no network:
 
 ```python
-from glacis import Glacis
 import os
+from glacis import Glacis
 
-# Offline mode - works immediately, no API key needed
 glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
 
 receipt = glacis.attest(
-    service_id="my-ai-app",
+    service_id="claims-triage",
     operation_type="inference",
-    input={"prompt": "..."},   # Hashed locally, never sent
-    output={"response": "..."}, # Hashed locally, never sent
+    input={"prompt": "..."},    # hashed locally, never transmitted
+    output={"response": "..."}, # hashed locally, never transmitted
 )
 
-print(receipt.id)              # oatt_xxx...
+print(receipt.id)              # oatt_...
 print(receipt.witness_status)  # UNVERIFIED
 ```
 
-## What Gets Sent?
+## What is transmitted
 
-| Data | Transmitted? |
-|------|--------------|
-| Your prompts | No -- SHA-256 hash only |
-| Model outputs | No -- SHA-256 hash only |
-| API keys | No |
-| Timestamps | Yes |
-| Service ID | Yes |
+| | Leaves your environment? |
+| --- | --- |
+| Your prompts | No — SHA-256 hash only |
+| Model outputs | No — SHA-256 hash only |
+| Your provider API keys | No |
+| `service_id`, `operation_type` | Yes, in witnessed mode |
+| Hashes and timestamp | Yes, in witnessed mode |
 
-Your sensitive data stays local. Only cryptographic commitments are transmitted for witnessing.
+In offline mode, nothing is transmitted at all. The SDK makes no network calls.
 
-<CardGrid stagger>
-  <Card title="Zero-Egress" icon="lock">
-    Payloads are hashed locally using SHA-256. Only the hash is transmitted -- your data never leaves your environment.
-  </Card>
-  <Card title="Offline Mode" icon="laptop">
-    Works immediately without an API key. Receipts are self-signed with Ed25519 and marked "UNVERIFIED".
-  </Card>
-  <Card title="Provider Integrations" icon="puzzle">
-    Auto-attesting wrappers for OpenAI, Anthropic, and Gemini. Every API call is automatically attested.
-  </Card>
-  <Card title="Verifiable" icon="approve-check">
-    Receipts can be independently verified. Online mode adds Merkle proofs and a transparency log.
-  </Card>
-</CardGrid>
+## Three receipt states, never blurred
 
-## SDK Documentation
+<ReceiptBadge kind="sample" gloss />
+
+<ReceiptBadge kind="self-signed" gloss />
+
+<ReceiptBadge kind="witnessed" gloss />
+
+A self-signed receipt is not a cheaper witnessed receipt — it is a different
+claim. Read [offline vs witnessed](/connect/offline-vs-witnessed/) before you
+show one to anybody.
+
+<Aside type="caution" title="What a receipt is not">
+  A receipt is **evidence that a claim was generated**. It is not a compliance
+  certificate, not an audit result, and not a statement that the model was
+  right. Nothing here makes a system compliant, protected or certified.
+  [What a check proves](/verify/what-a-check-proves/) draws the line precisely.
+</Aside>
+
+## Find your way around
 
 <CardGrid>
   <LinkCard
-    title="Installation"
-    description="Install the SDK with pip, poetry, or uv."
-    href="/sdk/python/installation/"
+    title="Start"
+    description="Workspace, sample receipts, mint one from the browser."
+    href="/start/"
   />
   <LinkCard
-    title="Quickstart"
-    description="Create your first attestation in under 5 minutes."
-    href="/sdk/python/quickstart/"
+    title="Connect"
+    description="Provider wrappers, config-first setup, direct attestation."
+    href="/connect/"
   />
   <LinkCard
-    title="Configuration"
-    description="Set up glacis.yaml for controls, sampling, judges, and storage."
-    href="/sdk/python/configuration/"
+    title="Verify"
+    description="Check a receipt in a browser or in Python — and know what that establishes."
+    href="/verify/"
+  />
+  <LinkCard
+    title="OVERT"
+    description="The open standard the receipt format implements."
+    href="/overt/"
+  />
+  <LinkCard
+    title="API reference"
+    description="Every method, model and parameter in the SDK."
+    href="/reference/api/"
   />
   <LinkCard
     title="Controls"
-    description="PII detection, word filtering, and jailbreak protection."
-    href="/sdk/python/controls/"
-  />
-  <LinkCard
-    title="Offline Mode"
-    description="Use the SDK without an API key for development."
-    href="/sdk/python/offline/"
-  />
-  <LinkCard
-    title="OpenAI Integration"
-    description="Auto-attest every OpenAI API call."
-    href="/sdk/python/openai/"
+    description="PII/PHI, jailbreak, topic and word-filter scanning."
+    href="/reference/controls/"
   />
 </CardGrid>
 
-## Offline vs Online Mode
-
-| Feature | Offline | Online |
-|---------|---------|--------|
-| API key required | No | Yes |
-| Signing | Local Ed25519 | Glacis witness |
-| Merkle proofs | No | Yes |
-| Verification URL | No | Yes |
-| Witness status | UNVERIFIED | WITNESSED |
-
-Start with offline mode for development. Upgrade to online when you need third-party verifiability for audits, papers, or customer due diligence.
-
 ## Links
 
-- [PyPI Package](https://pypi.org/project/glacis/)
-- [GitHub Repository](https://github.com/Glacis-io/glacis-python)
-- [API Reference](/sdk/python/api/)
+- [PyPI — `glacis` 0.8.0](https://pypi.org/project/glacis/)
+- [GitHub](https://github.com/Glacis-io/glacis-python)
+- [The OVERT standard](https://overt.is)
