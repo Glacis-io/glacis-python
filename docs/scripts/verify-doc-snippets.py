@@ -14,9 +14,12 @@ is making a claim the SDK does not support.
 Snippets that require a network call (online/witnessed mode) or a paid
 provider key (OpenAI/Anthropic/Gemini/LiteLLM wrappers) are NOT exercised
 here — those pages mark themselves as untested against a live endpoint.
-What this script does cover: the offline signing path, canonical hashing,
-storage, operation/sequence linking, sampling, the CLI, and the
-independent (third-party) signature-verification recipe.
+What this script does cover: the offline signing path, canonical hashing
+(including every documented divergence from RFC 8785), which fields are
+inside and outside the offline signature, storage and its 100-character
+previews, operation/sequence linking, sampling, the CLI, the mode
+differences the docs promise, and the independent (third-party)
+signature-verification recipe.
 """
 
 from __future__ import annotations
@@ -36,6 +39,17 @@ def check(name: str, condition: bool, detail: str = "") -> None:
     CHECKS.append((name, bool(condition), detail))
     status = "ok  " if condition else "FAIL"
     print(f"[{status}] {name}{(' — ' + detail) if detail else ''}")
+
+
+def _raises(exc, fn, *args, **kwargs) -> bool:
+    """True when calling fn(*args, **kwargs) raises exc."""
+    try:
+        fn(*args, **kwargs)
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
 
 
 def main() -> int:
@@ -231,6 +245,189 @@ def main() -> int:
             doc_output,
         )
         == (True, True),
+    )
+
+    # ------------------------------------------------------------------
+    # Verify › What a check proves — which fields are inside the signature
+    #
+    # The page enumerates the signed payload and the fields that ride
+    # alongside it. Both halves are asserted here by tampering: editing a
+    # signed field must break the check, editing an unsigned one must not.
+    # ------------------------------------------------------------------
+    def still_verifies(mutate: dict) -> bool:
+        r = dict(as_dict)
+        r.update(mutate)
+        try:
+            VerifyKey(bytes.fromhex(r["public_key"])).verify(
+                signed_message(r), bytes.fromhex(r["signature"])
+            )
+            return True
+        except (BadSignatureError, ValueError, KeyError):
+            return False
+
+    for field, value in (
+        ("id", "oatt_not-the-real-id"),
+        ("cpr_hash", "0" * 64),
+        ("is_offline", False),
+        ("an_extra_field_nobody_signed", "anything"),
+    ):
+        check(
+            f"`{field}` is OUTSIDE the offline signature (editing it does not break the check)",
+            still_verifies({field: value}),
+        )
+
+    for field, value in (
+        ("service_id", "some-other-service"),
+        ("operation_type", "something-else"),
+        ("evidence_hash", "0" * 64),
+        ("timestamp", (as_dict["timestamp"] or 0) + 1),
+        ("operation_id", "00000000-0000-0000-0000-000000000000"),
+        ("operation_sequence", (as_dict["operation_sequence"] or 0) + 1),
+    ):
+        check(
+            f"`{field}` is INSIDE the offline signature (editing it breaks the check)",
+            not still_verifies({field: value}),
+        )
+
+    check(
+        "control_plane_results content is inside the signature",
+        not verify_offline_receipt(
+            dict(
+                json.loads(json.dumps(with_cpr.model_dump(), default=str)),
+                control_plane_results={"policy": {"id": "tampered"}},
+            ),
+            doc_input,
+            doc_output,
+        )[0],
+    )
+
+    # ------------------------------------------------------------------
+    # Connect › Quickstart — the canonicalisation actually used
+    #
+    # The page states where glacis.crypto diverges from RFC 8785. Each row
+    # of that table is pinned here, so the page cannot drift back to
+    # claiming strict RFC 8785 conformance.
+    # ------------------------------------------------------------------
+    check(
+        "canonical_json escapes non-ASCII (RFC 8785 would not)",
+        canonical_json({"k": "caf\u00e9"}) == '{"k":"caf\\u00e9"}',
+        canonical_json({"k": "caf\u00e9"}),
+    )
+    check(
+        "canonical_json renders a whole float as 1.0 (RFC 8785 would say 1)",
+        canonical_json(1.0) == "1.0",
+        canonical_json(1.0),
+    )
+    check(
+        "canonical_json renders 1e16 in exponent form (RFC 8785 would expand it)",
+        canonical_json(1e16) == "1e+16",
+        canonical_json(1e16),
+    )
+    check(
+        "canonical_json sorts keys by Unicode code point, not UTF-16 code unit",
+        # U+FFFF sorts BEFORE U+1F600 by code point; a UTF-16 sort puts the
+        # surrogate pair (0xD83D…) first. This is the divergence, in one line.
+        canonical_json({"\U0001f600": 1, "\uffff": 2}).index('"\\uffff"')
+        < canonical_json({"\U0001f600": 1, "\uffff": 2}).index('"\\ud83d'),
+        canonical_json({"\U0001f600": 1, "\uffff": 2}),
+    )
+    check(
+        "canonical_json refuses NaN and Infinity",
+        all(
+            _raises(ValueError, canonical_json, v)
+            for v in (float("nan"), float("inf"), float("-inf"))
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Connect › offline vs online — what the mode actually changes
+    # ------------------------------------------------------------------
+    from glacis.models import Attestation
+
+    check(
+        "witness_status is computed from is_offline alone, with no proof involved",
+        Attestation(id="att_x", is_offline=False).witness_status == "WITNESSED"
+        and Attestation(id="oatt_x", is_offline=True).witness_status == "UNVERIFIED",
+    )
+    check(
+        "the Attestation model has no field for a countersignature or inclusion proof",
+        not (
+            {"witness_signature", "witness_public_key", "transparency_proofs",
+             "inclusion_proof", "tree_head"}
+            & set(Attestation.model_fields)
+        ),
+        "public key/signature fields: "
+        + ", ".join(
+            sorted(f for f in Attestation.model_fields if "key" in f or "sig" in f)
+        ),
+    )
+
+    import inspect
+
+    from glacis.client import _normalize_server_response
+
+    _normalized = _normalize_server_response(
+        {
+            "id": "att_1",
+            "signature": "ab",
+            "publicKey": "cd",
+            "transparency_proofs": {"inclusion_proof": {"leaf_index": 1}},
+            "witness_signature": "ef",
+        }
+    )
+    check(
+        "the server-response normaliser drops transparency proofs and any second signature",
+        "transparency_proofs" not in _normalized
+        and "witness_signature" not in _normalized,
+        "kept: " + ", ".join(sorted(_normalized)),
+    )
+
+    online = Glacis(api_key="glsk_test_not-a-real-key")
+    check(
+        "get_last_receipt() is offline-only — online mode raises",
+        _raises(RuntimeError, online.get_last_receipt),
+    )
+    check(
+        "the online attest path never writes to the local receipt store",
+        "store_receipt" not in inspect.getsource(Glacis._attest_online),
+    )
+    check(
+        "the offline attest path stores 100-character previews, not full payloads",
+        "[:100]" in inspect.getsource(Glacis._attest_offline),
+    )
+    _long = g.attest(
+        service_id="svc", operation_type="inference",
+        input={"prompt": "x" * 500}, output={"response": "y" * 500},
+    )
+    _rows = [
+        json.loads(line)
+        for line in (workdir / "receipts.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    _row = next(r for r in _rows if r.get("attestation_id") == _long.id)
+    check(
+        "the offline store keeps a 100-character preview, not the payload",
+        len(_row.get("input_preview") or "") == 100
+        and len(_row.get("output_preview") or "") == 100,
+        f"input_preview len={len(_row.get('input_preview') or '')}",
+    )
+
+    # ------------------------------------------------------------------
+    # Connect › Configuration — a config-only wrapper cannot sign
+    # ------------------------------------------------------------------
+    from glacis.integrations.base import create_glacis_client
+
+    check(
+        "a config-first wrapper with no seed raises ValueError (offline is the default)",
+        _raises(
+            ValueError,
+            create_glacis_client,
+            offline=True,
+            signing_seed=None,
+            glacis_api_key=None,
+            glacis_base_url="https://api.glacis.io",
+            debug=False,
+        ),
     )
 
     # ------------------------------------------------------------------
