@@ -1,0 +1,91 @@
+---
+/**
+ * The three receipt states, rendered the same way everywhere in these docs.
+ *
+ * They are never interchangeable and the difference is never cosmetic:
+ *   sample      — synthetic. Nothing happened. Demo data.
+ *   self-signed — one party signed its own record. A diary.
+ *   witnessed   — countersigned by a party that is not the author. Evidence.
+ *
+ * Each badge carries a glyph and a word, so the distinction survives
+ * greyscale printing, colour-blindness, and screenshots.
+ */
+interface Props {
+  kind: 'sample' | 'self-signed' | 'witnessed';
+  /** Set false to render the badge alone, without its one-line gloss. */
+  gloss?: boolean;
+}
+
+const { kind, gloss = false } = Astro.props;
+
+const COPY = {
+  sample: {
+    glyph: '▨',
+    label: 'SAMPLE',
+    gloss: 'Synthetic. Nothing was inferred, nothing was signed for real.',
+  },
+  'self-signed': {
+    glyph: '✎',
+    label: 'SELF-SIGNED',
+    gloss: 'One party signed its own record. A diary, not evidence.',
+  },
+  witnessed: {
+    glyph: '✓',
+    label: 'WITNESSED',
+    gloss: 'Countersigned by a party that did not author it.',
+  },
+} as const;
+
+const copy = COPY[kind];
+---
+
+<span class={`glacis-badge glacis-badge--${kind}`}>
+  <span class="glacis-badge__glyph" aria-hidden="true">{copy.glyph}</span>
+  <span class="glacis-badge__label">{copy.label}</span>
+</span>{gloss && <span class="glacis-badge__gloss">{copy.gloss}</span>}
+
+<style>
+  .glacis-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    padding: 0.15em 0.55em;
+    border-radius: 0.35em;
+    border: 1px solid;
+    font-size: 0.8em;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 1.5;
+    white-space: nowrap;
+    vertical-align: baseline;
+  }
+
+  .glacis-badge__glyph {
+    font-size: 0.95em;
+  }
+
+  .glacis-badge--sample {
+    color: var(--sl-color-gray-1);
+    border-color: var(--sl-color-gray-4);
+    background: var(--sl-color-gray-6);
+    border-style: dashed;
+  }
+
+  .glacis-badge--self-signed {
+    color: var(--sl-color-orange-high);
+    border-color: var(--sl-color-orange);
+    background: var(--sl-color-orange-low);
+  }
+
+  .glacis-badge--witnessed {
+    color: var(--sl-color-green-high);
+    border-color: var(--sl-color-green);
+    background: var(--sl-color-green-low);
+  }
+
+  .glacis-badge__gloss {
+    margin-inline-start: 0.5em;
+    font-size: 0.9em;
+    color: var(--sl-color-gray-2);
+  }
+</style>
