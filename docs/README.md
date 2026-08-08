@@ -27,9 +27,14 @@ These are not style preferences. They are the reason the docs are worth reading.
 1. **Never write "compliant", "protected" or "certified" as a claim.** A receipt
    is evidence that a claim was generated. Not a certificate, not an audit, not
    a finding of compliance. The words may appear only in a negation.
-2. **SAMPLE / SELF-SIGNED / WITNESSED are always distinguished**, visually and
-   in words, using `src/components/ReceiptBadge.astro`. A self-signed receipt is
-   not a cheap witnessed receipt; it is a different claim. Never blur them.
+2. **The signing tier and the provenance flag are two axes, never one**, and
+   both are rendered with `src/components/ReceiptBadge.astro`. SELF-SIGNED and
+   WITNESSED are the tiers: a self-signed receipt is not a cheap witnessed
+   receipt, it is a different claim. SAMPLE is orthogonal to both — it says the
+   subject matter is synthetic, never that the signature is. A sample receipt is
+   really signed and really verifies, so it always carries a tier as well
+   (`<ReceiptBadge kind="self-signed" sample />`). Never blur the tiers, and
+   never present SAMPLE as a third one.
 3. **Every snippet is either verified or marked untested.** Prefer verified.
    See below.
 4. **Unverifiable claims get cut, not hedged.** If we cannot demonstrate it
@@ -44,7 +49,7 @@ These are not style preferences. They are the reason the docs are worth reading.
 
 ```bash
 pip install -e ..          # the SDK from this repo
-pip install pyyaml         # for the glacis.yaml checks
+pip install pyyaml pynacl  # for the glacis.yaml and signature checks
 python scripts/verify-doc-snippets.py
 ```
 
@@ -77,7 +82,7 @@ docs/
 │   └── verify-doc-snippets.py    # executable proof the code on the pages runs
 └── src/
     ├── components/
-    │   ├── ReceiptBadge.astro    # SAMPLE / SELF-SIGNED / WITNESSED
+    │   ├── ReceiptBadge.astro    # tier (SELF-SIGNED/WITNESSED) x SAMPLE flag
     │   └── Screenshot.astro      # honest placeholder for pending captures
     ├── content/docs/
     │   ├── index.mdx

@@ -18,11 +18,12 @@ script that runs the code.
 ## How snippets were verified
 
 `docs/scripts/verify-doc-snippets.py` executes the documented behaviour against
-the SDK in this repo. **53 checks, all passing** as of this commit.
+the SDK in this repo. **77 checks, all passing** as of this commit
+(53 from the original rebuild, 24 added in Corrections round 2 below).
 
 ```
 pip install -e .          # from the repo root
-pip install pyyaml
+pip install pyyaml pynacl
 python docs/scripts/verify-doc-snippets.py
 ```
 
@@ -154,12 +155,14 @@ All are now pinned by checks so they cannot silently reappear.
 8. **`Attestation.evidence` is always `None` offline.** Only the online path
    attaches it, driven by the server's sampling decision.
 
-9. **The browser verifier does not read SDK offline receipts.** `glacis.io/verify`
-   detects `v2`, `v1-gateway` and `v1-scanner` receipt shapes; a flat `oatt_…`
-   receipt matches none of them and returns "Unrecognized receipt format".
-   Telling readers to paste an SDK receipt there would have been a false
-   instruction, so `/verify/` says plainly which receipts it reads and points
-   SDK users at the Python routine instead.
+9. **~~The browser verifier does not read SDK offline receipts.~~**
+   **Superseded — see Corrections round 2, finding 10.** True of the build
+   observed on 2026-08-08 (`glacis.io/verify` detected only `v2`,
+   `v1-gateway` and `v1-scanner`, and returned "Unrecognized receipt format"
+   for a flat `oatt_…` receipt). The launch build on the announcement branch
+   adds an `sdk-offline` format with a real Ed25519 check, so `/verify/` now
+   documents that capability with explicit "as of the launch build" scoping and
+   keeps the Python routine as the fallback.
 
 ---
 
@@ -188,7 +191,7 @@ grep. Run it verbatim from the repo root.)
 | Check | Result |
 | --- | --- |
 | `npm run build` | Green — 25 pages, 42 HTML files including redirects |
-| `python docs/scripts/verify-doc-snippets.py` | 53/53 checks pass |
+| `python docs/scripts/verify-doc-snippets.py` | 53/53 checks pass (round 1) · **77/77 (round 2)** |
 | Internal link check over `dist/` | 42 pages, **0 broken links** |
 | Cross-page anchor check over `dist/` | **0 missing anchors** |
 | `grep -rniE "request[[:space:]]+access"` | **0 occurrences** |
@@ -200,6 +203,244 @@ client-side verifier, currently a `?receipt=` share link), `overt.is` (200,
 OVERT 1.1), `docs.glacis.io` (200), `api.glacis.io/v1/root` (404 JSON).
 
 ---
+
+## Corrections — round 2 (Codex launch-gate review, 2026-08-08)
+
+The external Codex launch-gate review
+(`glacis-know/2026-08-08_codex-launch-gate-review.md`, session
+`019fe30b-b67d-7db2-b9f8-72cff2793709`) returned **NO-LAUNCH** for this branch:
+
+> The rebuilt docs contain launch-blocking receipt-tier conflation, label any
+> online SDK attestation WITNESSED without evidence, and make several
+> primary-path claims the SDK source does not support.
+
+Eleven findings were raised against Branch 3. Every one is listed below with
+what was actually done. Every corrected claim was re-verified against the
+`glacis` 0.8.0 source in this worktree, and each is now pinned by an executable
+check (53 → **77**).
+
+### 1 · SAMPLE modelled as a third cryptographic tier — **blocker** — fixed
+
+*`src/components/ReceiptBadge.astro:3-14,21-35` modelled SAMPLE, SELF-SIGNED and
+WITNESSED as three mutually exclusive states, and SAMPLE said "nothing was
+signed for real" — while `start/sample-workspace.mdx:39-68` said a sample may
+carry and pass a valid signature.*
+
+SAMPLE is now an **orthogonal data-provenance flag**, not a tier. The component
+carries two independent axes — tier (`self-signed` | `witnessed`) and provenance
+(`sample`) — and `<ReceiptBadge kind="self-signed" sample />` renders both chips,
+because that is exactly what a signed sample receipt is. `kind="sample"` alone
+still renders the flag with the tier deliberately unstated, for legend rows; it
+never means "unsigned". The gloss now reads *"Synthetic subject matter — the
+operation it describes never ran. The signature over it is still a real
+signature."*
+
+`start/sample-workspace.mdx` says plainly that the signature over fabricated
+content is real and verifies, and scopes the caution to what a passing check on
+a sample receipt does establish (unedited bytes) versus what it does not (any
+event at all). The three-state legends on `index.mdx`, `start/index.mdx`,
+`verify/index.mdx` and `verify/what-a-check-proves.mdx` are now two tiers plus
+the flag. `docs/README.md` editorial rule 2 was rewritten to match, so the next
+author cannot reintroduce the conflation from the style guide.
+
+### 2 · Online mode equated with a witnessed receipt — **blocker** — fixed
+
+*`connect/offline-vs-witnessed.mdx:48-62` equated online mode with a
+countersigned, transparency-logged WITNESSED receipt. `witness_status` is
+computed solely as `"WITNESSED"` whenever `is_offline` is false
+(`glacis/models.py:304-306`), and the returned `Attestation` exposes only one
+public key/signature.*
+
+The page was rewritten and retitled **"Offline vs online"** — calling it
+"offline vs witnessed" was itself the conflation. The URL is unchanged
+(`/connect/offline-vs-witnessed/`); inbound link text was updated. It now states:
+
+- **`witness_status` is a transport-mode label.** The property's only input is
+  `is_offline`; the source is quoted inline. The `Attestation` model has no field
+  for a second signature, an inclusion proof or a tree head, and
+  `_normalize_server_response` keeps a fixed field list — so a transparency proof
+  in a server response would not survive into the returned object.
+- **What online mode returns today:** a record signed by a party other than you
+  (the service). That is a real step up from a diary and is *not* the witnessed
+  artifact. `verify(id)` can return a `proof` and `tree_head`, but that is the
+  server answering about its own record; there is no Merkle verification code
+  anywhere in the package.
+- **Where the witnessed tier comes from:** the launch build's portal mint path,
+  whose response carries the witness's inclusion envelope — with two caveats
+  kept in the text, that independence is a property of the deployment rather
+  than the format, and that a witnessed artifact is not an SDK object.
+- A direct instruction for anyone building a UI over SDK output: render
+  `SELF-SIGNED` for offline, and for online render what you actually verified —
+  a `WITNESSED` string is not that verification.
+
+The diary-vs-evidence framing is kept, but scoped to what each **artifact**
+proves rather than to a mode name.
+
+### 3 · "Altering any character breaks it" — high — fixed
+
+*The offline signed payload (`glacis/client.py:417-460`) excludes the receipt
+id, `cpr_hash`, `public_key`, `is_offline` and other returned fields.*
+
+`verify/what-a-check-proves.mdx` now carries two tables, both measured:
+
+| Inside the signature | `version`, `mode`, `service_id`, `operation_type`, `evidence_hash`, `timestamp_ms` (the `str()` of `timestamp`), `operation_id`, `operation_sequence`, and — when present — `control_plane_results` (the whole structure) and `supersedes` |
+| Outside it | `id`, `cpr_hash`, `public_key`, `is_offline`, `evidence` / `review` / `sampling_decision`, and any extra key added to the file |
+
+with the sentence *"'Altering any character breaks the signature' is false"*
+written down, and the true version — altering any **signed** field breaks it —
+in its place. Ten tamper checks in the harness assert both halves.
+
+### 4 · "Prove what your AI system did" — high — fixed
+
+*`index.mdx:1-6` and `start/index.mdx:34-42`. `Glacis.attest()` accepts
+caller-supplied input, output, operation labels and control results
+(`client.py:256-320`) — it proves a caller generated a claim.*
+
+The hero, its description and the Start "What a receipt is" section now mirror
+the approved Utah press-release articulation: **a receipt is cryptographic
+evidence that the specific claims stated in it were generated for a given
+event**, at a point in time, by the holder of a particular key — and explicitly
+not a compliance certificate, an audit result, a guarantee that a control was
+effective, or a statement that the model was right. `start/mint-a-receipt.mdx`
+was brought into line, and `what-a-check-proves.mdx` no longer says a receipt
+"records that the exchange happened".
+
+### 5 · "Every call through it is attested" — high — fixed
+
+*`connect/index.mdx:23-45` and the provider-page descriptions.
+`attest_and_store()` (`glacis/integrations/base.py:932-984`) swallows every
+attestation/storage exception by design.*
+
+The headline is now *the wrapper attempts a receipt on every wrapped call —
+best effort, never blocking*, and a new **"Attestation is best effort, never a
+gate"** section on `connect/index.mdx` spells out the consequences: the provider
+response is always returned, no receipt exists on failure, `get_last_receipt()`
+returns `None` **or the previous call's receipt from the same context**, nothing
+retries, and nothing surfaces the failure to your code. The one case that does
+raise — `GlacisBlockedError` from a blocking control — is named so it is not
+confused with an attestation failure.
+
+The four provider pages' frontmatter descriptions no longer say "every call
+produces a receipt", and each page now opens with the best-effort sentence
+instead of burying it two-thirds down.
+
+### 6 · Undefined `seed`, and a config-first path that cannot sign — high — fixed
+
+*`connect/index.mdx:51-77` and `connect/litellm.mdx:137-153` referenced an
+undefined `seed`; `connect/configuration.mdx:310-326` omitted a seed entirely
+even though offline is the default and the factory raises
+(`integrations/base.py:297-305,358-360`).*
+
+All three snippets now define the seed from the environment. `connect/index.mdx`
+and `connect/configuration.mdx` additionally say **why** the YAML cannot supply
+it — a signing key does not belong in a file you commit — and quote the exact
+failure, `ValueError: signing_seed is required for offline mode`. The harness
+asserts that failure.
+
+### 7 · RFC 8785 — medium — fixed
+
+*`glacis/crypto.py:56-83` uses Python `json.dumps`, Python number formatting and
+Unicode-code-point key sorting.*
+
+A new Quickstart section, **"The canonicalisation actually used"**, tabulates
+every divergence, each measured against the installed 0.8.0:
+
+| | `glacis.crypto` | RFC 8785 |
+|---|---|---|
+| keys | Python `sorted()` — code point | UTF-16 code unit |
+| non-ASCII | escaped `\uXXXX` | literal UTF-8 |
+| `1.0` | `1.0` | `1` |
+| `1e16` | `1e+16` | `10000000000000000` |
+| integers | arbitrary precision | IEEE-754 doubles |
+
+…with the honest scoping that ASCII strings and integers **do** agree, which is
+why the browser verifier can re-derive an offline receipt's signed bytes, and a
+note that the signature path and the hash path are two different serialisers.
+The five RFC 8785 claims in `reference/api.mdx` were corrected to the same
+scoping, and the note asserting RFC 8785 guarantees cross-language agreement is
+now a caution saying it does not.
+
+### 8 · Transmission table and local retention — medium — fixed
+
+*The table claimed a timestamp is sent (`client.py:338-359` has none), and "full
+input/output retained locally" is too broad for direct offline `attest()`, which
+stores 100-character previews (`client.py:463-470`).*
+
+The timestamp row is gone, from `connect/offline-vs-witnessed.mdx` and from
+`index.mdx`'s summary table, with a sentence saying the SDK never sent one. The
+retention claim is now a per-call-path table:
+
+| `attest()`, offline | attestation row + **100-character previews** of `str(input)` / `str(output)` |
+| `attest()`, online | **nothing** — the online path never writes to the local receipt store |
+| provider wrappers, either mode | full request and response, via `store_evidence()` |
+
+### 9 · "Everything else is identical" — medium — fixed
+
+*`connect/quickstart.mdx:143-163`. `_attest_online` (`client.py:322-393`) does
+not write to the client's receipt store.*
+
+The section is now **"Make it online"** with a table of the six things that
+actually change (signer, id prefix, `witness_status`, local storage,
+`get_last_receipt()` raising, `verify()` becoming a server round-trip, `evidence`
+population), and a paragraph calling out the storage difference as the one that
+surprises people.
+
+### 10 · Browser verifier capability was stale — medium — fixed
+
+*`verify/index.mdx:37-47` said the browser verifier cannot parse SDK offline
+receipts; the announcement branch's `verify.html` now detects and verifies them.*
+
+Rewritten with explicit **"as of the launch build"** scoping: the page
+recognises `oatt_…` receipts (`is_offline`, or the id prefix, plus a `signature`
+and `public_key`), re-derives the exact bytes the SDK signed, runs a real
+Ed25519 check with WebCrypto, and prints a *signed field coverage* line naming
+what is and is not inside the signature. The `#r=` fragment is verified on load,
+with the legacy `?receipt=` form still opening. The old advice survives as a
+fallback rather than being deleted, in case a reader hits an earlier build.
+
+One caution was **added**, which the previous version did not have: for an SDK
+offline receipt the signature is checked against the public key carried in that
+same receipt, which establishes internal consistency and nothing about who holds
+the key.
+
+### 11 · OVERT conformance claim — medium — fixed
+
+*`overt.mdx:10-13,64-77` said the receipts in these docs implement OVERT 1.1,
+then admitted the Python offline receipt is a different flat SDK-native shape.*
+
+The opening now says GLACIS publishes OVERT and builds its receipt format
+against it, followed by a caution naming which artifact is which: the platform /
+gateway receipt is the artifact written against OVERT 1.1; **the SDK's flat
+`oatt_…` offline receipt is not an OVERT document** — no OVERT envelope, no
+per-signal recomputable/operator-dependent marking, no version identifier naming
+the standard. These docs claim no conformance for it. The relationship is
+described as conceptual (same content-safe commitments, same operator-statement
+assurance level, different container) rather than structural, and the verifier's
+ability to read it is described as a fact about that verifier.
+
+### What the round-2 checks pin
+
+24 new executable checks, 53 → **77**, so none of the above can silently drift
+back:
+
+| Finding | Checks added |
+| --- | --- |
+| 3 — signed-field boundary | 11 (`id`, `cpr_hash`, `is_offline`, an arbitrary extra key outside; `service_id`, `operation_type`, `evidence_hash`, `timestamp`, `operation_id`, `operation_sequence`, CPR content inside) |
+| 7 — canonicalisation | 5 (non-ASCII escaping, whole floats, `1e16`, code-point vs UTF-16 key order, NaN/Infinity) |
+| 2 — witness_status | 3 (computed from `is_offline` alone; no countersignature field on the model; the normaliser drops a transparency proof and a second signature) |
+| 8, 9 — mode differences | 4 (`get_last_receipt()` raises online; `_attest_online` has no `store_receipt`; the offline store keeps 100-character previews, asserted against a 500-character payload) |
+| 6 — config-first seed | 1 (`create_glacis_client(offline=True, signing_seed=None)` raises `ValueError`) |
+
+### Round-2 verification run
+
+| Check | Result |
+| --- | --- |
+| `cd docs && npm run build` | Green — 25 pages, 42 HTML files |
+| `python docs/scripts/verify-doc-snippets.py` | **77/77 checks pass** |
+| Internal link check over `dist/` | 42 pages, **0 broken links** |
+| Cross-page anchor check over `dist/` | **0 missing anchors** |
+| `grep -rniE "request[[:space:]]+access"` | **0 occurrences** |
+| `grep -rniE "compliant\|protected\|certified"` | 4 hits, all inside explicit negations |
 
 ## Residuals
 
@@ -248,3 +489,40 @@ OVERT 1.1), `docs.glacis.io` (200), `api.glacis.io/v1/root` (404 JSON).
    Left alone deliberately: it is package metadata for a published release, and
    the redirect resolves it correctly. Worth updating to `https://docs.glacis.io/`
    at the next version bump.
+
+### Added in round 2
+
+8. **The witnessed tier is documented against another branch's launch build.**
+   `/connect/offline-vs-witnessed/` says the witnessed artifact comes from the
+   portal's mint path, because the SDK demonstrably does not produce one. That
+   description was read off the portal branch's source, not off a deployed
+   service, and the Codex review raised separate blockers against that branch's
+   witness verification. The docs are therefore written so that **nothing here
+   depends on the portal being right**: the SDK claims stand on their own, the
+   witnessed tier is described as an artifact you can inspect rather than a
+   badge we assert, and the caveat that a countersignature is only worth the
+   countersigner's independence is on the page. If the portal's witness path
+   changes shape, that one section changes with it.
+
+9. **"WITNESSED" as an SDK string is now documented as a defect, not a
+   feature.** Adding `witness_status` inputs beyond `is_offline` — or renaming
+   the value — is an SDK change under a published version number, which is out
+   of scope for a documentation task, exactly as with the round-1 SDK bugs. The
+   docs quote the property and say what it does and does not mean. The clean
+   fix is upstream: either expose the countersignature and inclusion proof on
+   the returned model, or stop calling the online mode "witnessed".
+
+10. **The online request/response shape is still unexecuted.** Everything
+    asserted about online mode in round 2 — no timestamp in the body, no local
+    receipt store write, the normaliser dropping proofs — is read off the source
+    and, where testable without a network, pinned by a check
+    (`inspect.getsource`, the normaliser called directly). The end-to-end
+    behaviour of a real `api.glacis.io` response is still untested, and the
+    pages carrying online snippets still say so.
+
+11. **`glacis.crypto`'s docstrings still claim RFC 8785.** The module header and
+    three function docstrings in the published package assert conformance the
+    implementation does not have. The docs now describe the real behaviour and
+    say the docstrings are wrong; correcting the docstrings is an SDK change.
+    Round-2 checks pin each divergence, so the docs cannot drift back to the
+    docstring's claim.
