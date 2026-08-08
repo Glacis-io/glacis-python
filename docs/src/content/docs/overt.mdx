@@ -1,0 +1,98 @@
+---
+title: OVERT
+description: The open standard underneath the receipts — Observable Verification Evidence for Runtime Trust, published at overt.is.
+sidebar:
+  order: 4
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**OVERT — Observable Verification Evidence for Runtime Trust** is the open
+standard the receipts in this documentation implement. Version **1.1**,
+published 11 June 2026, identifier `overt.is/1.1`, under a royalty-free patent
+covenant.
+
+**[Read the standard at overt.is →](https://overt.is)**
+
+## The gap it closes
+
+Governance frameworks say what controls *should* exist. Almost none of them say
+how to produce tamper-evident proof that a control actually *ran* — on a
+particular interaction, under a particular configuration, at a particular time.
+
+That gap is what leaves a regulator holding documentation instead of evidence,
+an auditor holding a narrative instead of a record, and an incident responder
+reconstructing what happened from logs the operator controls.
+
+OVERT specifies how to produce independently verifiable records that declared
+policies, security controls and oversight actions executed — including the tool
+calls agents make — **without the underlying content ever leaving the
+operator's environment**. That last clause is the engineering constraint that shapes
+everything: the evidence has to be checkable by someone who is never allowed to
+see the data.
+
+## Why it is not our format
+
+A receipt format owned by the company selling receipts is a marketing artefact.
+The value of a receipt to a hospital, an insurer or a regulator depends on the
+format outliving any particular vendor, so:
+
+- The specification is **published openly** at [overt.is](https://overt.is), in
+  typeset, Markdown and HTML — the Markdown source is diffable, hashable and
+  machine-readable on purpose.
+- It carries a **royalty-free patent covenant** and a published IPR policy.
+- It is versioned and dated, with a stable identifier, so a receipt can name the
+  version of the standard it was produced under.
+- GLACIS maintains it, and it is developed with external stewards rather than
+  as a captive format. Other implementations are anticipated by design.
+
+If GLACIS disappeared, a receipt produced under OVERT 1.1 would still be
+verifiable by anyone who reads the standard.
+
+## What OVERT gives a receipt reader
+
+- **A defined shape** — so a verifier written by someone else can parse it.
+- **A defined verification procedure** — signature, hash binding, and log
+  inclusion where applicable, so "verified" means the same thing to everybody.
+- **An explicit distinction between recomputable and operator-dependent
+  signals.** Some claims a third party can recompute without trusting anyone —
+  coverage, exposure windows, hash bindings. Others rest on a classifier's own
+  judgement and are operator-dependent. OVERT 1.1 marks that difference
+  per-signal rather than presenting one confidence level for everything. It is
+  the part of the standard most worth reading if you are on the buying side.
+
+## How it relates to what is in these docs
+
+| Here | In OVERT |
+| --- | --- |
+| The receipts your workspace mints and the browser verifier reads | The receipt format the standard specifies |
+| `evidence_hash`, `cpr_hash` | Content-safe commitments — evidence without egress |
+| Control-plane results | The record that declared controls executed |
+| Witnessing and transparency-log inclusion | Independent attestation of the record's existence and time |
+| Self-signed offline receipts | The lower assurance tier: an operator statement, not independent evidence |
+
+<Aside type="note">
+  The Python SDK's offline mode produces a flatter, SDK-native receipt rather
+  than a full OVERT document — which is why the browser verifier does not parse
+  it today. See the note in [Verify](/verify/#in-a-browser).
+</Aside>
+
+<Aside type="caution">
+  Conforming to an open standard is not compliance with any law or framework,
+  and OVERT does not certify anybody. It specifies how to produce evidence.
+  What that evidence is worth against a given obligation is the reader's
+  judgement — see [what a check proves](/verify/what-a-check-proves/).
+</Aside>
+
+<CardGrid>
+  <LinkCard
+    title="The standard"
+    description="overt.is — PDF, Markdown source, HTML, and the IPR policy."
+    href="https://overt.is"
+  />
+  <LinkCard
+    title="What a check proves"
+    description="The boundary of what verification establishes."
+    href="/verify/what-a-check-proves/"
+  />
+</CardGrid>
