@@ -8,11 +8,31 @@ sidebar:
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **OVERT — Observable Verification Evidence for Runtime Trust** is the open
-standard the receipts in this documentation implement. Version **1.1**,
-published 11 June 2026, identifier `overt.is/1.1`, under a royalty-free patent
-covenant.
+standard GLACIS publishes and builds its receipt format against. Version
+**1.1**, published 11 June 2026, identifier `overt.is/1.1`, under a
+royalty-free patent covenant.
 
 **[Read the standard at overt.is →](https://overt.is)**
+
+<Aside type="caution" title="Which artifact on this site is an OVERT document">
+  Not all of them, and it matters which.
+
+  - **The platform / gateway receipt** — the shape your workspace mints and the
+    shape [glacis.io/verify](https://glacis.io/verify) treats as its primary
+    format — is the artifact written against OVERT 1.1.
+  - **The Python SDK's offline receipt is not an OVERT document.** `oatt_…`
+    receipts are a flat, SDK-native structure: a handful of top-level fields, a
+    single key and signature, no OVERT envelope, no per-signal recomputable /
+    operator-dependent marking, no version identifier naming the standard. It is
+    checkable — the browser verifier and the PyNaCl routine in
+    [Verify](/verify/) both check it — but it is checkable *as an SDK receipt*,
+    not as a conforming OVERT document.
+
+  These docs therefore do not claim OVERT conformance for the offline SDK
+  example that most of Connect is built on. Conformance of any particular
+  artifact is something you can check yourself against the published
+  specification, and that check is the only thing that settles it.
+</Aside>
 
 ## The gap it closes
 
@@ -69,12 +89,15 @@ verifiable by anyone who reads the standard.
 | `evidence_hash`, `cpr_hash` | Content-safe commitments — evidence without egress |
 | Control-plane results | The record that declared controls executed |
 | Witnessing and transparency-log inclusion | Independent attestation of the record's existence and time |
-| Self-signed offline receipts | The lower assurance tier: an operator statement, not independent evidence |
+| Self-signed offline receipts | Conceptually the lower assurance tier — an operator statement, not independent evidence. **The SDK's flat `oatt_…` structure is not the standard's document shape.** |
 
 <Aside type="note">
-  The Python SDK's offline mode produces a flatter, SDK-native receipt rather
-  than a full OVERT document — which is why the browser verifier does not parse
-  it today. See the note in [Verify](/verify/#in-a-browser).
+  The SDK offline receipt's relationship to OVERT is *conceptual, not
+  structural*: it carries the same content-safe commitments and the same
+  operator-statement assurance level, in a different and simpler container. As
+  of the launch build the browser verifier parses and checks it — see
+  [Verify](/verify/#in-a-browser) — which is a statement about that verifier,
+  not about conformance.
 </Aside>
 
 <Aside type="caution">
