@@ -1,0 +1,237 @@
+---
+title: Verify from Python
+description: What `python -m glacis verify` actually checks — a real Ed25519 verification as of 0.8.1, and the same check in ten lines you can run yourself.
+sidebar:
+  order: 2
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## The CLI
+
+The SDK ships a `verify` command. It takes a receipt file:
+
+```bash
+python -m glacis verify receipt.json
+```
+
+```
+Receipt: oatt_ba66750e-f49d-4f27-9f18-fafaf039a313
+Type: Offline
+
+Status: VALID
+  Signature: PASS
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--base-url` | `https://api.glacis.io` | Endpoint used for online verification |
+
+Exit code `0` if the receipt passed, `1` if it did not, or if the file is
+missing or is not valid JSON.
+
+The command always checks the receipt's own Ed25519 signature. What the receipt
+claims about itself can only *add* to that: an `id` starting `oatt_`, or
+`is_offline: true`, means the local check is the whole check; anything else also
+looks the `id` up at `GET {base_url}/v1/verify/{id}` — and that answer is
+applied to your file only if the two agree on `signature` and `evidence_hash`.
+The `Type:` line reports the check that ran, so a file claiming to be witnessed
+that does not match the record it points at is reported `Offline`.
+
+<Aside type="caution" title="Until 0.8.1.dev0, those two fields chose the verifier outright">
+  Neither `is_offline` nor `id` is inside the signature. Setting
+  `is_offline: false` and `id` to a valid online attestation used to send the
+  command straight to the lookup, and the signature in the file you passed was
+  never examined — the server answered about the id and the exit code was read
+  as an answer about the file. Fixed in this repository, staged as 0.8.1 and
+  unpublished, along with the same defect in `Glacis.verify()`. See
+  [what a check proves](/verify/what-a-check-proves/#what-a-green-check-does-establish).
+</Aside>
+
+<Aside type="caution" title="This changed in 0.8.1, and 0.8.0 is what is on PyPI">
+  `Signature: PASS` is a real Ed25519 verification as of `glacis` 0.8.1: the
+  signed payload is rebuilt from the receipt's own fields and the signature is
+  checked against it under the public key the receipt carries. Alter any signed
+  field — including `control_plane_results` — and the CLI prints
+  `Status: INVALID`, names `signature_invalid`, and exits `1`.
+  `Glacis.verify(receipt)` runs the same function, so the library and the
+  command line cannot disagree about a receipt.
+
+  **In 0.8.0, published on PyPI, it did not.** The offline branch checked
+  *structure* — that `id` starts `oatt_`, that two fields were 64 characters
+  long, that `signature` was non-empty — and printed `Signature: PASS` over a
+  signature of 128 zeroes. `Glacis.verify()` had the same gap by another route:
+  it compared the public key derived from *your local seed* against the key on
+  the receipt, and said `valid=True` whatever the signature said.
+
+  So: if you are on 0.8.0, the routine below is not a nicety, it is the only
+  real check available to you. Both behaviours are pinned in
+  `docs/scripts/verify-doc-snippets.py` so this page cannot quietly stop being
+  true again.
+</Aside>
+
+For online receipts the command asks the API, and the result reflects a real
+server-side verification including the Merkle proof. That path is not exercised
+by our snippet checks — it needs a live endpoint.
+
+## Verify a receipt yourself
+
+This needs `pynacl` for the signature (already a dependency of `glacis`) and
+`glacis.crypto.hash_payload` for the binding check. It does a real Ed25519
+verification against the exact bytes the SDK signed — the same bytes
+`glacis.crypto.offline_signed_payload()` builds, which is what the SDK signs
+with and verifies against. Written out longhand here because a verifier you can
+read is worth more than one you have to trust, and because it is the only real
+check available on 0.8.0.
+
+```python
+import json
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
+
+from glacis.crypto import hash_payload
+
+
+def signed_message(r: dict) -> bytes:
+    """Rebuild the exact bytes an offline receipt was signed over."""
+    body = {
+        "version": 1,
+        "service_id": r["service_id"],
+        "operation_type": r["operation_type"],
+        "evidence_hash": r["evidence_hash"],
+        "timestamp_ms": str(r["timestamp"]),
+        "operation_id": r["operation_id"],
+        "operation_sequence": r["operation_sequence"],
+        "mode": "offline",
+    }
+    if r.get("control_plane_results"):
+        body["control_plane_results"] = r["control_plane_results"]
+    if r.get("supersedes"):
+        body["supersedes"] = r["supersedes"]
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def verify_offline_receipt(r: dict, original_input, original_output):
+    """(signature_ok, binding_ok) for a receipt loaded from JSON."""
+    try:
+        VerifyKey(bytes.fromhex(r["public_key"])).verify(
+            signed_message(r), bytes.fromhex(r["signature"])
+        )
+        signature_ok = True
+    except (BadSignatureError, ValueError):
+        signature_ok = False
+
+    binding_ok = (
+        hash_payload({"input": original_input, "output": original_output})
+        == r["evidence_hash"]
+    )
+    return signature_ok, binding_ok
+```
+
+Use it:
+
+```python
+with open("receipt.json") as f:
+    receipt = json.load(f)
+
+signature_ok, binding_ok = verify_offline_receipt(
+    receipt,
+    {"prompt": "Summarise claim C-1029"},
+    {"response": "Escalate: missing prior authorisation."},
+)
+```
+
+### What each answer means
+
+| Result | Reading |
+| --- | --- |
+| `(True, True)` | The record is intact **and** it is about this exact input/output pair. |
+| `(True, False)` | The record is intact, but it commits to a different exchange. You have the wrong input/output, or the wrong receipt. |
+| `(False, True)` | The input/output match, but the record has been altered since signing. Treat as forged. |
+| `(False, False)` | Nothing about this holds. |
+
+All four rows are asserted in `docs/scripts/verify-doc-snippets.py`, along with
+the `control_plane_results` and `supersedes` variants.
+
+<Aside type="note" title="Why the two checks are separate">
+  `signature_ok` protects the record. `binding_ok` ties the record to the
+  content. Somebody with only the receipt can check the first; only somebody who
+  also holds the original exchange can check the second. That split is
+  deliberate — it is what lets a receipt travel to a party who is not allowed to
+  see the data.
+</Aside>
+
+<Aside type="caution" title="Still a self-signed receipt">
+  A passing signature check on an `oatt_…` receipt means the author has not
+  edited their own record. It does not establish when it was written. See
+  [what a check proves](/verify/what-a-check-proves/).
+</Aside>
+
+## Saving a receipt to verify later
+
+<Tabs>
+  <TabItem label="Offline">
+
+```python
+import json
+import os
+
+from glacis import Glacis
+
+glacis = Glacis(
+    mode="offline",
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+)
+
+receipt = glacis.attest(
+    service_id="claims-triage",
+    operation_type="inference",
+    input={"prompt": "..."},
+    output={"response": "..."},
+)
+
+with open("receipt.json", "w") as f:
+    json.dump(receipt.model_dump(), f, indent=2, default=str)
+```
+
+  </TabItem>
+  <TabItem label="Witnessed">
+
+```python
+import json
+import os
+
+from glacis import Glacis
+
+glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
+
+receipt = glacis.attest(
+    service_id="claims-triage",
+    operation_type="inference",
+    input={"prompt": "..."},
+    output={"response": "..."},
+)
+
+with open("receipt.json", "w") as f:
+    json.dump(receipt.model_dump(), f, indent=2, default=str)
+```
+
+  </TabItem>
+</Tabs>
+
+`model_dump()` does not include `witness_status` — it is a computed property.
+The serialised receipt carries `is_offline` instead, which is what the CLI reads.
+
+## In CI
+
+```yaml
+- name: Verify attestation
+  run: python -m glacis verify receipt.json
+```
+
+The step fails the job on a non-zero exit, and on 0.8.1 that exit reflects a
+real signature check. **Pin the version** if you are relying on that:
+`pip install 'glacis>=0.8.1'`. On 0.8.0 the CLI passes any structurally
+plausible receipt, so a gate on that version means nothing — call
+`verify_offline_receipt()` from the section above instead.

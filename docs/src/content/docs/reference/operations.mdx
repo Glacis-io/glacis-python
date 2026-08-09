@@ -1,6 +1,6 @@
 ---
-title: Batch Operations
-description: Group related attestations with operation IDs, decompose batch results into individual items, and create revision chains.
+title: Operations & linking
+description: Group related attestations under one operation, decompose a batch into per-item receipts, and record revisions with supersedes.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -157,8 +157,107 @@ print(f"Supersedes: {revised.supersedes}")  # original.id
 
 This creates an auditable revision history where you can trace from any attestation back through its predecessors.
 
-## See Also
 
-- [`demos/chain_revision_demo.ipynb`](https://github.com/glacisai/glacis-python/blob/main/demos/chain_revision_demo.ipynb) -- step-by-step notebook building a 3-step chain with revisions
-- [API Reference](/sdk/python/api/) -- `Attestation`, `OperationContext` models
-- [Offline Mode](/sdk/python/offline/) -- using batch operations in offline mode
+## From inside a provider wrapper
+
+Wrapper calls do the same linking through two context managers that the
+attested client exposes. State is held in `contextvars`, so threads and
+`asyncio` tasks do not interfere with each other.
+
+### Per-call metadata: `glacis_tags()`
+
+```python
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    glacis_api_key="glsk_live_…",
+    metadata={"pipeline": "qa-generator"},   # every call
+)
+
+with client.glacis_tags({"chunk_id": "chunk_012", "step": "generate"}):
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Generate a QA pair"}],
+    )
+```
+
+Merge order: provider defaults (`provider`, `model`) → client-level `metadata`
+→ per-call `glacis_tags`. `provider` and `model` are reserved — setting either
+raises `ValueError`.
+
+Metadata is stored with **local evidence**. It is not part of the signed
+attestation body, so it is not something a third party verifies.
+
+### Operation scope: `glacis_operation()`
+
+```python
+with client.glacis_operation() as op:
+    gen = client.chat.completions.create(model="gpt-4o", messages=[...])
+    gen_receipt = get_last_receipt()          # sequence 0
+
+    val = client.chat.completions.create(model="gpt-4o", messages=[...])
+    val_receipt = get_last_receipt()          # sequence 1
+
+    # validation failed — regenerate, superseding the original
+    op.supersedes(gen_receipt.id)
+    regen = client.chat.completions.create(model="gpt-4o", messages=[...])
+    # sequence 2, supersedes gen_receipt.id
+```
+
+<Aside type="note">
+  `op.supersedes()` is **one-shot**: it applies to the next attestation only and
+  is cleared once consumed. There is nothing to reset.
+</Aside>
+
+The two nest:
+
+```python
+with client.glacis_operation() as op:
+    with client.glacis_tags({"step": "generate"}):
+        gen = client.chat.completions.create(model="gpt-4o", messages=[...])
+
+    with client.glacis_tags({"step": "validate"}):
+        val = client.chat.completions.create(model="gpt-4o", messages=[...])
+```
+
+<Aside type="caution" title="A missing receipt breaks the chain silently">
+  Wrapper attestation is fail-open: if an attestation throws, the model response
+  is still returned and no receipt is produced. Inside an operation scope that
+  means a gap in the sequence, and `get_last_receipt()` returning the previous
+  step's receipt rather than this one. If chain completeness matters, compare
+  the receipt id you get back against the one you got before the call.
+</Aside>
+
+## When to leave the wrapper
+
+Call the core client directly when you need:
+
+- **A different `operation_type`.** Wrapper calls are always `"completion"`.
+- **Non-LLM attestations** — a validation step, a human review, a retrieval
+  result, a batch decision.
+- **Control the context managers cannot express.**
+
+```python
+receipt = glacis.attest(
+    service_id="qa-generator",
+    operation_type="validation",
+    input={"question": question, "answer": answer},
+    output={"valid": True, "score": 0.95},
+    operation_id=op_id,       # same operation as the wrapper calls
+    operation_sequence=seq,   # continue the sequence yourself
+)
+```
+
+## Concurrency
+
+`glacis_tags()`, `glacis_operation()` and `get_last_receipt()` all use
+`contextvars.ContextVar`. Each thread gets its own copy, and each
+`asyncio.Task` created by `gather()` or `create_task()` inherits an independent
+snapshot. No locking is needed, including with LiteLLM's `acompletion()`.
+
+## See also
+
+- [`demos/chain_revision_demo.ipynb`](https://github.com/Glacis-io/glacis-python/blob/main/demos/chain_revision_demo.ipynb) -- step-by-step notebook building a 3-step chain with revisions
+- [API Reference](/reference/api/) -- `Attestation`, `OperationContext` models
+- [Offline vs online](/connect/offline-vs-witnessed/) -- linking works identically in both modes
+- [Provider wrappers](/connect/openai/) -- where `glacis_tags()` and `glacis_operation()` come from

@@ -1,0 +1,121 @@
+---
+title: Gemini
+description: Swap genai.Client() for attested_gemini(). Every wrapped generate_content call attempts a receipt — best effort, never fatal, and never free.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+```bash
+pip install "glacis[gemini]"
+```
+
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
+
+Uses the `google-genai` SDK (`google.genai.Client`), not the older
+`google-generativeai` package.
+
+## Wrap the client
+
+```python
+import os
+from glacis.integrations.gemini import attested_gemini, get_last_receipt
+
+client = attested_gemini(
+    gemini_api_key=os.environ["GOOGLE_API_KEY"],
+    offline=True,
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+    service_id="intake-triage",
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Hello!",
+)
+
+receipt = get_last_receipt()
+print(receipt.id, receipt.witness_status)
+```
+
+For online mode (the server signs — not the same as
+[witnessed](/connect/offline-vs-witnessed/)), drop `offline`/`signing_seed` and
+pass `glacis_api_key="glsk_live_…"` instead.
+
+## What is wrapped, and what is not
+
+Only `client.models.generate_content` is wrapped. `generate_content_stream`,
+embeddings, file upload, caching and the chat session helpers pass through
+unattested.
+
+<Aside type="caution" title="Streaming is not supported">
+  The wrapper reads `response.candidates` and `response.usage_metadata` from a
+  completed response. Use `generate_content` if you want a receipt.
+</Aside>
+
+## What ends up in the receipt
+
+| Thing | Treatment |
+| --- | --- |
+| `contents` | Hashed into `evidence_hash`. Never transmitted. |
+| `system_instruction` (from `config`) | Included in the hashed input; its SHA-256 recorded in the control-plane results |
+| Response candidates | Hashed into `evidence_hash`. Never transmitted. |
+| Model, provider | Metadata (`provider` is always `"gemini"`) |
+| Temperature (from `config`) | Control-plane results |
+| `finish_reason`, token counts | Kept in local evidence |
+
+`operation_type` is always `"completion"`.
+
+The wrapper reads `system_instruction` and `temperature` out of the `config`
+argument whether you pass a dict or a `GenerateContentConfig` object.
+
+```python
+from google.genai import types
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Summarise this intake form.",
+    config=types.GenerateContentConfig(
+        system_instruction="You are a triage assistant.",
+        temperature=0.2,
+    ),
+)
+```
+
+## Controls
+
+Input controls scan the text extracted from `contents`; output controls scan the
+response text. Configuration is the same
+[`glacis.yaml`](/connect/configuration/) as everywhere else, and a blocking
+control raises `GlacisBlockedError`.
+
+<Aside type="caution" title="Attestation is fail-open, on purpose">
+  A failed attestation is swallowed and the model response is returned anyway.
+  `get_last_receipt()` may then be `None` or stale. Check for it if it matters;
+  `debug=True` prints what was swallowed.
+
+  Fail-open is about exceptions, not about time: attestation runs synchronously
+  before this call returns, and online mode retries up to four times with
+  30-second per-operation timeouts and blocking backoff. Four attempts that each
+  time out once cost **129.1 seconds** — one scenario, not a deadline: `timeout=30`
+  bounds inactivity, not the length of a response, so nothing bounds this by
+  default. See
+  [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
+</Aside>
+
+## `attested_gemini()` reference
+
+Same signature as [`attested_openai()`](/connect/openai/#attested_openai-reference),
+with `gemini_api_key` in place of `openai_api_key` (falling back to
+`GOOGLE_API_KEY`), `service_id` defaulting to `"gemini"`, and `**gemini_kwargs`
+passed through to `genai.Client(...)`.
+
+<Aside type="note" title="Untested against a live provider">
+  Signatures are checked by `docs/scripts/verify-doc-snippets.py`; the
+  end-to-end call is not exercised in CI. Run it once with your own key.
+</Aside>

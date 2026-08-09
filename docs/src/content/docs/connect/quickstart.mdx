@@ -1,0 +1,249 @@
+---
+title: Quickstart
+description: Your first receipt, offline, with no account and no network. Then the one-line change to online mode, and exactly what else changes with it.
+sidebar:
+  order: 2
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+## One receipt, right now
+
+No account, no key, no network call. This runs entirely inside your process.
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="claims-triage",
+    operation_type="inference",
+    input={"prompt": "Summarise claim C-1029"},
+    output={"response": "Escalate: missing prior authorisation."},
+)
+
+print(receipt.id)              # oatt_ba66750e-f49d-4f27-9f18-fafaf039a313
+print(receipt.witness_status)  # UNVERIFIED
+print(receipt.evidence_hash)   # e5dc4948185bce53...  (64 hex chars)
+```
+
+That receipt is <ReceiptBadge kind="self-signed" />. You signed your own record.
+It is tamper-evident and it is yours; it is not yet something a stranger has any
+reason to believe. [Switching to online mode](#make-it-online) moves the signing
+to a party that is not you — which is a step, not the whole distance.
+
+<Aside type="caution" title="`os.urandom(32)` is a new key every run">
+  A fresh seed each time is fine for the five minutes you are reading this page.
+  In anything real, generate the seed **once**, put it in your secrets manager,
+  and load it every run — receipts signed with a seed you have thrown away
+  cannot be tied back to you afterwards.
+
+  ```python
+  seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])  # 64 hex chars
+  glacis = Glacis(mode="offline", signing_seed=seed)
+  ```
+</Aside>
+
+## What just happened
+
+<Steps>
+
+1. **Your input and output were hashed locally.**
+
+   `attest()` builds `{"input": …, "output": …}`, serialises it as canonical
+   JSON, and takes the SHA-256. That is `evidence_hash`. The payload itself is
+   never transmitted — in offline mode nothing is transmitted at all.
+   ([Exactly which canonicalisation](#the-canonicalisation-actually-used) is
+   below, and it is not quite RFC 8785.)
+
+   You can recompute it yourself, which is the whole point:
+
+   ```python
+   from glacis.crypto import hash_payload
+
+   hash_payload({
+       "input": {"prompt": "Summarise claim C-1029"},
+       "output": {"response": "Escalate: missing prior authorisation."},
+   }) == receipt.evidence_hash   # True
+   ```
+
+   Canonicalisation means key order does not matter:
+   `hash_payload({"b": 2, "a": 1}) == hash_payload({"a": 1, "b": 2})`.
+
+2. **The record was signed with Ed25519.**
+
+   A 32-byte seed derives the keypair. The signature covers the service, the
+   operation, the evidence hash, the timestamp and the operation linkage — not
+   your data, and **not every field on the returned object**. The exact list of
+   signed and unsigned fields is on
+   [what a check proves](/verify/what-a-check-proves/#what-a-green-check-does-establish).
+
+3. **It was written to local storage.**
+
+   SQLite at `~/.glacis/glacis.db` by default. Nothing leaves the machine.
+   See [Storage](/reference/storage/).
+
+</Steps>
+
+## What you get back
+
+`attest()` returns an `Attestation`:
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `id` | `str` | `oatt_…` offline. Online, whatever the server assigns. |
+| `service_id` | `str` | What you passed |
+| `operation_type` | `str` | What you passed |
+| `evidence_hash` | `str` | SHA-256 over canonical `{input, output}`, 64 hex chars |
+| `cpr_hash` | `str \| None` | SHA-256 over the control-plane results, when present |
+| `control_plane_results` | `dict \| None` | Which controls ran and what they returned |
+| `operation_id` | `str` | UUID grouping related attestations |
+| `operation_sequence` | `int` | Position within that group |
+| `supersedes` | `str \| None` | The attestation this one replaces |
+| `public_key` | `str` | Ed25519 public key, hex |
+| `signature` | `str` | Ed25519 signature, hex (128 chars) |
+| `timestamp` | `int \| None` | Unix milliseconds |
+| `is_offline` | `bool` | Whether this was signed locally |
+| `witness_status` | `str` | Computed from `is_offline` alone: `"UNVERIFIED"` or `"WITNESSED"`. A **mode label**, not a verification result. |
+
+<Aside type="note">
+  `witness_status` is a **computed property** whose only input is
+  `is_offline` — it never inspects a countersignature or an inclusion proof. It
+  is not a field, so it does not appear in `receipt.model_dump()`; a serialised
+  receipt carries `is_offline` instead. Anything reading receipts off disk
+  should look at `is_offline`, and anything rendering a badge should look at
+  what it actually verified. See
+  [offline vs online](/connect/offline-vs-witnessed/).
+</Aside>
+
+## The canonicalisation actually used
+
+The SDK's docstrings call this "RFC 8785 canonical JSON". The implementation in
+`glacis/crypto.py` is a hand-written serialiser built on Python's `json.dumps`,
+and it differs from RFC 8785 in ways that matter as soon as a *different
+language* tries to recompute the same hash. Written out plainly:
+
+| Aspect | What `glacis.crypto` does | RFC 8785 / JCS says |
+| --- | --- | --- |
+| Object keys | Sorted with Python's `sorted()` — **Unicode code-point** order | Sorted by **UTF-16 code-unit** order |
+| Non-ASCII strings | `json.dumps` defaults, so escaped: `{"k": "caf\u00e9"}` where the source string was `café` | Emitted as literal UTF-8, no `\u` escape |
+| Whole floats | Python repr: `1.0` → `1.0` | ECMAScript `Number::toString`: `1` |
+| Large magnitudes | `1e16` → `1e+16` | `10000000000000000` |
+| Integers | Arbitrary precision, exact: `10**30` serialises in full | Numbers are IEEE-754 doubles; beyond 2⁵³ they are not exact |
+| Separators | `,` and `:`, no whitespace | Same |
+| `NaN` / `Infinity` | `ValueError` | Not representable |
+
+Two consequences worth designing around:
+
+- **Cross-language recomputation is not guaranteed in general.** A TypeScript or
+  Rust implementation following RFC 8785 will produce a different string — and
+  therefore a different `evidence_hash` — for any payload containing non-ASCII
+  text, a float that is a whole number, a very large or very small number, or
+  object keys outside the Basic Multilingual Plane.
+- **It agrees for the ordinary case.** ASCII keys and values, integers within
+  2⁵³, and booleans/null serialise identically under both schemes. That covers
+  the field types the SDK's own signed payload uses, which is why the browser
+  verifier can re-derive and check an offline receipt's signed bytes.
+
+If you need a hash a third party will recompute in another language, keep the
+hashed payload to ASCII strings and integers, or agree on `glacis.crypto`'s
+exact behaviour rather than on the name "RFC 8785".
+
+<Aside type="note" title="Two serialisers, not one">
+  `hash_payload()` (the `evidence_hash` path) uses `glacis.crypto.canonical_json`.
+  The offline **signature** path does not: `glacis.crypto.offline_signed_payload()`
+  calls `json.dumps(payload, sort_keys=True, separators=(",", ":"))` directly on
+  the attestation payload. For the field types that payload contains the two
+  produce the same bytes, but they are separate code paths and a reimplementation
+  has to match the right one. `offline_signed_payload()` is the only definition
+  of those bytes — the SDK signs with it and verifies against it — so reading
+  that one function is enough to write a compatible verifier.
+</Aside>
+
+## Save it, check it
+
+```python
+import json
+
+with open("receipt.json", "w") as f:
+    json.dump(receipt.model_dump(), f, indent=2, default=str)
+```
+
+```bash
+python -m glacis verify receipt.json
+```
+
+```
+Receipt: oatt_ba66750e-f49d-4f27-9f18-fafaf039a313
+Type: Offline
+
+Status: VALID
+  Signature: PASS
+```
+
+<Aside type="caution" title="`Signature: PASS` means what it says — as of 0.8.1">
+  As of `glacis` 0.8.1 the CLI and `Glacis.verify()` run the same real Ed25519
+  check on offline receipts: alter any signed field and you get
+  `Status: INVALID`. **In 0.8.0, the version on PyPI, both checked only the
+  receipt's structure** — a signature replaced by zeroes still printed
+  `Signature: PASS`. Pin `glacis>=0.8.1` if you are gating on that output, and
+  see [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself) for
+  the same check written out in ten lines of PyNaCl.
+</Aside>
+
+## Make it online
+
+One line — but **not everything else is identical**, and the differences bite
+later, so they are listed rather than glossed.
+
+<Tabs>
+  <TabItem label="Offline">
+    ```python
+    glacis = Glacis(mode="offline", signing_seed=seed)
+    ```
+  </TabItem>
+  <TabItem label="Online">
+    ```python
+    glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])  # glsk_live_…
+    ```
+  </TabItem>
+</Tabs>
+
+`attest()` keeps the same signature and still hashes locally: the SDK sends the
+hash and metadata to `api.glacis.io` (`POST /v1/attest`, authenticated with an
+`X-Glacis-Key` header), and your input and output are still not transmitted.
+What changes:
+
+| | Offline | Online |
+| --- | --- | --- |
+| Who signs | You | The GLACIS service |
+| `id` prefix | `oatt_` | Server-assigned |
+| `witness_status` | `"UNVERIFIED"` | `"WITNESSED"` — a mode label, [not a proof](/connect/offline-vs-witnessed/) |
+| Written to the local receipt store | **Yes**, automatically | **No.** `_attest_online` never calls `store_receipt()` |
+| `get_last_receipt()` on the client | Returns the last stored receipt | Raises `RuntimeError` — it is offline-only |
+| `verify(id)` | Local Ed25519 check over the signed payload, no network (0.8.1; 0.8.0 checked only the receipt's shape) | `GET /v1/verify/{id}` — the server answering about its own record |
+| `evidence` populated | Never | When the server's sampling decision is L1/L2 |
+
+The storage row is the one that surprises people. After switching, receipts you
+made online are **not** in `~/.glacis/glacis.db` and cannot be listed back out of
+it; keep the returned `Attestation` yourself, or use a provider wrapper, which
+writes full evidence through `store_evidence()` in both modes.
+
+Get a key by creating a workspace at
+[app.glacis.io](https://app.glacis.io) and minting one in workspace settings.
+
+<Aside type="note" title="Not exercised in CI">
+  Every offline snippet on this page is executed against the published SDK by
+  `docs/scripts/verify-doc-snippets.py`. The online snippets are **not** — they
+  need a live key and a live endpoint. The shapes come from the SDK source, but
+  treat them as untested until you have run them with your own key.
+</Aside>
+
+## Next
+
+- [Offline vs online](/connect/offline-vs-witnessed/) — what each one is worth to somebody else.
+- [Wrap a provider](/connect/openai/) — stop writing `attest()` calls by hand.
+- [Configuration](/connect/configuration/) — move the decisions into `glacis.yaml`.

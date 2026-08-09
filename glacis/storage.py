@@ -105,6 +105,55 @@ class StorageBackend(Protocol):
 # ==============================================================================
 
 
+CPR_LOST_IN_STORAGE = (
+    "control_plane_results is missing from the stored row while cpr_hash is set. "
+    "The content is inside the offline signature, so the signed payload cannot be "
+    "rebuilt from this row and independent Ed25519 verification will fail. "
+    "Receipts written by glacis <= 0.8.0 never persisted this field; it cannot be "
+    "recovered from the receipt store."
+)
+
+
+def _recover_cpr(
+    stored_cpr: Optional[Any],
+    cpr_hash: Optional[str],
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Reconstruct control_plane_results from a stored row, or name the loss.
+
+    Returns ``(control_plane_results, cpr_recovery_error)``.
+
+    Three cases, and none of them fabricate content:
+
+    * The row carries the CPR: it is returned as stored.
+    * The row carries neither CPR nor ``cpr_hash``: the receipt was signed
+      without control-plane results. Absent stays absent, no error.
+    * The row carries a ``cpr_hash`` but no CPR: signed content that this
+      store cannot return. Absent stays absent **and** the reason is set, so
+      the caller can see the degradation instead of inferring "no CPR".
+    """
+    if isinstance(stored_cpr, str):
+        try:
+            parsed: Optional[Any] = json.loads(stored_cpr)
+        except json.JSONDecodeError:
+            return None, (
+                "control_plane_results is present in storage but is not valid JSON; "
+                "the signed payload cannot be rebuilt from this row."
+            )
+    else:
+        parsed = stored_cpr
+
+    if isinstance(parsed, dict):
+        return parsed, None
+    if parsed is not None:
+        return None, (
+            "control_plane_results is present in storage but is not a JSON object; "
+            "the signed payload cannot be rebuilt from this row."
+        )
+    if cpr_hash:
+        return None, CPR_LOST_IN_STORAGE
+    return None, None
+
+
 def create_storage(
     backend: str = "sqlite",
     path: Optional[Path] = None,
@@ -130,7 +179,7 @@ def create_storage(
 # SQLite Backend
 # ==============================================================================
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS offline_receipts (
@@ -148,7 +197,10 @@ CREATE TABLE IF NOT EXISTS offline_receipts (
     operation_id TEXT,
     operation_sequence INTEGER DEFAULT 0,
     supersedes TEXT,
-    cpr_hash TEXT
+    cpr_hash TEXT,
+    -- control_plane_results is INSIDE the offline signature. It has to be
+    -- stored verbatim or the signed payload cannot be rebuilt on reload.
+    control_plane_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_service_id ON offline_receipts(service_id);
@@ -214,6 +266,247 @@ MIGRATION_V2_TO_V3 = """
 ALTER TABLE evidence ADD COLUMN sampling_level TEXT NOT NULL DEFAULT 'L0';
 """
 
+# Migration from v4 to v5: persist the signed control_plane_results on the
+# receipt row. Rows written before this migration cannot be back-filled — the
+# content was never stored — so they stay NULL and are reported as an explicit
+# degradation on read rather than being silently reconstructed as "no CPR".
+MIGRATION_V4_TO_V5 = """
+ALTER TABLE offline_receipts ADD COLUMN control_plane_json TEXT;
+"""
+
+# The indexes SCHEMA declares, restated as idempotent statements so that a
+# database arriving from any older version ends up with the set a fresh one
+# gets. None of the migration steps above creates the three convenience indexes
+# on offline_receipts, so without this a migrated database would be missing
+# them for good. Every statement is IF NOT EXISTS, so this is a no-op on a
+# database that already has them — and a genuine failure on one whose columns
+# are not there to index.
+ENSURE_DECLARED_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_service_id ON offline_receipts(service_id);
+CREATE INDEX IF NOT EXISTS idx_timestamp ON offline_receipts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_evidence_hash ON offline_receipts(evidence_hash);
+CREATE INDEX IF NOT EXISTS idx_created_at ON offline_receipts(created_at);
+CREATE INDEX IF NOT EXISTS idx_operation_id ON offline_receipts(operation_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_id ON evidence(attestation_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_hash ON evidence(attestation_hash);
+CREATE INDEX IF NOT EXISTS idx_evidence_service_id ON evidence(service_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
+"""
+
+
+# =============================================================================
+# Required schema — the postcondition of a migration, stated as data
+# =============================================================================
+#
+# A migration step reporting success is not evidence that the schema is now
+# what the version number claims. `ALTER TABLE … ADD COLUMN` failing with
+# "duplicate column name" means only that *that column* is present; it says
+# nothing about the fifteen others, the second table, or the indexes. A v4
+# database whose `offline_receipts` held nothing but `control_plane_json`
+# therefore used to swallow the duplicate-column error and get stamped v5.
+#
+# So the required shape is written down per version target and checked against
+# the live database before anything is stamped. Columns are the ones the
+# storage code actually reads and writes; the hash column is deliberately
+# absent below v4, because it is still named `payload_hash` there and the
+# v3->v4 step checks it by name.
+
+_OFFLINE_RECEIPTS_BASE = {
+    "attestation_id",
+    "timestamp",
+    "service_id",
+    "operation_type",
+    "signature",
+    "public_key",
+    "created_at",
+    "input_preview",
+    "output_preview",
+    "metadata_json",
+}
+
+_OFFLINE_RECEIPTS_V4 = _OFFLINE_RECEIPTS_BASE | {
+    "evidence_hash",
+    "operation_id",
+    "operation_sequence",
+    "supersedes",
+    "cpr_hash",
+}
+
+_EVIDENCE_V2 = {
+    "id",
+    "attestation_id",
+    "attestation_hash",
+    "mode",
+    "service_id",
+    "operation_type",
+    "timestamp",
+    "created_at",
+    "input_json",
+    "output_json",
+    "control_plane_json",
+    "metadata_json",
+}
+
+_EVIDENCE_V3 = _EVIDENCE_V2 | {"sampling_level"}
+
+_EVIDENCE_INDEXES = {
+    "idx_evidence_attestation_id",
+    "idx_evidence_attestation_hash",
+    "idx_evidence_service_id",
+    "idx_evidence_timestamp",
+}
+
+#: version -> (required tables and their columns, required indexes).
+#: Cumulative: each entry is the whole shape a database must have to be called
+#: that version, not just what the last step added. The index sets list only
+#: what the migration path itself creates — the three convenience indexes on
+#: offline_receipts are added by ENSURE_DECLARED_INDEXES and checked in
+#: DECLARED_INDEXES below, after that step has run.
+REQUIRED_SCHEMA: dict[int, tuple[dict[str, set[str]], set[str]]] = {
+    2: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_BASE,
+            "evidence": _EVIDENCE_V2,
+            "schema_version": {"version"},
+        },
+        set(_EVIDENCE_INDEXES),
+    ),
+    3: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_BASE,
+            "evidence": _EVIDENCE_V3,
+            "schema_version": {"version"},
+        },
+        set(_EVIDENCE_INDEXES),
+    ),
+    4: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_V4,
+            "evidence": _EVIDENCE_V3,
+            "schema_version": {"version"},
+        },
+        _EVIDENCE_INDEXES | {"idx_operation_id", "idx_evidence_hash"},
+    ),
+    5: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_V4 | {"control_plane_json"},
+            "evidence": _EVIDENCE_V3,
+            "schema_version": {"version"},
+        },
+        _EVIDENCE_INDEXES | {"idx_operation_id", "idx_evidence_hash"},
+    ),
+}
+
+#: Every index SCHEMA declares. Checked once, at the end, after
+#: ENSURE_DECLARED_INDEXES has had its chance to create the missing ones.
+DECLARED_INDEXES = _EVIDENCE_INDEXES | {
+    "idx_service_id",
+    "idx_timestamp",
+    "idx_evidence_hash",
+    "idx_created_at",
+    "idx_operation_id",
+}
+
+
+class StorageMigrationError(RuntimeError):
+    """A schema migration could not be applied.
+
+    Raised instead of stamping a version the database has not reached. The
+    caller gets a receipt store that refuses to open, which is the honest
+    answer — the alternative is a database labelled v5 that is not v5, read
+    through a schema that does not match it.
+    """
+
+
+def _is_duplicate_column(exc: sqlite3.OperationalError) -> bool:
+    """True only for SQLite's "duplicate column name: x".
+
+    That is the one failure a migration step may ignore: it means the column
+    this step adds is already there, which is what re-running a partly applied
+    migration looks like. Every other OperationalError — no such table, disk
+    I/O error, malformed schema — means the step did not do its job.
+    """
+    return "duplicate column name" in str(exc).lower()
+
+
+def _migrate_step(
+    cursor: sqlite3.Cursor,
+    script: str,
+    from_version: int,
+    to_version: int,
+) -> None:
+    """Run one migration script, tolerating only an already-present column."""
+    try:
+        cursor.executescript(script)
+    except sqlite3.OperationalError as exc:
+        if _is_duplicate_column(exc):
+            return
+        raise StorageMigrationError(
+            f"migration v{from_version}->v{to_version} failed: {exc}. "
+            "The database has been left at its previous schema version; "
+            "nothing was stamped as migrated."
+        ) from exc
+
+
+def _table_columns(cursor: sqlite3.Cursor, table: str) -> set[str]:
+    """Column names of ``table``, or an empty set when it does not exist."""
+    return {row[1] for row in cursor.execute(f"PRAGMA table_info({table})")}
+
+
+def _index_names(cursor: sqlite3.Cursor) -> set[str]:
+    """Every index the database defines, by name."""
+    return {
+        row[0]
+        for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+
+
+def _validate_schema(
+    cursor: sqlite3.Cursor,
+    version: int,
+    *,
+    indexes: Optional[set[str]] = None,
+) -> None:
+    """Check the live schema against what ``version`` requires, or raise.
+
+    This is the postcondition, and it is what decides whether a version may be
+    stamped — not the fact that the ALTERs raised nothing worth stopping for.
+    It runs after every step set, so a corrupt shape that survives the ALTERs
+    is caught at the step that was supposed to produce it rather than being
+    discovered later by a reader.
+
+    Every missing thing is collected and named, so one open tells the caller
+    the whole story instead of one item per attempt.
+    """
+    tables, required_indexes = REQUIRED_SCHEMA[version]
+    if indexes is not None:
+        required_indexes = indexes
+
+    missing: list[str] = []
+
+    for table, columns in tables.items():
+        present = _table_columns(cursor, table)
+        if not present:
+            missing.append(f"table {table}")
+            continue
+        absent = columns - present
+        if absent:
+            missing.append(f"{table} columns {', '.join(sorted(absent))}")
+
+    absent_indexes = required_indexes - _index_names(cursor)
+    if absent_indexes:
+        missing.append(f"indexes {', '.join(sorted(absent_indexes))}")
+
+    if missing:
+        raise StorageMigrationError(
+            f"schema postcondition for v{version} failed: {'; '.join(missing)}. "
+            "The migration steps raised nothing, but the database does not have "
+            f"the shape v{version} requires — a duplicate-column error means one "
+            "column was already there, not that the migration is complete. The "
+            "database has been left at its previous schema version; nothing was "
+            "stamped as migrated."
+        )
+
 
 class ReceiptStorage:
     """
@@ -232,7 +525,18 @@ class ReceiptStorage:
         if self._conn is None:
             self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
-            self._init_schema()
+            try:
+                self._init_schema()
+            except Exception:
+                # A database whose schema could not be brought up to date is
+                # not usable, and half-opening it would hand the caller a
+                # connection whose migrations never ran. Drop it and let the
+                # error out: the version on disk is untouched, so the next
+                # open retries the same migration rather than reading rows
+                # through a schema that does not match SCHEMA_VERSION.
+                self._conn.close()
+                self._conn = None
+                raise
         return self._conn
 
     def _init_schema(self) -> None:
@@ -248,19 +552,42 @@ class ReceiptStorage:
         )
         if cursor.fetchone() is None:
             cursor.executescript(SCHEMA)
+            # The same postcondition a migrated database has to satisfy. A
+            # fresh database is where SCHEMA and REQUIRED_SCHEMA would drift
+            # apart unnoticed, so it is checked here too: if the two disagree,
+            # every new store fails loudly instead of only the upgrade path.
+            _validate_schema(cursor, SCHEMA_VERSION, indexes=DECLARED_INDEXES)
             cursor.execute(
                 "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                 (SCHEMA_VERSION,),
             )
             conn.commit()
         else:
-            cursor.execute("SELECT version FROM schema_version LIMIT 1")
+            # MAX(), not LIMIT 1: `version` is the primary key, so an upgrade
+            # adds a row rather than replacing one. Reading the first row read
+            # the *oldest* version back and re-ran every migration on every
+            # open. _run_migrations now collapses the table to one row.
+            cursor.execute("SELECT MAX(version) FROM schema_version")
             row = cursor.fetchone()
-            if row is None or row[0] < SCHEMA_VERSION:
-                self._run_migrations(row[0] if row else 0)
+            current = row[0] if row and row[0] is not None else 0
+            if current < SCHEMA_VERSION:
+                self._run_migrations(current)
 
     def _run_migrations(self, from_version: int) -> None:
-        """Run schema migrations."""
+        """Run schema migrations, or fail without claiming they ran.
+
+        Every step tolerates exactly one thing — the column it adds already
+        being there, which is what a re-run of a partly applied migration
+        looks like. Anything else propagates as ``StorageMigrationError`` and
+        the version stamp is never written, so the database keeps saying the
+        version it actually is.
+
+        A step that raises nothing is not proof that it worked, so each step
+        set is followed by ``_validate_schema()``: the required tables,
+        columns and indexes for that version target, checked against the live
+        database. The version is stamped only after the *declared* schema —
+        everything a freshly created database has — validates in full.
+        """
         conn = self._conn
         if conn is None:
             return
@@ -268,70 +595,93 @@ class ReceiptStorage:
         cursor = conn.cursor()
 
         if from_version < 2:
-            cursor.executescript(MIGRATION_V1_TO_V2)
+            _migrate_step(cursor, MIGRATION_V1_TO_V2, from_version, 2)
+            _validate_schema(cursor, 2)
 
         if from_version < 3:
-            try:
-                cursor.executescript(MIGRATION_V2_TO_V3)
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            _migrate_step(cursor, MIGRATION_V2_TO_V3, from_version, 3)
+            _validate_schema(cursor, 3)
 
         # Migration v3 to v4: rename payload_hash -> evidence_hash, add new columns
         if from_version < 4:
             self._migrate_v3_to_v4(cursor)
+            _validate_schema(cursor, 4)
 
+        # Migration v4 to v5: add control_plane_json to offline_receipts
+        if from_version < 5:
+            _migrate_step(cursor, MIGRATION_V4_TO_V5, from_version, 5)
+            _validate_schema(cursor, 5)
+
+        # The index set is the last thing to bring across, and it is the only
+        # part of the declared schema no version step creates in full.
+        _migrate_step(cursor, ENSURE_DECLARED_INDEXES, from_version, SCHEMA_VERSION)
+        _validate_schema(cursor, SCHEMA_VERSION, indexes=DECLARED_INDEXES)
+
+        # Only now, with every step applied and the resulting schema checked
+        # against what SCHEMA_VERSION means.
+        cursor.execute("DELETE FROM schema_version")
         cursor.execute(
-            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+            "INSERT INTO schema_version (version) VALUES (?)",
             (SCHEMA_VERSION,),
         )
         conn.commit()
 
     def _migrate_v3_to_v4(self, cursor: sqlite3.Cursor) -> None:
         """Migrate v3 to v4: rename payload_hash, add operation_id/sequence/supersedes/cpr_hash."""
-        # Rename payload_hash -> evidence_hash (SQLite 3.25+)
-        try:
-            cursor.execute(
-                "ALTER TABLE offline_receipts RENAME COLUMN payload_hash TO evidence_hash"
+        columns = _table_columns(cursor, "offline_receipts")
+        if not columns:
+            raise StorageMigrationError(
+                "migration v3->v4 failed: there is no offline_receipts table to "
+                "migrate. The database says it is v3 but does not have a v3 schema."
             )
-        except sqlite3.OperationalError:
-            # If rename fails (old SQLite), add new column and copy
+
+        # payload_hash -> evidence_hash. Skipped outright when the column is
+        # already named the new way, which is what a re-run looks like.
+        if "evidence_hash" not in columns:
+            if "payload_hash" not in columns:
+                raise StorageMigrationError(
+                    "migration v3->v4 failed: offline_receipts has neither "
+                    "evidence_hash nor payload_hash, so the hash column cannot "
+                    "be carried across."
+                )
             try:
                 cursor.execute(
-                    "ALTER TABLE offline_receipts ADD COLUMN evidence_hash TEXT"
+                    "ALTER TABLE offline_receipts RENAME COLUMN payload_hash TO evidence_hash"
                 )
-                cursor.execute(
-                    "UPDATE offline_receipts SET evidence_hash = payload_hash"
-                )
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            except sqlite3.OperationalError as rename_exc:
+                # SQLite < 3.25 has no RENAME COLUMN. Add and copy instead —
+                # and if *that* fails, the migration has failed. It is not
+                # "already fine".
+                try:
+                    cursor.execute(
+                        "ALTER TABLE offline_receipts ADD COLUMN evidence_hash TEXT"
+                    )
+                    cursor.execute(
+                        "UPDATE offline_receipts SET evidence_hash = payload_hash"
+                    )
+                except sqlite3.OperationalError as copy_exc:
+                    raise StorageMigrationError(
+                        "migration v3->v4 failed: could not produce an "
+                        f"evidence_hash column (rename: {rename_exc}; "
+                        f"add-and-copy fallback: {copy_exc})."
+                    ) from copy_exc
 
-        # Add new v1.2 columns
+        # Add new v1.2 columns. Already present is fine; anything else is not.
         for col_sql in [
             "ALTER TABLE offline_receipts ADD COLUMN operation_id TEXT",
             "ALTER TABLE offline_receipts ADD COLUMN operation_sequence INTEGER DEFAULT 0",
             "ALTER TABLE offline_receipts ADD COLUMN supersedes TEXT",
             "ALTER TABLE offline_receipts ADD COLUMN cpr_hash TEXT",
         ]:
-            try:
-                cursor.execute(col_sql)
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            _migrate_step(cursor, col_sql, 3, 4)
 
-        # Add index for operation_id
-        try:
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_operation_id ON offline_receipts(operation_id)"
-            )
-        except sqlite3.OperationalError:
-            pass
-
-        # Update index for evidence_hash (may fail if column wasn't renamed)
-        try:
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_evidence_hash ON offline_receipts(evidence_hash)"
-            )
-        except sqlite3.OperationalError:
-            pass
+        # Both columns exist by now, so an index that will not build is a real
+        # failure rather than the expected consequence of a skipped rename.
+        for index_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_operation_id ON offline_receipts(operation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_hash ON offline_receipts(evidence_hash)",
+        ]:
+            _migrate_step(cursor, index_sql, 3, 4)
 
     def store_receipt(
         self,
@@ -358,8 +708,9 @@ class ReceiptStorage:
             (attestation_id, timestamp, service_id, operation_type,
              evidence_hash, signature, public_key, created_at,
              input_preview, output_preview, metadata_json,
-             operation_id, operation_sequence, supersedes, cpr_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             operation_id, operation_sequence, supersedes, cpr_hash,
+             control_plane_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 receipt.id,
@@ -377,6 +728,10 @@ class ReceiptStorage:
                 receipt.operation_sequence,
                 receipt.supersedes,
                 receipt.cpr_hash,
+                # Signed content, so it is stored whole and never truncated.
+                json.dumps(receipt.control_plane_results, separators=(",", ":"))
+                if receipt.control_plane_results is not None
+                else None,
             ),
         )
         conn.commit()
@@ -477,6 +832,14 @@ class ReceiptStorage:
             else row["payload_hash"] if "payload_hash" in keys else ""
         )
 
+        cpr_hash = row["cpr_hash"] if "cpr_hash" in keys else None
+        # Pre-v5 rows have no column at all; migrated rows have it as NULL.
+        # Either way there is nothing to recover — _recover_cpr says so.
+        control_plane_results, cpr_recovery_error = _recover_cpr(
+            row["control_plane_json"] if "control_plane_json" in keys else None,
+            cpr_hash,
+        )
+
         return Attestation(
             id=row["attestation_id"],
             evidence_hash=evidence_hash,
@@ -498,7 +861,9 @@ class ReceiptStorage:
                 else 0
             ),
             supersedes=row["supersedes"] if "supersedes" in keys else None,
-            cpr_hash=row["cpr_hash"] if "cpr_hash" in keys else None,
+            cpr_hash=cpr_hash,
+            control_plane_results=control_plane_results,
+            cpr_recovery_error=cpr_recovery_error,
         )
 
     def count_receipts(self, service_id: Optional[str] = None) -> int:
@@ -814,6 +1179,8 @@ class JsonStorageBackend:
             "operation_sequence": receipt.operation_sequence,
             "supersedes": receipt.supersedes,
             "cpr_hash": receipt.cpr_hash,
+            # Signed content, so it is stored whole and never truncated.
+            "control_plane_results": receipt.control_plane_results,
         }
         self._append_line(self._receipts_path, data)
 
@@ -880,6 +1247,12 @@ class JsonStorageBackend:
         """Convert a stored dict to an Attestation object."""
         from glacis.models import Attestation
 
+        cpr_hash = data.get("cpr_hash")
+        # Lines written before 0.8.1 have no control_plane_results key at all.
+        control_plane_results, cpr_recovery_error = _recover_cpr(
+            data.get("control_plane_results"), cpr_hash
+        )
+
         return Attestation(
             id=data["attestation_id"],
             evidence_hash=data.get("evidence_hash", ""),
@@ -892,7 +1265,9 @@ class JsonStorageBackend:
             operation_id=data.get("operation_id", ""),
             operation_sequence=data.get("operation_sequence", 0),
             supersedes=data.get("supersedes"),
-            cpr_hash=data.get("cpr_hash"),
+            cpr_hash=cpr_hash,
+            control_plane_results=control_plane_results,
+            cpr_recovery_error=cpr_recovery_error,
         )
 
     # =========================================================================

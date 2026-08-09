@@ -966,7 +966,6 @@ def attest_and_store(
             operation_sequence=op_seq,
             supersedes=supersedes,
         )
-        set_last_receipt(receipt)
         store_evidence(
             receipt=receipt,
             service_id=ctx.effective_service_id,
@@ -979,6 +978,11 @@ def attest_and_store(
             storage_backend=ctx.storage_backend,
             storage_path=ctx.storage_path,
         )
+        # Published last, on purpose. get_last_receipt() is documented to hand
+        # back nothing (or the previous call's receipt) when the attestation
+        # step failed; setting it before storage would have made a storage
+        # failure look like a complete, stored attestation.
+        set_last_receipt(receipt)
     except Exception as e:
         if ctx.debug:
             print(f"[glacis] Attestation failed: {e}")

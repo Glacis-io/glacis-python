@@ -21,6 +21,38 @@ except ImportError:
     pass
 
 
+# The `evidence` table as a database that really reached v4 has it: created by
+# the v1->v2 migration, given `sampling_level` by v2->v3, with its four
+# indexes. Tests that hand-build a "v4" database need it, because since
+# Corrections round 5 the migration validates the required schema before
+# stamping a version — a database missing a table two migrations ago added is
+# not v4, and saying so is the whole point of the postcondition.
+V4_EVIDENCE_TABLE = """
+CREATE TABLE evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attestation_id TEXT NOT NULL,
+    attestation_hash TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    output_json TEXT NOT NULL,
+    control_plane_json TEXT,
+    metadata_json TEXT,
+    sampling_level TEXT NOT NULL DEFAULT 'L0',
+    UNIQUE(attestation_id)
+);
+CREATE INDEX idx_evidence_attestation_id ON evidence(attestation_id);
+CREATE INDEX idx_evidence_attestation_hash ON evidence(attestation_hash);
+CREATE INDEX idx_evidence_service_id ON evidence(service_id);
+CREATE INDEX idx_evidence_timestamp ON evidence(timestamp);
+CREATE INDEX idx_operation_id ON offline_receipts(operation_id);
+CREATE INDEX idx_evidence_hash ON offline_receipts(evidence_hash);
+"""
+
+
 @pytest.fixture
 def signing_seed() -> bytes:
     """Generate a random 32-byte Ed25519 signing seed."""
@@ -89,17 +121,24 @@ def sample_offline_receipt_data(sample_offline_attestation_data: dict[str, Any])
 
 @pytest.fixture
 def sample_verify_response() -> dict[str, Any]:
-    """Standard verify API response."""
+    """Standard verify API response.
+
+    The log entry describes ``sample_attestation_data``: same ``signature``,
+    ``evidenceHash``, ``serviceId`` and ``operationType``. That agreement is
+    what lets a supplied Attestation object *bind* to this record — without it
+    the SDK treats the answer as being about some other attestation and refuses
+    to apply it, which is the point of ``glacis.verify.bind_to_log_entry``.
+    """
     return {
         "valid": True,
         "attestation": {
-            "entryId": "att_test123",
+            "entryId": "att_test123abc",
             "timestamp": "2024-01-01T12:00:00Z",
             "orgId": "org_xxx",
             "serviceId": "test-service",
-            "operationType": "inference",
+            "operationType": "completion",
             "evidenceHash": "a" * 64,
-            "signature": "sig123",
+            "signature": "c" * 128,
             "leafIndex": 42,
             "leafHash": "hash123",
         },

@@ -1,0 +1,131 @@
+---
+title: Anthropic
+description: Swap Anthropic() for attested_anthropic(). Every wrapped message attempts a receipt — best effort, never fatal, and never free.
+sidebar:
+  order: 5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+```bash
+pip install "glacis[anthropic]"
+```
+
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
+
+## Wrap the client
+
+```python
+import os
+from glacis.integrations.anthropic import attested_anthropic, get_last_receipt
+
+client = attested_anthropic(
+    anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+    offline=True,
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+    service_id="clinical-summary",
+)
+
+response = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+receipt = get_last_receipt()
+print(receipt.id, receipt.witness_status)
+```
+
+For online mode (the server signs — not the same as
+[witnessed](/connect/offline-vs-witnessed/)), drop `offline`/`signing_seed` and
+pass `glacis_api_key="glsk_live_…"` instead.
+
+The returned object **is** an `anthropic.Anthropic` client.
+
+## What is wrapped, and what is not
+
+Only `client.messages.create` is wrapped. Batches, files, the token-counting
+endpoint and everything else pass through unattested.
+
+<Aside type="caution" title="Streaming is not supported">
+  The wrapper reads `response.content`, `response.stop_reason` and
+  `response.usage` from a completed message. `stream=True` does not return that
+  object — expect errors or a missing receipt. `client.messages.stream(...)` is
+  not wrapped at all.
+</Aside>
+
+## What ends up in the receipt
+
+| Thing | Treatment |
+| --- | --- |
+| `messages` | Hashed into `evidence_hash`. Never transmitted. |
+| `system` prompt | Included in the hashed input; its SHA-256 also recorded in the control-plane results |
+| Response content blocks | Hashed into `evidence_hash`. Never transmitted. |
+| Model, provider | Metadata (`provider` is always `"anthropic"`) |
+| Temperature | Control-plane results |
+| `stop_reason`, input/output tokens | Kept in local evidence |
+
+`operation_type` is always `"completion"`.
+
+## Controls and multi-block content
+
+Input controls scan the **last user message**. If that message's `content` is a
+list of blocks, every `{"type": "text"}` block in it is scanned; image and
+document blocks are not. Earlier turns are not scanned.
+
+```python
+from glacis.integrations.anthropic import attested_anthropic, GlacisBlockedError
+
+client = attested_anthropic(config="glacis.yaml", glacis_api_key="glsk_live_…")
+
+try:
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": user_text}],
+    )
+except GlacisBlockedError as e:
+    print(f"blocked by {e.control_type} (score={e.score})")
+```
+
+Output controls read the first text block of the response.
+
+<Aside type="caution" title="Attestation is fail-open, on purpose">
+  If attestation fails, the wrapper swallows the error and returns the model
+  response anyway — your application does not break because our service is
+  having a bad day. The consequence: `get_last_receipt()` may return `None` or
+  the previous receipt from that context. If a missing receipt matters, check
+  for it. `debug=True` prints what was swallowed.
+
+  Fail-open is about exceptions, not about time: attestation runs synchronously
+  before this call returns, and online mode retries up to four times with
+  30-second per-operation timeouts and blocking backoff. Four attempts that each
+  time out once cost **129.1 seconds** — one scenario, not a deadline: `timeout=30`
+  bounds inactivity, not the length of a response, so nothing bounds this by
+  default. See
+  [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
+</Aside>
+
+## Metadata, evidence, pipelines
+
+Identical to the other wrappers:
+[metadata and `glacis_tags`](/connect/openai/#metadata),
+[local evidence](/connect/openai/#local-evidence),
+[operation linking](/reference/operations/).
+
+## `attested_anthropic()` reference
+
+Same signature as [`attested_openai()`](/connect/openai/#attested_openai-reference),
+with `anthropic_api_key` in place of `openai_api_key` (falling back to
+`ANTHROPIC_API_KEY`), `service_id` defaulting to `"anthropic"`, and
+`**anthropic_kwargs` passed through to `Anthropic(...)`.
+
+<Aside type="note" title="Untested against a live provider">
+  Signatures are checked by `docs/scripts/verify-doc-snippets.py`; the
+  end-to-end call is not exercised in CI. Run it once with your own keys.
+</Aside>

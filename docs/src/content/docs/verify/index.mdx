@@ -1,0 +1,142 @@
+---
+title: Verify
+description: Check a receipt in your browser, from a permalink, or in Python — without asking GLACIS anything.
+sidebar:
+  order: 0
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+A receipt that only GLACIS can check is worth very little. The point of the
+format is that the person who distrusts you can check it without our
+cooperation, our uptime, or our permission.
+
+## In a browser
+
+**[glacis.io/verify](https://glacis.io/verify)** — paste a receipt, drop a JSON
+file on the page, or open a verification link.
+
+Everything runs client-side, using the browser's own WebCrypto Ed25519. The
+receipt is not uploaded, not logged, and not sent anywhere. You can confirm that
+by opening the network tab, or by loading the page, going offline, and verifying
+anyway.
+
+It reports each check on its own line rather than collapsing to a single
+verdict:
+
+| Check | What it establishes |
+| --- | --- |
+| Structural integrity | The required fields are present and well-formed |
+| Signature (Ed25519) | The **signed** fields have not changed since they were signed by the holder of the key the receipt carries |
+| Signed field coverage | Which fields are inside the signature and which ride alongside it — informational, never a pass or a fail |
+| Hash binding | The parts of the receipt are bound together — you cannot swap one out |
+| Merkle inclusion | The record was in the transparency log at the tree head shown — only when the receipt carries a transparency proof |
+
+A missing check shows as *skipped*, never as passed.
+
+<Aside type="note" title="Which receipts the browser verifier reads — as of the launch build">
+  As of the launch build of [glacis.io/verify](https://glacis.io/verify), the
+  page detects and verifies **both** shapes:
+
+  - **GLACIS platform and gateway receipts** — the format the hosted product and
+    your workspace produce, which is also the shape described by
+    [OVERT](/overt/).
+  - **Python SDK offline receipts** — the flat `oatt_…` shape. The page
+    recognises them (`is_offline`, or an `id` beginning `oatt_`, plus a
+    `signature` and a `public_key`), re-derives the exact bytes the SDK signed,
+    and runs a **real Ed25519 check** with WebCrypto. It also prints a *signed
+    field coverage* line naming which fields are inside the signature and which
+    are not, so a green check is never read as covering the whole file.
+
+  Earlier builds returned *"Unrecognized receipt format"* for `oatt_…` receipts.
+  If the build you hit still does, verify with the ten-line PyNaCl snippet in
+  [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself), which
+  performs the same check locally.
+</Aside>
+
+<Aside type="caution" title="What the browser check does not settle">
+  For an SDK offline receipt the page verifies the signature against the public
+  key **carried in that same receipt**. That establishes internal consistency —
+  the signed fields were not edited after signing — and nothing about who holds
+  the key. Anyone can generate a keypair and sign their own receipt. Tying a key
+  to an organisation is a separate problem; see
+  [what a check proves](/verify/what-a-check-proves/).
+</Aside>
+
+## From a permalink
+
+A verification link carries the receipt in the URL **fragment**:
+
+```
+https://glacis.io/verify#r=<base64url of the receipt JSON>
+```
+
+The fragment matters. Everything after the `#` is never transmitted in the HTTP
+request — it stays in the browser. A receipt sent as a query string
+(`?receipt=…`) would land in the access logs of every server and proxy between
+you and the page; a fragment does not. Nothing about your receipt reaches a
+server log by being shared this way.
+
+Opening such a link verifies the receipt on load and shows the same per-check
+breakdown.
+
+<Aside type="note">
+  The `#r=` fragment form ships with the launch build of
+  [glacis.io/verify](https://glacis.io/verify), which reads the token, decodes
+  it, and verifies on load; the older `?receipt=` query form still opens, for
+  links already in circulation. If the build you hit does not pick up a
+  fragment, paste the receipt into the box instead — same verification, same
+  client-side execution.
+</Aside>
+
+## In Python
+
+```bash
+python -m glacis verify receipt.json
+```
+
+As of `glacis` 0.8.1 that is a real Ed25519 check on offline receipts, and so
+is `Glacis.verify()` — they run the same function. **0.8.0, the version on
+PyPI, checked only the shape of the receipt** and printed `Signature: PASS`
+over a zeroed signature. Read [what the CLI actually checks](/verify/cli/)
+before you rely on the output, and pin `glacis>=0.8.1` if you are gating on it.
+The same page has the verification routine written out longhand, which needs
+nothing but PyNaCl and works against any version.
+
+## Before you show anyone a green check
+
+The two signing tiers are not degrees of the same thing:
+
+<ReceiptBadge kind="self-signed" gloss />
+
+<ReceiptBadge kind="witnessed" gloss />
+
+And SAMPLE is a separate axis, not a third tier — it says the subject matter is
+synthetic, not that the signature is:
+
+<ReceiptBadge kind="sample" gloss />
+
+A sample receipt passes exactly the checks its tier earns
+(<ReceiptBadge kind="self-signed" sample />), which is why a green check on one
+proves the verifier works and nothing else.
+
+A valid signature on a self-signed receipt tells a third party that the signed
+fields have not been edited. It tells them nothing about when the record was
+made, and nothing about whether the event described happened.
+[What a check proves](/verify/what-a-check-proves/) sets out the boundary
+precisely — it is the page to read before a receipt goes into a customer
+questionnaire or a regulatory filing.
+
+<CardGrid>
+  <LinkCard
+    title="What a check proves"
+    description="The exact boundary between what a green check establishes and what it does not."
+    href="/verify/what-a-check-proves/"
+  />
+  <LinkCard
+    title="Verify from Python"
+    description="The CLI, its limits, and a real signature check in ten lines."
+    href="/verify/cli/"
+  />
+</CardGrid>

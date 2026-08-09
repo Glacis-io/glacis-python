@@ -1,9 +1,12 @@
 ---
-title: API Reference
-description: Complete API reference for the Glacis Python SDK.
+title: API reference
+description: Every public class, method and model in the glacis Python SDK 0.8.0.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+
+The full public surface of `glacis` 0.8.0. If you are getting started, read
+[Connect](/connect/) first — this page assumes you know what an attestation is.
 
 ## Glacis Client
 
@@ -58,7 +61,9 @@ with Glacis(api_key="glsk_live_...") as glacis:
 
 ### glacis.attest()
 
-Create an attestation for an AI operation. Input and output are hashed locally using RFC 8785 canonical JSON + SHA-256. Only the hash is sent to the server -- the actual data never leaves your infrastructure.
+Create an attestation for an AI operation. `input` and `output` are hashed locally using the SDK's canonical JSON + SHA-256 (see [the canonicalisation actually used](/connect/quickstart/#the-canonicalisation-actually-used) -- the docstrings call it RFC 8785, and it is not quite). Only their hash is sent to the server -- those two payloads never leave your infrastructure.
+
+`control_plane_results` is the exception: online mode sends it **verbatim** in the request body, uninspected and unhashed, alongside `cpr_hash`. Anything you put in it leaves the machine. See [the data boundary](/connect/offline-vs-witnessed/#what-is-actually-sent).
 
 ```python
 attestation = glacis.attest(
@@ -98,7 +103,11 @@ attestation = glacis.attest(
 
 ### glacis.verify()
 
-Verify an attestation. For online attestations, calls the server API. For offline attestations, verifies the Ed25519 signature locally.
+Verify an attestation. Given an **id string** this is a lookup: an `oatt_` id is
+read back from local storage and its signature checked, anything else is
+verified by the server. Given an **`Attestation` object**, the object's own
+Ed25519 signature is always checked — see the version note below, because 0.8.0
+did **not** — and `is_offline=False` adds a server lookup on top of it.
 
 ```python
 # Verify with an Attestation object
@@ -119,13 +128,79 @@ if isinstance(result, OfflineVerifyResult):
     print(result.witness_status)  # "UNVERIFIED"
 ```
 
+<Aside type="caution" title="Offline `verify()` became a signature check in 0.8.1">
+  **0.8.1 (unpublished).** The offline branch rebuilds the signed payload from
+  the receipt's own fields (`glacis.crypto.offline_signed_payload`) and verifies
+  the signature against it with `Ed25519Runtime.verify()`, under the public key
+  **on the receipt**. It needs no signing seed, so it works on receipts you did
+  not sign. Alter any signed field — `service_id`, `evidence_hash`, the
+  timestamp, the `control_plane_results` content — and it returns
+  `valid=False`. `glacis.verify.verify_offline()` is that implementation, and
+  `python -m glacis verify` calls the same one.
+
+  `error` names which failure it was:
+
+  | Prefix | Meaning |
+  | --- | --- |
+  | `signature_invalid` | The payload rebuilt and the signature does not verify over it. |
+  | `structural` | The receipt could not be turned into verifiable form at all — undecodable `public_key` or `signature`, or no `timestamp`. |
+  | `cpr_unrecoverable` | The store could not return the signed `control_plane_results`, so the payload cannot be rebuilt and no verdict is possible. |
+  | `cpr_hash_mismatch` / `cpr_hash_orphaned` | A named degradation of the **unsigned** `cpr_hash`. It can accompany `valid=True`: the signature is the authority, not the hash. |
+
+  **0.8.0, which is what `pip install glacis` gives you, checks none of this.**
+  It derived a public key from the client's own `signing_seed` and compared it
+  to `attestation.public_key`; if they matched it returned `valid=True` without
+  looking at `signature` at all, and if the client had no seed `signature_valid`
+  was hardcoded `True`. Both behaviours — the old one and the new one — are
+  pinned by `docs/scripts/verify-doc-snippets.py`.
+
+  The PyNaCl routine in
+  [Verify from Python](/verify/cli/#verify-a-receipt-yourself) is the check
+  written out longhand, and it works against any version.
+</Aside>
+
+<Aside type="caution" title="An unsigned field chose the verifier until 0.8.1.dev0">
+  `is_offline` and `id` are not inside the signature. Until 0.8.1.dev0 they
+  chose the verifier outright: setting `is_offline=False` and `id` to a valid
+  online attestation routed `verify()` to a server lookup, and the object you
+  passed in was never examined. The server answered about the id and the caller
+  read `valid=True` as an answer about their bytes. The CLI reclassified the
+  same way.
+
+  Fixed in this repository, staged as 0.8.1 and unpublished. `is_offline` now
+  selects **additional** verification, never a bypass:
+
+  - The offline signature check runs on every supplied object, always.
+  - `is_offline=False` also looks up `receipt.id`. That answer is about an id,
+    so it is applied to your object only if the two **bind** — matching
+    `signature` and `evidence_hash`, plus `service_id` and `operation_type`
+    when both carry them.
+  - **Bound, and the object's own signature verified:** you get the server's
+    [`VerifyResult`](#verifyresult), with `error` naming the binding and what
+    the log entry carries nothing about (`control_plane_results`, `cpr_hash`,
+    `evidence`, `review`, and the rest).
+  - **Bound, but the object's own check failed:** fail closed. Binding
+    compares the *strings* of `signature` and `evidence_hash` — a string-equal
+    signature is not a verified one. You get the failed
+    [`OfflineVerifyResult`](#offlineverifyresult) with `error` carrying
+    `bound-but-unverified:`; the server's `valid` is never applied to bytes
+    that failed their own Ed25519 check.
+  - **Unbound:** none of the server's answer is returned — not the org, not the
+    proof, not the tree head. You get the object's own
+    [`OfflineVerifyResult`](#offlineverifyresult), `valid` reflecting the bytes
+    you passed, and `error` saying the lookup happened and was not applied.
+
+  So a receipt whose signature does not verify is `valid=False` whatever the
+  server says about the id it claims.
+</Aside>
+
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `receipt` | `str \| Attestation` | Yes | Attestation ID string or `Attestation` object |
 
-**Returns:** [`VerifyResult`](#verifyresult) (online) or [`OfflineVerifyResult`](#offlineverifyresult) (offline)
+**Returns:** [`VerifyResult`](#verifyresult) — the log entry's verdict, for an id looked up directly or an object bound to its entry — or [`OfflineVerifyResult`](#offlineverifyresult), the supplied object's own signature check
 
 ---
 
@@ -276,7 +351,7 @@ r2 = glacis.attest(
 
 ### glacis.hash()
 
-Hash a payload using RFC 8785 canonical JSON + SHA-256. Produces identical hashes across Python, TypeScript, and Rust runtimes.
+Hash a payload using `glacis.crypto` canonical JSON + SHA-256. Reproducible across runtimes for ASCII strings and integers; see the [divergences from RFC 8785](/connect/quickstart/#the-canonicalisation-actually-used) before relying on cross-language agreement for anything else.
 
 ```python
 h = glacis.hash({"b": 2, "a": 1})
@@ -344,7 +419,7 @@ async with AsyncGlacis(api_key="glsk_live_...") as glacis:
 
 | Method | Description |
 |--------|-------------|
-| `hash(payload)` | RFC 8785 + SHA-256. Returns `str`. |
+| `hash(payload)` | `glacis.crypto` canonical JSON + SHA-256. Returns `str`. |
 
 <Aside type="note">
   `AsyncGlacis` is online-only. The following `Glacis` methods are not available on `AsyncGlacis`: `decompose`, `should_review`, `operation`, `get_last_receipt`. Note that `decompose` works in both online and offline mode on the synchronous `Glacis` client; `should_review` requires offline mode (uses the `policy_key` or `signing_seed` for HMAC).
@@ -426,6 +501,7 @@ class Attestation(BaseModel):
     sampling_decision: Optional[SamplingDecision]
     is_offline: bool
     timestamp: Optional[int]
+    cpr_recovery_error: Optional[str]   # 0.8.1, unpublished
 
     @property
     def witness_status(self) -> str: ...  # "WITNESSED" or "UNVERIFIED"
@@ -441,14 +517,15 @@ class Attestation(BaseModel):
 | `evidence_hash` | `str` | SHA-256 of canonical JSON `{"input": ..., "output": ...}` |
 | `cpr_hash` | `Optional[str]` | SHA-256 of canonical JSON control plane results |
 | `supersedes` | `Optional[str]` | Attestation ID this replaces (revision chains) |
-| `control_plane_results` | `Optional[dict[str, Any]]` | Control plane results (dict on wire) |
-| `evidence` | `Optional[Evidence]` | L1 sampled evidence payload |
+| `control_plane_results` | `Optional[dict[str, Any]]` | Control plane results (dict on wire). **Inside the offline signature**, and transmitted verbatim in online mode |
+| `evidence` | `Optional[Evidence]` | L1 sampled evidence payload. On an online L1/L2 attestation this holds the **raw** `input` and `output` you passed — check before serialising a receipt you intend to share |
 | `review` | `Optional[Review]` | L2 deep review record |
 | `public_key` | `str` | Arbiter Ed25519 public key (hex) |
 | `signature` | `str` | Arbiter Ed25519 signature (hex) |
 | `sampling_decision` | `Optional[SamplingDecision]` | Server-assigned sampling tier |
 | `is_offline` | `bool` | Whether this is an offline attestation |
 | `timestamp` | `Optional[int]` | Unix timestamp in milliseconds |
+| `cpr_recovery_error` | `Optional[str]` | 0.8.1 (unpublished). Set only by storage reconstruction, when a stored receipt carries a `cpr_hash` but the signed `control_plane_results` could not be returned. The signed payload cannot be rebuilt, so `verify()` fails closed with this string as its `error`. Never signed, never transmitted |
 | `witness_status` | `str` (property) | `"WITNESSED"` if online, `"UNVERIFIED"` if offline |
 
 ---
@@ -515,7 +592,7 @@ class VerifyResult(BaseModel):
 | `verification` | `Optional[Verification]` | Verification details (contains `signature_valid`, `proof_valid`) |
 | `proof` | `Optional[InclusionProof]` | Merkle inclusion proof |
 | `tree_head` | `Optional[SignedTreeHead]` | Signed tree head at verification time |
-| `error` | `Optional[str]` | Error message if invalid |
+| `error` | `Optional[str]` | Why it failed, prefixed with the failure's name. Also set — on a result that **passed** — when you verified an `Attestation` object rather than an id, to name the binding: `bound:` says the object matches this log entry on `signature` and `evidence_hash`, and lists what the entry carries nothing about |
 
 Access signature and proof validity through the nested `verification` object:
 
@@ -543,11 +620,11 @@ class OfflineVerifyResult(BaseModel):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `valid` | `bool` | Whether the signature is valid |
+| `valid` | `bool` | Mirrors `signature_valid` |
 | `witness_status` | `Literal["UNVERIFIED"]` | Always `"UNVERIFIED"` for offline attestations |
-| `signature_valid` | `bool` | Whether the Ed25519 signature is valid |
+| `signature_valid` | `bool` | A real Ed25519 check as of 0.8.1; **not** one in 0.8.0 — see the version note under [`verify()`](#glacisverify) |
 | `attestation` | `Optional[Attestation]` | The verified attestation |
-| `error` | `Optional[str]` | Error message if invalid |
+| `error` | `Optional[str]` | Set when verification failed, **or** carries the advisory `cpr_hash_mismatch` on a receipt whose `valid` follows the signature. `cpr_hash` is unsigned and the signature covers the control-plane *content*, so a hash that disagrees with it is reported by name alongside `valid=True` rather than deciding it. Also carries `unbound:` when you passed an `Attestation` object with `is_offline=False` whose id was looked up and did not describe it, or `bound-but-unverified:` when the id's log entry matched the object's binding fields but the object's own signature check failed — `valid` follows that check, never the lookup. See [`verify()`](#glacisverify) |
 
 ---
 
@@ -888,7 +965,7 @@ Importable from `glacis.crypto`.
 
 ### hash_payload()
 
-Hash a payload using RFC 8785 canonical JSON + SHA-256. This is the primary hashing function for the transparency log. Produces identical hashes across Python, TypeScript, and Rust runtimes.
+Hash a payload using `glacis.crypto` canonical JSON + SHA-256. This is the primary hashing function for the transparency log. It reproduces across Python, TypeScript and Rust for ASCII strings and integers, but **not** in general -- see [the canonicalisation actually used](/connect/quickstart/#the-canonicalisation-actually-used).
 
 ```python
 from glacis.crypto import hash_payload
@@ -909,7 +986,7 @@ assert hash1 == hash2
 
 ### canonical_json()
 
-Serialize data to RFC 8785 canonical JSON. Deterministic JSON that is identical across all runtimes.
+Serialize data to the SDK's canonical JSON: keys sorted by Unicode code point, no whitespace, values rendered by Python's `json.dumps`. The module docstring calls this RFC 8785; it diverges for non-ASCII strings, several float forms and supplementary-plane keys.
 
 ```python
 from glacis.crypto import canonical_json
@@ -928,8 +1005,8 @@ canonical_json({"b": 2, "a": 1})
 
 **Raises:** `ValueError` if data contains non-serializable values (`NaN`, `Infinity`)
 
-<Aside type="note">
-  RFC 8785 ensures that the same logical JSON object produces the same hash across Python, TypeScript, and Rust implementations.
+<Aside type="caution">
+  Canonicalisation makes key order irrelevant, so the same logical JSON object hashes the same way *within* this implementation. It does **not** guarantee agreement with a strict RFC 8785 implementation in another language: escaping of non-ASCII text, the rendering of whole-number floats and very large magnitudes, and the ordering of supplementary-plane keys all differ. [The exact list](/connect/quickstart/#the-canonicalisation-actually-used).
 </Aside>
 
 ---
@@ -1020,5 +1097,5 @@ except CryptoError as e:
 ```python
 from glacis import __version__
 
-print(__version__)  # "0.5.0"
+print(__version__)  # "0.8.0"
 ```

@@ -300,6 +300,16 @@ class Attestation(BaseModel):
     timestamp: Optional[int] = Field(
         default=None, description="Unix timestamp ms (SDK convenience)"
     )
+    cpr_recovery_error: Optional[str] = Field(
+        default=None,
+        description=(
+            "SDK convenience, never signed and never transmitted. Set when a "
+            "receipt was reconstructed from storage that could not return its "
+            "control_plane_results even though cpr_hash says the receipt was "
+            "signed over some. The signed payload cannot be rebuilt, so "
+            "verification of such a receipt fails with this string as the reason."
+        ),
+    )
 
     @property
     def witness_status(self) -> str:

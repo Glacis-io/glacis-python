@@ -1,0 +1,64 @@
+---
+/**
+ * Placeholder for a product screenshot that has not been captured yet.
+ *
+ * It renders as an obvious placeholder — never as a picture of something
+ * that does not exist. Replace the component call with an <Image /> once
+ * the real capture lands.
+ */
+interface Props {
+  /** What the screenshot will show. Written as a caption, not a filename. */
+  caption: string;
+  /** Roughly what shape the capture is. Affects the placeholder height only. */
+  shape?: 'phone' | 'wide';
+}
+
+const { caption, shape = 'wide' } = Astro.props;
+---
+
+<figure class={`glacis-shot glacis-shot--${shape}`}>
+  <div class="glacis-shot__frame">
+    <span class="glacis-shot__tag">SCREENSHOT PENDING</span>
+  </div>
+  <figcaption>{caption}</figcaption>
+</figure>
+
+<style>
+  .glacis-shot {
+    margin: 1.5rem 0;
+  }
+
+  .glacis-shot__frame {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed var(--sl-color-gray-4);
+    border-radius: 0.5rem;
+    background: var(--sl-color-gray-7, var(--sl-color-gray-6));
+  }
+
+  .glacis-shot--wide .glacis-shot__frame {
+    aspect-ratio: 16 / 9;
+    width: 100%;
+  }
+
+  .glacis-shot--phone .glacis-shot__frame {
+    aspect-ratio: 9 / 16;
+    max-width: 15rem;
+    margin-inline: auto;
+  }
+
+  .glacis-shot__tag {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--sl-color-gray-3);
+  }
+
+  .glacis-shot figcaption {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-2);
+    text-align: center;
+  }
+</style>

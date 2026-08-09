@@ -1,0 +1,231 @@
+---
+title: LiteLLM
+description: One wrapper across every provider LiteLLM speaks, with the decisions moved out of code and into glacis.yaml.
+sidebar:
+  order: 7
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+```bash
+pip install "glacis[litellm]"
+```
+
+The wrapper attempts an attestation on every wrapped call. It is **best
+effort and never a gate**: if attestation or storage fails the exception is
+swallowed by design, your model response is returned anyway, and no receipt
+exists for that call. The *fail-open* caveat below spells out what that costs
+you; [Connect](/connect/#attestation-is-best-effort-never-a-gate) has the
+shared version.
+
+LiteLLM exposes module-level functions rather than a client object, so
+`attested_litellm()` returns a small wrapper with `.completion()` and
+`.acompletion()` that take the same arguments as `litellm.completion()` and
+`litellm.acompletion()`.
+
+## Wrap it
+
+```python
+import os
+from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+client = attested_litellm(
+    offline=True,
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+    service_id="router",
+)
+
+response = client.completion(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+receipt = get_last_receipt()
+```
+
+Provider credentials are LiteLLM's business — it reads `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY` and the rest from the environment as usual. The model string
+picks the provider:
+
+```python
+client.completion(model="gpt-4o", messages=[...])
+client.completion(model="claude-sonnet-4-5", messages=[...])
+client.completion(model="azure/my-deployment", messages=[...])
+client.completion(model="bedrock/anthropic.claude-v2", messages=[...])
+client.completion(model="ollama/llama3", messages=[...])
+```
+
+Every one of them lands in the same receipt trail, attested with the model name
+actually used.
+
+## Config-first: one line of Python, the rest in YAML
+
+If what you want is to add attestation without spreading decisions through your
+codebase, put everything in `glacis.yaml` and let the factory read it.
+
+<Tabs>
+  <TabItem label="glacis.yaml">
+
+```yaml
+version: "1.3"
+
+policy:
+  id: "router-default"
+  environment: "production"
+
+attestation:
+  offline: true            # flip to false and supply a key for online mode
+  service_id: "router"
+
+sampling:
+  l1_rate: 0.1             # retain full evidence for 10% of calls
+  l2_rate: 0.0
+
+controls:
+  output_block_action: "block"
+  input:
+    pii_phi:
+      enabled: true
+      mode: "fast"
+      if_detected: "flag"
+    prompt_security:
+      enabled: true
+      if_detected: "block"
+  output:
+    word_filter:
+      enabled: true
+      entities: ["system prompt", "api key"]
+      if_detected: "flag"
+
+evidence_storage:
+  backend: "sqlite"
+  # Leave `path` unset for the default ~/.glacis/glacis.db. An explicit path
+  # is taken literally — `~` is not expanded. See the Storage reference.
+```
+
+  </TabItem>
+  <TabItem label="app.py">
+
+```python
+import os
+from glacis.integrations.litellm import attested_litellm
+
+client = attested_litellm(
+    config="glacis.yaml",
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+)
+
+response = client.completion(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+  </TabItem>
+</Tabs>
+
+Mode, service identity, controls, sampling and storage now all move without a
+code change. Reading the file needs `pyyaml` — see
+[Install](/connect/install/#extras). Full reference:
+[Configuration](/connect/configuration/).
+
+<Aside type="caution" title="This is config-first, not zero-code">
+  It is honest to call this one line of Python plus a YAML file. It is not
+  honest to call it a config-only integration.
+
+  A genuinely code-free path — dropping a callback into a LiteLLM **proxy**'s
+  own `litellm_config.yaml` so that unmodified applications behind the proxy
+  emit receipts — exists in the GLACIS gateway, but that component is not
+  published to PyPI and you cannot install it from these docs. If a proxy-level
+  integration is what you need, that is the enterprise gateway conversation, not
+  a `pip install`.
+</Aside>
+
+## Async
+
+```python
+import asyncio
+import os
+from glacis.integrations.litellm import attested_litellm, get_last_receipt
+
+seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])  # 64 hex chars
+
+
+async def main():
+    client = attested_litellm(config="glacis.yaml", signing_seed=seed)
+    response = await client.acompletion(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello!"}],
+    )
+    receipt = get_last_receipt()
+    print(receipt.id if receipt else "no receipt for that call")
+
+
+asyncio.run(main())
+```
+
+Receipt tracking uses `contextvars`, so concurrent tasks under
+`asyncio.gather()` each keep their own last receipt.
+
+## What ends up in the receipt
+
+| Thing | Treatment |
+| --- | --- |
+| `messages` | Hashed into `evidence_hash`. Never transmitted. |
+| Response content | Hashed into `evidence_hash`. Never transmitted. |
+| System prompt | SHA-256 recorded in the control-plane results |
+| Model | Metadata — the model string you passed |
+| Provider | Metadata — always the literal `"litellm"`, not the downstream provider |
+| Temperature | Control-plane results |
+| Token counts | Kept in local evidence |
+
+`operation_type` is always `"completion"`.
+
+<Aside type="caution" title="Streaming is not supported">
+  The wrapper reads `response.choices[…].message.content` and `response.usage`
+  from a completed response. `stream=True` does not return that shape.
+</Aside>
+
+<Aside type="caution" title="Attestation is fail-open, on purpose">
+  A failed attestation is swallowed and the model response is returned anyway.
+  `get_last_receipt()` may then be `None` or stale. Check for it if a missing
+  receipt matters; `debug=True` prints what was swallowed.
+
+  Fail-open is about exceptions, not about time: attestation runs synchronously
+  before this call returns, and online mode retries up to four times with
+  30-second per-operation timeouts and blocking backoff. Four attempts that each
+  time out once cost **129.1 seconds** — one scenario, not a deadline: `timeout=30`
+  bounds inactivity, not the length of a response, so nothing bounds this by
+  default. See
+  [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
+
+  `acompletion()` is a coroutine, but it calls `attest_and_store()`
+  synchronously — no `to_thread`, no executor. The retry loop's `time.sleep()`
+  runs on the **event loop**, so a retry storm stalls every task sharing it, not
+  just this request.
+</Aside>
+
+## `attested_litellm()` reference
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `glacis_api_key` | `str \| None` | `None` | Workspace key. Required for online mode. |
+| `glacis_base_url` | `str` | `"https://api.glacis.io"` | API base URL. |
+| `service_id` | `str` | `"litellm"` | Service identifier on the receipt. |
+| `debug` | `bool` | `False` | Debug logging, including swallowed attestation errors. |
+| `offline` | `bool \| None` | `None` | `None` → inferred from config, or from whether `glacis_api_key` was given. |
+| `signing_seed` | `bytes \| None` | `None` | 32 bytes. Required when offline. |
+| `policy_key` | `bytes \| None` | `None` | 32-byte HMAC key for sampling. Falls back to `signing_seed`. |
+| `config` | `str \| None` | `None` | Path to `glacis.yaml`. |
+| `input_controls` | `list[BaseControl] \| None` | `None` | Extra controls before the call. |
+| `output_controls` | `list[BaseControl] \| None` | `None` | Extra controls after the call. |
+| `metadata` | `dict[str, str] \| None` | `None` | Merged into every attestation. |
+
+Returns an `AttestedLiteLLM` with `.completion()`, `.acompletion()`,
+`.glacis_tags()` and `.glacis_operation()`. Raises `GlacisBlockedError` when a
+control blocks.
+
+<Aside type="note" title="Untested against a live provider">
+  Signatures are checked by `docs/scripts/verify-doc-snippets.py`; the
+  end-to-end call is not exercised in CI. Run it once with your own keys.
+</Aside>

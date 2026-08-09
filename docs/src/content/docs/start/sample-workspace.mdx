@@ -1,0 +1,89 @@
+---
+title: The sample workspace
+description: Your workspace ships with synthetic receipts, clearly badged SAMPLE, so the first screen is never empty and never lies.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+import Screenshot from '../../../components/Screenshot.astro';
+
+An empty dashboard teaches nothing. A new workspace is therefore populated with
+synthetic receipts so you can read one, open it, and check it before your own
+system has produced anything.
+
+Every one of them is badged <ReceiptBadge kind="sample" />.
+
+<Screenshot caption="Workspace receipts list — every synthetic row carries the SAMPLE badge." />
+
+## What SAMPLE means here
+
+<ReceiptBadge kind="sample" gloss />
+
+SAMPLE describes the **subject matter**, not the cryptography. Sample receipts
+are generated data: no model was called, no control ran, and the timestamps,
+service names and control results are fabricated for illustration.
+
+**The signature over that fabricated content is real.** A sample receipt is
+signed the same way any other receipt is, by a real key, and it verifies. That
+is the point of it — you can run a real verification and watch a real check
+pass, on a record whose contents were invented.
+
+So SAMPLE is a flag that rides *alongside* the signing tier, not instead of it.
+A sample receipt is always also one of the two tiers:
+
+<ReceiptBadge kind="self-signed" sample gloss />
+
+<ReceiptBadge kind="witnessed" sample gloss />
+
+They are badged in the list, badged on the detail view, and badged in anything
+you export. There is no view in which a sample receipt is presented as though
+the operation it describes happened. If you ever find one that is not badged,
+that is a bug worth reporting.
+
+<Aside type="caution">
+  Do not send a sample receipt to a customer, auditor or regulator as evidence
+  of anything. A passing signature check on it proves the bytes were not edited
+  after signing — it says nothing about an event, because there was no event.
+  It is a worked example of a file format.
+</Aside>
+
+## What to look at
+
+Open one and read the fields. The shape is the same as the receipts your own
+system will emit:
+
+| Field | What it is |
+| --- | --- |
+| `id` | Identifier for this attestation. |
+| `service_id` | Which of your services produced it. |
+| `operation_type` | `inference`, `completion`, `embedding`, whatever you called it. |
+| `evidence_hash` | SHA-256 over the canonical JSON of `{input, output}`. The input and output themselves are **not** here. |
+| `control_plane_results` | Which controls ran, what they returned, whether the request was forwarded or blocked. |
+| `public_key` / `signature` | Ed25519. Who signed the record, and the signature over it. |
+| `timestamp` | When it was signed. |
+
+The point of `evidence_hash` is worth dwelling on: it commits to the exact input
+and output without containing them. Anyone holding the original input and output
+can recompute the hash and confirm the receipt refers to *that* exchange. Anyone
+who does not hold them learns nothing from the receipt about what was said.
+
+## Check one yourself
+
+Open a sample receipt and use the verify action. It runs in your browser —
+the receipt is not uploaded anywhere — and it reports each check separately:
+structure, signature, hash binding, and log inclusion where a receipt carries a
+transparency proof.
+
+A sample receipt passes its signature check, because it was really signed. That
+is not a statement that the event described happened. It is a statement that
+the bytes have not been altered since they were signed. Which is precisely the
+distinction the rest of these docs is about: the cryptography and the subject
+matter are separate questions, and a green check only ever answers the first
+one. See [what a green check proves](/verify/what-a-check-proves/).
+
+## Next
+
+- [Mint a receipt](/start/mint-a-receipt/) — produce one that is not synthetic.
+- [Verify](/verify/) — the standalone verifier, for receipts anyone hands you.

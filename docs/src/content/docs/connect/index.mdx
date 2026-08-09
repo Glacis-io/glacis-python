@@ -1,0 +1,343 @@
+---
+title: Connect
+description: Get receipts out of your own system — a provider wrapper, a YAML file, or a direct attest call. About ten minutes.
+sidebar:
+  order: 0
+---
+
+import { Aside, CardGrid, LinkCard, Tabs, TabItem } from '@astrojs/starlight/components';
+import ReceiptBadge from '../../../components/ReceiptBadge.astro';
+
+Receipts you typed into a form are a demo. Receipts your system emits are
+evidence. This section is the shortest path from one to the other.
+
+```bash
+pip install glacis
+```
+
+`glacis` 0.8.0, Python 3.9+. Three runtime dependencies (`httpx`, `pydantic`,
+`pynacl`); provider SDKs are optional extras.
+
+## Pick a path
+
+<Tabs>
+  <TabItem label="Wrap your provider">
+
+Swap your provider's constructor for the attested one. Nothing else in your code
+changes, and the wrapper attempts a receipt on every wrapped call — **best
+effort, never fatal**: if attestation or storage fails, the exception is
+swallowed by design and you still get the model response, with no receipt. It is
+not free, though: the attempt happens *before* your call returns. See
+[what "best effort" costs you](#attestation-is-best-effort-never-a-gate) below.
+
+```python
+import os
+from glacis.integrations.openai import attested_openai, get_last_receipt
+
+client = attested_openai(
+    openai_api_key=os.environ["OPENAI_API_KEY"],
+    offline=True,
+    signing_seed=bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"]),
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+receipt = get_last_receipt()
+```
+
+[OpenAI](/connect/openai/) · [Anthropic](/connect/anthropic/) ·
+[Gemini](/connect/gemini/) · [LiteLLM](/connect/litellm/)
+
+  </TabItem>
+  <TabItem label="Config-first">
+
+Put mode, service identity, controls, sampling and storage in a `glacis.yaml`
+next to your app. The only Python is the factory call, which reads the file.
+
+```yaml
+# glacis.yaml
+version: "1.3"
+attestation:
+  offline: true
+  service_id: "claims-triage"
+sampling:
+  l1_rate: 0.1
+controls:
+  input:
+    pii_phi:
+      enabled: true
+      if_detected: "flag"
+evidence_storage:
+  backend: "sqlite"
+```
+
+```python
+import os
+from glacis.integrations.litellm import attested_litellm
+
+seed = bytes.fromhex(os.environ["GLACIS_SIGNING_SEED"])  # 64 hex chars
+
+client = attested_litellm(config="glacis.yaml", signing_seed=seed)
+```
+
+`attestation.offline: true` in the YAML means the factory needs a seed: without
+one it raises `ValueError: signing_seed is required for offline mode`. The
+config file cannot supply it — a signing key does not belong in a file you
+commit.
+
+[Configuration reference](/connect/configuration/)
+
+  </TabItem>
+  <TabItem label="Attest directly">
+
+For anything that is not a chat completion — an embedding job, a retrieval step,
+a human review, a batch decision — call `attest()` yourself.
+
+```python
+import os
+from glacis import Glacis
+
+glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
+
+receipt = glacis.attest(
+    service_id="claims-triage",
+    operation_type="classification",
+    input={"claim_id": "C-1029", "text": "..."},
+    output={"decision": "escalate", "score": 0.82},
+)
+```
+
+[Quickstart](/connect/quickstart/)
+
+  </TabItem>
+</Tabs>
+
+## Attestation is best effort, never a gate
+
+The wrapper path is deliberately fail-open. `attest_and_store()` in
+`glacis/integrations/base.py` wraps the whole attestation-and-storage step in a
+`try` and catches **every** exception, printing only when `debug=True`:
+
+- Your provider call is made and its response is returned regardless. No
+  attestation problem can fail your LLM call or change what it returns.
+- If attestation fails, no receipt exists for that call. `get_last_receipt()`
+  then returns `None` — or, worse to read past, the **previous** call's receipt
+  from the same context.
+- Nothing surfaces the failure to your code.
+
+So the accurate sentence is *the wrapper attempts a receipt on every wrapped
+call*, not *every call is attested*. If a missing receipt matters to you, check
+that `get_last_receipt()` returned one and that its `id` is not one you have
+already seen, and run with `debug=True` while you are diagnosing.
+
+The one place the wrapper *does* raise is a blocking control:
+`GlacisBlockedError` stops the provider call before it is made. That is a
+policy decision you configured, not an attestation failure.
+
+<Aside type="caution" title="0.8.0 has one gap in that second bullet">
+  In 0.8.0, `attest_and_store()` publishes the receipt *before* it writes
+  evidence. So if the attestation succeeded and only the **storage** step failed,
+  `get_last_receipt()` hands back that call's receipt anyway — a receipt the
+  paragraph above says does not exist. The receipt is real and its signature is
+  good; what is missing is the stored evidence you would need to prove what it
+  covers.
+
+  Fixed in this repository by publishing the receipt only after storage returns,
+  staged for 0.8.1 and **not published** — `pip install glacis` still gives you
+  0.8.0. Until then, treat `get_last_receipt()` as "an attestation happened",
+  not as "an attestation happened and was stored", and check `get_evidence()`
+  if the stored copy matters to you.
+</Aside>
+
+### Fail-open means no exception. It does not mean no delay.
+
+`attest_and_store()` runs **synchronously, on your thread, after the provider
+response has arrived and before the wrapper hands it back**
+(`glacis/integrations/openai.py`, and the same shape in every wrapper). There is
+no queue, no background thread, no task. Whatever attestation costs, your caller
+waits for it.
+
+In **offline** mode that cost is a hash, an Ed25519 signature and a local write:
+sub-millisecond, no network. In **online** mode it is an HTTP round trip to
+`api.glacis.io` — and that round trip retries.
+
+`Glacis._request_with_retry` makes up to `max_retries + 1` attempts. At the
+defaults in `glacis/client.py`:
+
+| Constant | Default |
+| --- | --- |
+| `DEFAULT_TIMEOUT` | `30.0` seconds, per attempt |
+| `DEFAULT_MAX_RETRIES` | `3` → **four attempts** |
+| `DEFAULT_BASE_DELAY` | `1.0` second |
+| `DEFAULT_MAX_DELAY` | `30.0` seconds |
+
+Between attempts it calls `time.sleep(delay + jitter)` on your thread, where
+`delay = min(base_delay * 2**attempt, max_delay)` and `jitter` is up to 30% of
+it: **1s, then 2s, then 4s**, so 7.0–9.1 seconds of sleeping across a full run.
+
+So the arithmetic for four attempts that each end in a single timeout:
+
+```
+4 × 30s (timeouts) + 1.3s + 2.6s + 5.2s (backoff with maximum jitter)
+= 129.1 seconds added to a single wrapped call
+```
+
+<Aside type="caution" title="129.1 seconds is one scenario, not a deadline">
+  `httpx.Client(timeout=30)` does **not** set a total deadline. It sets
+  per-operation timeouts — connect, read, write, pool — and the read timeout is
+  the maximum gap *between chunks*, not the maximum length of the response.
+  ([HTTPX timeout semantics](https://www.python-httpx.org/advanced/timeouts/).)
+
+  So a server that sends a byte every 29 seconds never trips a 30-second read
+  timeout, and one attempt alone can run far past 30 seconds. The 129.1 above is
+  exactly what it says — four attempts that each hang and then time out once —
+  and not a bound on anything else.
+
+  **The honest bound is that there is none by default.** Nothing in the SDK, and
+  nothing in `httpx`, caps the wall-clock time of an attestation call.
+
+  A caller imposes one from outside, because that is the only place it can be
+  imposed today. Through a provider wrapper the choice is the first bullet or
+  nothing — see the note below; the other two need you to hold the client:
+
+  - **Offline mode.** No request, so no clock to run over. This is the only
+    "bound" that needs nothing from you.
+  - **Your own thread.** Call `attest()` on a `ThreadPoolExecutor` and use
+    `future.result(timeout=…)`. You get control back on time; the worker thread
+    keeps running until httpx returns, so this bounds *your* latency, not the
+    process's work.
+  - **`asyncio.wait_for()`** around `AsyncGlacis.attest()`, which does cancel
+    the underlying request — but the provider wrappers do not use `AsyncGlacis`,
+    so this is only available when you call the client yourself.
+
+  A drip-feeding endpoint is a hostile or badly broken one, not the everyday
+  case. It is stated because "129.1 seconds" reads as a promise, and it is not
+  one.
+</Aside>
+
+That scenario is not the norm either. A refused connection fails each attempt
+instantly, which is the common failure and costs only the backoff: a probe
+against a closed local port made **exactly four attempts** and returned after
+**8.4 seconds**, all of it sleeping. Expect anywhere in the 7.0–9.1 second band,
+because the jitter is random.
+
+**The async wrapper is not exempt — it is worse.**
+`attested_litellm().acompletion()` is a coroutine, but it calls
+`attest_and_store()` synchronously with no `to_thread` and no executor. The
+retry loop's `time.sleep()` therefore runs *on the event loop*, so a retry storm
+does not stall one request, it stalls every task sharing that loop.
+
+Not every failure retries. Reading `_request_with_retry`, only
+`httpx.ConnectError` and `httpx.TimeoutException` are caught for another go,
+along with 5xx responses. A 4xx raises `GlacisApiError` and a 429 raises
+`GlacisRateLimitError` on the **first** attempt, so a bad key costs you one
+round trip, not four.
+
+<Aside type="caution" title="At 0.8.0 the wrapper does not let you bound this">
+  `Glacis(timeout=…, max_retries=…, base_delay=…, max_delay=…)` are real
+  constructor arguments, but `attested_openai()` and its siblings do not accept
+  or forward them — `create_glacis_client()` in
+  `glacis/integrations/base.py` passes only mode, key, base URL, debug, storage
+  and sampling. `glacis.yaml` has no timeout or retry setting either. So at
+  0.8.0 there are exactly two ways to bound the latency a wrapper adds:
+
+  - **Run the wrapper offline** (`offline=True`, or `attestation.offline` in
+    YAML). No network call happens at all, so no retry can.
+  - **Do not use the wrapper for online mode.** Construct
+    `Glacis(api_key=…, timeout=2.0, max_retries=0)` yourself and call
+    `attest()` where you want it — including from a queue or a background
+    thread, which is the only way to get attestation off the request path, and
+    the only place the wall-clock bounds above can be applied.
+
+  If you need online attestation inside a latency budget, the second one is the
+  only answer today. Note that neither one makes `timeout=` a deadline: it
+  lowers the inactivity threshold, which is a different thing.
+</Aside>
+
+## Decide one thing first: offline or online
+
+This is the decision that changes what your receipts are worth to somebody else.
+
+| | Offline <ReceiptBadge kind="self-signed" /> | Online |
+| --- | --- | --- |
+| Needs | A 32-byte signing seed you keep | A workspace key (`glsk_…`) |
+| Network | None. Nothing leaves the process. | Hash + metadata to `api.glacis.io` |
+| Signed by | You | The GLACIS service, with its key |
+| `witness_status` on the returned object | `"UNVERIFIED"` | `"WITNESSED"` — a **mode label**, not a proof |
+| Second signature or inclusion proof | None | Not exposed on the returned object |
+| Worth to a third party | It is your diary | A record signed by someone other than you |
+
+Start offline — it works this second, with no account. Move to online when
+somebody outside your organisation needs a signer who is not you.
+[Offline vs online](/connect/offline-vs-witnessed/) is the long version, and it
+is worth reading before you put a <ReceiptBadge kind="witnessed" /> badge on
+anything: at 0.8.0 that tier comes from the portal's mint path, not from an SDK
+`witness_status` string.
+
+<Aside type="caution" title="What never leaves your process — and the one thing that does">
+  `attest()` hashes `{"input": …, "output": …}` with canonical JSON and SHA-256,
+  and sends **only the hash**. Prompts, completions and documents you pass as
+  `input=` / `output=` are not transmitted in either mode, and your provider API
+  keys are never sent to GLACIS.
+
+  **`control_plane_results` is the exception.** Online mode puts it in the
+  request body *verbatim*, exactly as you supplied it
+  (`glacis/client.py`). It is an untyped `dict[str, Any]` — nothing inspects,
+  redacts or hashes it on the way out. Whatever you put there leaves the
+  machine. The wrapper-built structure holds only policy identifiers, control
+  verdicts, a system-prompt **hash** and the temperature, but if you hand
+  `attest()` your own dictionary with prompt text or patient data inside, that
+  text is transmitted. See
+  [the data boundary](/connect/offline-vs-witnessed/#what-is-actually-sent).
+
+  The exact canonicalisation, and where it diverges from RFC 8785, is written
+  out in [Quickstart](/connect/quickstart/#the-canonicalisation-actually-used).
+</Aside>
+
+## Get a workspace key
+
+Online mode needs a key. Create a workspace at
+[app.glacis.io](https://app.glacis.io), open workspace settings, and mint one:
+
+- `glsk_test_…` for development
+- `glsk_live_…` for production
+
+The key is shown once. Store it in your secrets manager; pass it as
+`api_key=` / `glacis_api_key=` or read it from the environment.
+
+<Aside type="note" title="Offline needs none of this">
+  Key minting and the hosted witness ship with the launch build of
+  app.glacis.io. Everything on the offline path — `pip install glacis`, local
+  Ed25519 signing, the provider wrappers with `offline=True`, the whole of
+  [Verify from Python](/verify/cli/) — works today with no account at all.
+  Build against offline first; the switch to online is one constructor
+  argument.
+</Aside>
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Install"
+    description="Extras, versions, and what each one pulls in."
+    href="/connect/install/"
+  />
+  <LinkCard
+    title="Quickstart"
+    description="Your first receipt, offline, in about a minute."
+    href="/connect/quickstart/"
+  />
+  <LinkCard
+    title="Offline vs online"
+    description="What each mode actually returns, and where the witnessed tier comes from."
+    href="/connect/offline-vs-witnessed/"
+  />
+  <LinkCard
+    title="Configuration"
+    description="Everything glacis.yaml controls."
+    href="/connect/configuration/"
+  />
+</CardGrid>

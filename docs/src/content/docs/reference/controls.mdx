@@ -1,6 +1,6 @@
 ---
 title: Controls
-description: Apply input and output safety controls to scan for PII, jailbreak attempts, and prohibited terms before and after LLM calls.
+description: Input and output scanning for PII/PHI, jailbreak attempts, toxicity, topic drift and prohibited terms — recorded in the receipt.
 ---
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -226,8 +226,13 @@ controls:
 
 Categories (toxic-bert): `toxic`, `severe_toxic`, `obscene`, `threat`, `insult`, `identity_hate`.
 
-<Aside type="tip">
-  Requires the `transformers` package: `pip install glacis[content-safety]`
+<Aside type="caution">
+  Content safety needs `transformers`, plus a model download on first use.
+
+  The SDK's own `ImportError` tells you to run `pip install glacis[content-safety]`
+  — **that extra does not exist in 0.8.0**. Install `transformers` directly, or
+  take it as part of `glacis[jailbreak]`. (Checked against `pyproject.toml` by
+  `docs/scripts/verify-doc-snippets.py`.)
 </Aside>
 
 ### Topic Enforcement
@@ -463,7 +468,7 @@ Control results are recorded in the attestation's `control_plane_results` field.
 |-------|------|-------------|
 | `id` | `str` | Identifier (e.g., `"glacis-input-pii"`) |
 | `type` | `str` | Control type (`"content_safety"`, `"pii"`, `"jailbreak"`, `"topic"`, `"prompt_security"`, `"grounding"`, `"word_filter"`, `"custom"`) |
-| `version` | `str` | SDK version |
+| `version` | `str` | Stamped from an internal constant. In 0.8.0 that constant still reads `"0.7.0"` — it is **not** the installed package version. Do not use it to identify the SDK build. |
 | `provider` | `str` | Provider identifier |
 | `latency_ms` | `int` | Processing time in milliseconds |
 | `status` | `str` | Action taken: `"forward"`, `"flag"`, `"block"`, or `"error"` |
@@ -504,7 +509,7 @@ from glacis.controls import ControlsRunner, StageResult, ControlAction
 
 ## See Also
 
-- [`demos/custom_control_demo.ipynb`](https://github.com/glacisai/glacis-python/blob/main/demos/custom_control_demo.ipynb) -- step-by-step notebook building a custom control from scratch
-- [Configuration](/sdk/python/configuration/) -- full `glacis.yaml` reference
-- [API Reference](/sdk/python/api/) -- `ControlPlaneResults`, `ControlExecution` models
-- [Sampling & Evidence](/sdk/python/sampling/) -- how controls interact with L1/L2 sampling
+- [`demos/custom_control_demo.ipynb`](https://github.com/Glacis-io/glacis-python/blob/main/demos/custom_control_demo.ipynb) -- step-by-step notebook building a custom control from scratch
+- [Configuration](/connect/configuration/) -- full `glacis.yaml` reference
+- [API Reference](/reference/api/) -- `ControlPlaneResults`, `ControlExecution` models
+- [Sampling & Evidence](/reference/sampling-and-evidence/) -- how controls interact with L1/L2 sampling
