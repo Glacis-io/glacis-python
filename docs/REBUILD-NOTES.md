@@ -806,6 +806,32 @@ Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
 
 ---
 
+## Corrections — round 6
+
+*Fifth Codex pass (session 019fe43e) ended early — the runner's content filter
+stopped the turn — but not before it named a real hole in round 5's binding
+design: a log-bound object returned the server's `valid=True` even when the
+mandatory local check had failed (`structural` or `signature_invalid`), the
+failure demoted to a note in `error`. Binding compares the strings of
+`signature` and `evidence_hash`, so an object copying a real entry's fields
+bound and inherited the server's verdict.*
+
+- **`verify_attestation()` bound path now fails closed.** The server's
+  `VerifyResult` is returned only when the object's own Ed25519 check passed;
+  otherwise the caller gets the failed `OfflineVerifyResult` with
+  `bound-but-unverified:` in `error` and `valid` following the local check.
+  Two new public-dispatch tests: a bound object with one tampered signed field
+  (`signature_invalid`), and a bound object with an undecodable key
+  (`structural`) — both `valid=False`.
+- **`tests/test_verify.py` happy path now signs its fixture for real.** The
+  conftest placeholder signature ("c" × 128) had been passing *because of* the
+  laundering; the repaired test derives a real keypair, signs the actual
+  payload, and keeps the mocked log entry describing those bytes so it still
+  binds.
+- `reference/api.mdx` documents all three bound/unbound outcomes; CHANGELOG
+  updated. Suites: pytest 564 passed / 63 skipped; harness 141/141; docs build
+  green; ruff clean on touched files.
+
 ## Corrections — round 5
 
 *Fourth Codex launch-gate pass (`glacis-know/2026-08-08_codex-pass4-sdk.md`,

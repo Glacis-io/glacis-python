@@ -68,10 +68,18 @@ described below.
     describes an id and not your bytes, it is applied to the object only when
     the two **bind**: matching `signature` and `evidence_hash`, plus
     `service_id` and `operation_type` when both sides carry them.
-  - Bound, you get the server's `VerifyResult`, with `error` naming the binding
-    and listing what the log entry carries nothing about —
-    `control_plane_results`, `cpr_hash`, `evidence`, `review`, `timestamp`,
-    `operation_id`, `operation_sequence`, `supersedes`.
+  - Bound **and the object's own signature verified**, you get the server's
+    `VerifyResult`, with `error` naming the binding and listing what the log
+    entry carries nothing about — `control_plane_results`, `cpr_hash`,
+    `evidence`, `review`, `timestamp`, `operation_id`, `operation_sequence`,
+    `supersedes`.
+  - Bound but the object's own check failed, you get the failed
+    `OfflineVerifyResult` with `error` carrying `bound-but-unverified:`.
+    Binding compares the *strings* of `signature` and `evidence_hash`; a
+    string-equal signature is not a verified one, and the server's `valid` is
+    never applied to bytes that failed their own Ed25519 check. (Closed after
+    an external review found the bound path returning the server's `valid=True`
+    over a failed local check.)
   - Unbound, none of the server's answer is returned — not the org, not the
     proof, not the tree head. You get the object's own `OfflineVerifyResult`,
     `valid` reflecting the bytes that were checked, and `error` saying the

@@ -218,16 +218,35 @@ class TestVerifyCommand:
         capsys,
     ):
         """verify_command handles online receipt."""
+        # The supplied object's own Ed25519 check is mandatory and gates the
+        # bound path (the pass-5 review closed the string-equal loophole), so
+        # the happy path needs a REAL signature — the conftest placeholder
+        # ("c" * 128) now correctly fails closed as bound-but-unverified.
+        from glacis.crypto import get_ed25519_runtime, offline_signed_payload_for
+        from glacis.models import Attestation
+
+        seed = bytes(range(32))
+        runtime = get_ed25519_runtime()
+        signed = dict(
+            sample_attestation_data,
+            public_key=runtime.get_public_key_hex(seed),
+            is_offline=False,
+        )
+        message = offline_signed_payload_for(Attestation(**signed))
+        signed["signature"] = runtime.sign(seed, message).hex()
+        # The mocked log entry must still describe these bytes, or nothing binds.
+        sample_verify_response["attestation"]["signature"] = signed["signature"]
+
         # Mock the verification endpoint
         httpx_mock.add_response(
             method="GET",
-            url=f"{DEFAULT_BASE_URL}/v1/verify/{sample_attestation_data['id']}",
+            url=f"{DEFAULT_BASE_URL}/v1/verify/{signed['id']}",
             json=sample_verify_response,
         )
 
         # Save receipt to file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(sample_attestation_data, f)
+            json.dump(signed, f)
             temp_path = f.name
 
         try:

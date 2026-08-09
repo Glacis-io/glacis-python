@@ -608,6 +608,61 @@ class TestIsOfflineCannotBypassTheSignatureCheck:
         assert result.valid is False
         assert "revoked" in (result.error or "")
 
+    def test_a_bound_object_whose_own_check_failed_is_invalid(self, honest):
+        """Binding compares strings; a string-equal signature is not a verified
+        one. The pass-5 review found the server's valid=True being returned
+        here — an object copying a real entry's signature and evidence_hash
+        bound, and its own failed Ed25519 check was demoted to a note."""
+        g, receipt = honest
+        forged = receipt.model_copy(
+            deep=True,
+            update={"is_offline": False, "timestamp": receipt.timestamp + 1},
+        )
+
+        _stub_online(
+            g,
+            _log_entry(
+                entryId=receipt.id,
+                signature=receipt.signature,
+                evidenceHash=receipt.evidence_hash,
+                serviceId=receipt.service_id,
+                operationType=receipt.operation_type,
+            ),
+        )
+        result = g.verify(forged)
+
+        assert isinstance(result, OfflineVerifyResult)
+        assert result.valid is False
+        assert "signature_invalid" in (result.error or "")
+        assert "bound-but-unverified: " in (result.error or "")
+        # Nothing of the server's answer is laundered onto the failed bytes.
+        assert not (result.error or "").startswith("bound: ")
+
+    def test_a_bound_object_that_cannot_be_checked_stays_unverified(self, honest):
+        """The structural half of the same hole: an undecodable key means the
+        local check could not run, and binding must not stand in for it."""
+        g, receipt = honest
+        stripped = receipt.model_copy(
+            deep=True, update={"is_offline": False, "public_key": "z" * 64}
+        )
+
+        _stub_online(
+            g,
+            _log_entry(
+                entryId=receipt.id,
+                signature=receipt.signature,
+                evidenceHash=receipt.evidence_hash,
+                serviceId=receipt.service_id,
+                operationType=receipt.operation_type,
+            ),
+        )
+        result = g.verify(stripped)
+
+        assert isinstance(result, OfflineVerifyResult)
+        assert result.valid is False
+        assert (result.error or "").startswith("structural: ")
+        assert "bound-but-unverified: " in (result.error or "")
+
     def test_flipping_is_offline_to_true_never_reaches_the_network(self, honest):
         """Flipping the other way narrows the check; it cannot widen it."""
         g, receipt = honest

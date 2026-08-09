@@ -276,16 +276,23 @@ def verify_attestation(
     * ``is_offline=False`` adds a lookup of ``receipt.id``. The answer is about
       an id, so it is applied to the object only if the object **binds** to the
       returned log entry (see :func:`bind_to_log_entry`).
-    * **Bound** — the server's :class:`VerifyResult` is returned, with the
-      binding named in ``error`` along with what the entry cannot cover.
+    * **Bound, local check passed** — the server's :class:`VerifyResult` is
+      returned, with the binding named in ``error`` along with what the entry
+      cannot cover.
+    * **Bound, local check failed** — fail closed. Binding compares the
+      *strings* of ``signature`` and ``evidence_hash``; a string-equal
+      signature is not a verified one, and an object whose own Ed25519 check
+      failed has not been authenticated by anything. The result is the failed
+      local check, with the binding reported in ``error`` as
+      ``bound-but-unverified:`` — never the server's ``valid``.
     * **Unbound** — the server's answer described some other record, so none of
       it is returned. The result is the object's own offline check, with
       ``error`` naming that the lookup happened and was not applied. ``valid``
       then reflects the supplied object, which is the only thing that was
       actually verified.
 
-    A receipt whose own signature fails and which does not bind is therefore
-    ``valid=False`` whatever the server says about the id it claims.
+    A receipt whose own signature fails is therefore ``valid=False`` whatever
+    the server says about the id it claims — bound or not.
     """
     local = verify_offline(receipt)
 
@@ -298,14 +305,25 @@ def verify_attestation(
     bound, report = bind_to_log_entry(receipt, record)
 
     if bound:
-        note = f"bound: {report}"
-        if not local.valid:
-            note += (
-                ". The supplied attestation does not additionally carry a valid "
-                f"offline signature of its own ({local.error}); the log entry, "
-                "not the object's bytes, is what this verdict rests on"
+        if local.valid:
+            return record.model_copy(
+                update={"error": _with_note(record.error, f"bound: {report}")}
             )
-        return record.model_copy(update={"error": _with_note(record.error, note)})
+        # Fail closed: the binding matched string-for-string, but a
+        # string-equal signature is not a verified one. The supplied bytes
+        # failed their own Ed25519 check, so the server's verdict about the
+        # id must not be laundered onto them — valid follows the local check.
+        return local.model_copy(
+            update={
+                "error": _with_note(
+                    local.error,
+                    f"bound-but-unverified: {report}. The log entry matches "
+                    "this object's binding fields, but the supplied bytes "
+                    "failed their own Ed25519 check, and valid follows that "
+                    "check — not the server's answer about the id",
+                )
+            }
+        )
 
     return local.model_copy(
         update={
