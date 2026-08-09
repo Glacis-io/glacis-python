@@ -134,7 +134,16 @@ def verify_offline(receipt: Attestation) -> OfflineVerifyResult:
     if receipt.cpr_recovery_error:
         return failed(f"cpr_unrecoverable: {receipt.cpr_recovery_error}")
 
-    degradation = _cpr_degradation(receipt)
+    # cpr_hash is unsigned, so computing its match is a degradation note, never
+    # the verdict — and hashing hand-crafted control_plane_results can raise
+    # (e.g. a NaN/Infinity a third party put in the JSON). A crash here would
+    # turn `verify(some-file-someone-sent-you)` into an unhandled exception
+    # instead of an honest valid=False. Catch it: the signed-payload rebuild
+    # below fails structurally on the same content, which is the real answer.
+    try:
+        degradation = _cpr_degradation(receipt)
+    except ValueError as e:
+        degradation = f"cpr_uncanonicalizable: {e}"
 
     try:
         message = offline_signed_payload_for(receipt)

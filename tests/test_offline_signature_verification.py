@@ -201,6 +201,21 @@ class TestSignedFieldTamperingFailsClosed:
         assert result.error is not None
         assert result.error.startswith("signature_invalid: ")
 
+    def test_uncanonicalizable_cpr_returns_a_verdict_not_a_crash(self, stored):
+        """verify() runs on receipts strangers hand you. A NaN/Infinity in the
+        control_plane_results (legal JSON via the common extension, and a value
+        json.load accepts) must yield valid=False, never an unhandled exception
+        that kills the caller. Regression for the uncaught hash_payload raise in
+        the cpr-degradation step, which ran before the signature check."""
+        g, reloaded = stored
+        tampered = reloaded.model_copy(deep=True)
+        tampered.control_plane_results = {"determination": {"score": float("nan")}}
+
+        result = g.verify(tampered)  # must not raise
+
+        assert result.valid is False
+        assert result.error is not None
+
     def test_supersedes_added_to_a_receipt_signed_without_one_fails(self, stored):
         g, reloaded = stored
         tampered = reloaded.model_copy(deep=True)
