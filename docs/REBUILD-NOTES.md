@@ -18,11 +18,11 @@ script that runs the code.
 ## How snippets were verified
 
 `docs/scripts/verify-doc-snippets.py` executes the documented behaviour against
-the SDK in this repo. **118 checks, all passing** as of this commit
-(53 from the original rebuild, 24 added in round 2, 41 added in round 3), plus
-**7 `NOT COVERED` lines** — claims the script cannot execute, printed with a
-reason and counted separately so that a green run is never read as complete
-coverage.
+the SDK in this repo. **139 checks, all passing** as of this commit
+(53 from the original rebuild, 24 added in round 2, 41 in round 3, 21 in
+round 4), plus **7 `NOT COVERED` lines** — claims the script cannot execute,
+printed with a reason and counted separately so that a green run is never read
+as complete coverage.
 
 ```
 pip install -e .          # from the repo root
@@ -31,17 +31,19 @@ python docs/scripts/verify-doc-snippets.py
 ```
 
 It covers: offline attestation, canonical-JSON hashing and every documented
-divergence from RFC 8785, `verify()` (including its gap), the published
-independent verification routine across every tamper case plus the
-`control_plane_results` and `supersedes` variants, all sixteen rows of the
-signed/unsigned field tables, the persisted-CPR round trip and the pre-0.8.1
-loss of it, the online path's retry and latency behaviour and request body
-(against a stubbed transport), L1/L2 evidence retention, operation linking,
-`decompose()`, `supersedes`, `should_review()` determinism, both storage
-backends, the two storage path gotchas, the CLI on good and tampered receipts,
-`glacis.yaml` loading, the word filter and `ControlsRunner`, constructor
-validation, the declared extras in `pyproject.toml`, and the keyword signature
-of all four provider wrappers.
+divergence from RFC 8785, `verify()` — the real Ed25519 check it performs from
+0.8.1, *and* the structural-only behaviour 0.8.0 had, each asserted on the
+version that claims it — the published independent verification routine across
+every tamper case plus the `control_plane_results` and `supersedes` variants,
+all seventeen rows of the signed/unsigned field tables, the persisted-CPR round
+trip and the pre-0.8.1 loss of it, the request and response projections of all
+four provider wrappers, the online path's retry and latency behaviour and
+request body (against a stubbed transport), L1/L2 evidence retention, operation
+linking, `decompose()`, `supersedes`, `should_review()` determinism, both
+storage backends, the two storage path gotchas, the CLI on good and tampered
+receipts, `glacis.yaml` loading, the word filter and `ControlsRunner`,
+constructor validation, the declared extras in `pyproject.toml`, and the
+keyword signature of all four provider wrappers.
 
 It cannot cover: witnessed (online) mode against a live endpoint, or an
 end-to-end provider call. Those need a live endpoint and paid keys, and the
@@ -619,18 +621,184 @@ describe a green run as "everything is verified".
 | `grep -rniE "request[[:space:]]+access"` | **0 occurrences** |
 | `grep -rniE "compliant\|protected\|certified"` | 8 hits, all inside explicit negations |
 
+## Corrections — round 4
+
+*Third Codex launch-gate pass (`glacis-know/2026-08-08_codex-pass3-final-gate.md`,
+session 019fe3db). `glacis-plg` and `labs-plg` passed; this branch was blocked on
+five findings. All five are closed below.*
+
+### 1 · Stored CPR tampering was not fail-closed — the load-bearing one — fixed
+
+*Codex finding 1. `_recover_cpr()` accepts any JSON object without checking it
+against `cpr_hash`, and `_verify_offline()` checks only `cpr_recovery_error` and
+the public key — not the signature. A modified CPR, or a removal of both the CPR
+and the unsigned `cpr_hash`, could be reported valid although independent
+verification failed.*
+
+The real problem was never `_recover_cpr()`. It was that **offline verification
+verified nothing**: `Glacis._verify_offline()` derived a public key from the
+client's own seed and compared it to the receipt's, and the CLI checked string
+lengths. Both printed `Signature: PASS` over 128 zeroes. A hash-check inside the
+storage layer would have patched one symptom of that.
+
+So the check is now real, and there is one of it:
+
+- `Ed25519Runtime.verify()` — `nacl.signing.VerifyKey` over the exact signed
+  bytes. **No new dependency**: the SDK already signs with PyNaCl. It returns
+  `False` for a well-formed wrong signature and raises `CryptoError` when the
+  key or signature cannot be decoded, because "could not check" is a different
+  answer from "wrong".
+- `crypto.offline_signed_payload()` — the single definition of the signed bytes.
+  `_attest_offline()` signs with it and `verify_offline()` rebuilds with it, so a
+  change that broke verification would break signing in the same commit.
+- `glacis.verify.verify_offline()` is the one implementation. `Glacis.verify()`
+  delegates to it and `python -m glacis verify` calls it, so the library and the
+  command line cannot disagree about a receipt.
+
+Verification needs **no signing seed** — the public key on the receipt is the
+verifier. That is what makes a receipt checkable by the party it was handed to,
+and it means verifying a third party's receipt now succeeds when their signature
+is good, where 0.8.0 rejected it for not being ours.
+
+`error` names which failure it was: `signature_invalid`, `structural`,
+`cpr_unrecoverable`. The hash cross-check Codex asked for is there as well, but
+deliberately **not** as the authority: `cpr_hash` is unsigned, so a mismatch is
+reported by name (`cpr_hash_mismatch` / `cpr_hash_orphaned`) and the signature
+still decides `valid`. Making an unsigned field able to fail a receipt would
+have contradicted the boundary page — and been wrong.
+
+Tests tamper with every signed field *after storage*, including editing
+`control_plane_json` directly in the SQLite row and the CPR in the JSONL line,
+and stripping CPR and `cpr_hash` together so nothing structural is left to
+notice. All fail on the signature. Honest receipts still pass.
+
+Five pages then lost caveats that had become false. **A claim weaker than the
+code is a truth gap too** — a reader who believes the SDK never checks
+signatures writes verification they did not need. What stays on every one of
+those pages is the version split: 0.8.1 is unpublished, so `pip install glacis`
+still gives you the version that does not check.
+
+### 2 · The timeout claim was still false — fixed
+
+*Codex finding 2. `connect/index.mdx:181` calls 129.1 seconds a wall-clock
+ceiling. `httpx.Client(timeout=30)` sets operation timeouts; its read timeout is
+per received chunk, not a total request deadline.*
+
+Correct, and the fix is not a hedge. The arithmetic is valid for exactly one
+scenario — four attempts that each hang and time out once — and a
+slow-dripping response never trips a 30-second read timeout at all. The pages
+now say that, say plainly that **there is no default bound**, and say where a
+bound can come from: offline mode, a `ThreadPoolExecutor` with
+`future.result(timeout=…)` (which bounds your latency, not the process's work),
+or `asyncio.wait_for()` around `AsyncGlacis`, which does cancel the request but
+is unreachable through the provider wrappers. The four wrapper pages that
+repeated "a ceiling of 129.1 seconds" were corrected too.
+
+### 3 · The boundary page contradicted its own `public_key` row — fixed
+
+*Codex finding 3. Line 43 correctly says swapping `public_key` breaks
+verification; lines 48–50 then say all six unsigned rows "must not" break. The
+new unsigned, verifier-controlling `cpr_recovery_error` is also absent.*
+
+Resolved by splitting the table rather than softening either half, because both
+halves were true and the framing was wrong. Five unsigned fields are inert. Two
+are unsigned **and** load-bearing — and the reason is stated exactly: they are
+not inputs to the signed payload, they are inputs to *the verifier*. Swapping
+`public_key` breaks the check because the key **is** the verifier, not because
+it is signed content.
+
+`cpr_recovery_error` joins the boundary as the second such row, described
+precisely: never signed, never transmitted by the SDK, set by the reader's own
+store, and able to turn a good receipt into a refusal but **never a bad receipt
+into a pass**. Both directions are pinned.
+
+The tamper table was re-run after the finding-1 fix and re-pinned: seventeen
+rows — ten signed that must break, five unsigned that must not, two unsigned
+that must.
+
+### 4 · "Safe by construction", and a harness that checked one wrapper — fixed
+
+*Codex finding 4. `offline-vs-witnessed.mdx:196` calls wrapper CPR "safe by
+construction" although policy IDs/tags/model/provider metadata are transmitted
+verbatim. The harness's NOT COVERED section says all provider projections are
+source-pinned, but its assertions inspect only OpenAI's.*
+
+The accurate claim is narrower than "safe": the wrapper never puts the *content
+of the exchange* in there, and everything else in it is what you named. Policy
+id, policy version, environment and every tag are read off `policy:` in your
+`glacis.yaml` and transmitted verbatim; a tag reading `patient-88231` is egress
+and nothing inspects it. "Safe by construction" invited a reader to stop
+thinking about a field whose contents they choose.
+
+The harness now pins **all four** projections — openai, anthropic, gemini,
+litellm — request shape and retained response keys, plus that no wrapper keeps
+`system_fingerprint` / `tool_calls` / `logprobs`, that only anthropic and gemini
+project a separate system prompt, and that every wrapper puts the *hash* of the
+system prompt in the control plane. The NOT COVERED line was rewritten to say
+what reading source cannot catch, rather than implying more than it did.
+
+### 5 · A failed migration stamped itself as successful — fixed
+
+*Codex finding 5. `_run_migrations()` swallows every `OperationalError` as
+"column already exists", then unconditionally writes version 5.*
+
+Only `duplicate column name` means that, and it is now the only tolerated
+failure — it is what re-running a partly applied migration looks like. Anything
+else raises `StorageMigrationError` naming the version pair, and the version
+stamp is written only after every step has actually been applied, so the
+database keeps saying the version it really is and the next open retries.
+`_migrate_v3_to_v4()` got the same treatment: it reads the columns before
+deciding whether to rename, a failed add-and-copy fallback is a failure rather
+than "already fine", and the indexes are built after both columns are known to
+exist. A connection whose migrations failed is closed and discarded instead of
+being handed to the caller half-opened.
+
+Tested with three crafted databases — a v4 with no `offline_receipts` table, a
+v3 with neither hash column, a v2 with no `evidence` table. Each fails by name
+with the recorded version untouched. A healthy v4 still reaches v5, and a
+partly applied one still re-runs cleanly.
+
+### What the round-4 checks pin
+
+21 new executable checks, 118 → **139**, plus the same 7 NOT COVERED lines:
+
+| Finding | Checks added |
+| --- | --- |
+| 1 — real verification | 6 (`verify()` rejects a zeroed signature and names it; verification without a seed; a foreign key's receipt verifies; an undecodable key is `structural`; the CLI exits 1 and names `signature_invalid`; the CLI and the library return the same error) |
+| 3 — the seventeen-row boundary | 5 (`cpr_recovery_error` is outside the signature; it makes the SDK refuse, by name; it cannot rescue a broken signature; an edited `cpr_hash` still verifies and is named; the CLI reports that note too) |
+| 4 — all four projections | 10 (request projection, retained response keys and hashed-projection binding for each of openai/anthropic/gemini/litellm, less OpenAI's three that already existed; plus no `system_fingerprint`/`tool_calls`/`logprobs` anywhere, the system-prompt split, and the system-prompt hash) |
+
+Findings 2 and 5 added no harness checks: the timeout correction is prose about
+a scenario the harness already declines to execute, and the migration fix is
+covered by the SDK test suite (`tests/test_storage_migrations.py`), which is
+where a database-corruption test belongs.
+
+### Round-4 verification run
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (SDK) | **547 passed, 63 skipped** (499 before; +48) |
+| `python docs/scripts/verify-doc-snippets.py` | **139/139 checks pass, 7 NOT COVERED** |
+| `cd docs && npm run build` | Green — 25 pages, 42 HTML files |
+| `ruff check glacis/` and the two new test files | Clean |
+| `ruff check docs/scripts/verify-doc-snippets.py` | **3 findings, all pre-existing** — two import-order, one long line, none introduced or removed this round |
+
 ### The 0.8.1 changes, in one place
 
 Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
 
 | File | Change |
 | --- | --- |
-| `glacis/storage.py` | Schema v5 + v4→v5 migration; persist and reconstruct `control_plane_results` on both backends; `_recover_cpr()` names the loss on legacy rows; `MAX(version)` schema-version read |
+| `glacis/crypto.py` | `Ed25519Runtime.verify()`; `offline_signed_payload()` / `offline_signed_payload_for()` — one definition of the signed bytes, used by signer and verifier |
+| `glacis/verify.py` | `verify_offline()` is a real Ed25519 check with named failures; the CLI prints a note when a passing receipt disagrees with itself |
+| `glacis/client.py` | `_attest_offline` signs the shared payload; `_verify_offline` delegates to `glacis.verify.verify_offline()` |
+| `glacis/storage.py` | Schema v5 + v4→v5 migration; persist and reconstruct `control_plane_results` on both backends; `_recover_cpr()` names the loss on legacy rows; `MAX(version)` schema-version read; `StorageMigrationError` instead of stamping a version a failed migration never reached |
 | `glacis/models.py` | `Attestation.cpr_recovery_error` — SDK convenience, never signed, never transmitted |
-| `glacis/client.py` | `_verify_offline` fails closed on a receipt whose signed CPR could not be recovered |
 | `glacis/integrations/base.py` | `attest_and_store()` publishes the receipt after storage, not before |
-| `pyproject.toml`, `glacis/__init__.py` | `0.8.0` → `0.8.1.dev0` |
-| `tests/test_cpr_persistence.py` | New — 17 tests |
+| `pyproject.toml`, `glacis/__init__.py` | `0.8.0` → `0.8.1.dev0` (unchanged in round 4) |
+| `tests/test_cpr_persistence.py` | New in round 3 — 17 tests |
+| `tests/test_offline_signature_verification.py` | New in round 4 — 36 tests: every signed field tampered after storage, the unsigned rows that must not break, tampering with the store itself, and the CLI |
+| `tests/test_storage_migrations.py` | New in round 4 — 12 tests: healthy and partly applied migrations, and three crafted-corrupt databases that fail by name |
 | `tests/test_integration_base.py` | One test: a storage failure leaves no current receipt |
 
 ## Residuals
@@ -670,11 +838,18 @@ Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
    explicit *"untested against a live endpoint"* note. Once A1's keys and the
    backend are up, the verification script should grow an opt-in online section.
 
-6. **Nine SDK bugs are documented rather than fixed.** Items 1–8 in *Corrections*
-   are defects in `glacis` 0.8.0, not in the prose. C1 is a documentation task
-   and the SDK is published; changing behaviour under a released version number
-   was out of scope. The highest-value fix is an `Ed25519Runtime.verify()` plus a
-   real offline `verify()` — at which point three pages get shorter and happier.
+6. **Some SDK bugs were documented rather than fixed — fewer now.** Items 1–8
+   in *Corrections* are defects in `glacis` 0.8.0, not in the prose, and the
+   original round treated changing behaviour under a released version number as
+   out of scope. Rounds 3 and 4 changed that: persisted CPR, receipt ordering in
+   the wrapper, real offline verification and honest migrations are all fixed in
+   `0.8.1.dev0`. What is *not* fixed remains documented — the `witness_status`
+   string is still computed from `is_offline` alone, and the wrapper factories
+   still cannot forward `timeout` / `max_retries` (residual 17).
+
+   **The fix that closes the gap is a release.** Everything above is staged and
+   unpublished, so every user on `pip install glacis` still has the SDK the docs
+   describe as defective.
 
 7. **`pyproject.toml` still advertises `https://docs.glacis.io/sdk/python`.**
    Left alone deliberately: it is package metadata for a published release, and
@@ -735,11 +910,13 @@ Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
     counterparty as verifiable evidence, that is a support conversation, not a
     code change.
 
-14. **`glacis.verify()` still does not check a signature.** Round 3 added
-    exactly one fail-closed case (unrecoverable signed CPR); the rest of the
-    offline branch is unchanged and still compares only the locally derived
-    public key. `Ed25519Runtime` still has no `verify()`. That remains the
-    highest-value SDK fix, and three pages get shorter when it lands.
+14. ~~**`glacis.verify()` still does not check a signature.**~~ **Closed in
+    round 4.** `Ed25519Runtime.verify()` exists, `glacis.verify.verify_offline()`
+    is a real Ed25519 check over the rebuilt signed payload, and both
+    `Glacis.verify()` and the CLI call it. Five pages got shorter. What remains
+    is the version gap: 0.8.1 is unpublished, so **`pip install glacis` still
+    serves the version that does not check signatures**, and every page that
+    mentions the check names both versions.
 
 15. **The retry and request-body claims are pinned against a stub, not a
     server.** Round 3 executes the retry loop and captures the online request
@@ -747,11 +924,14 @@ Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
     long it waits. It does not prove what `api.glacis.io` does with it. The
     harness prints that as a NOT COVERED line rather than implying otherwise.
 
-16. **The 129.1-second worst case is arithmetic, not a measurement.** The
-    constants, the backoff sequence and the four-attempt count are each
-    executed; the ceiling is computed from them. Observing four consecutive
-    30-second timeouts needs an endpoint that hangs and would add two minutes to
-    every harness run, so the harness names it as NOT COVERED instead.
+16. **The 129.1-second figure is arithmetic, not a measurement — and not a
+    ceiling.** The constants, the backoff sequence and the four-attempt count
+    are each executed; the number is computed from them. Round 4 corrected the
+    framing: `timeout=30` is per-operation, and its read timeout bounds the gap
+    between chunks rather than the response, so a slow-dripping endpoint can
+    exceed 129.1s and **there is no default wall-clock bound at all**. Observing
+    even the four-timeout case needs an endpoint that hangs and would add two
+    minutes to every harness run, so the harness still names it NOT COVERED.
 
 17. **The wrapper still cannot bound its own latency.** The honest workaround is
     on the page — go offline, or construct your own client — but the real fix is
@@ -763,3 +943,32 @@ Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
     that does not exist.** Pre-existing, cosmetic, and untouched here: it comes
     from the Starlight default and `docs/public/` has no `favicon.svg`. Noted
     because a link check will keep reporting it.
+
+### Added in round 4
+
+19. **`Glacis.verify()` now succeeds on receipts it used to reject.** The old
+    offline branch compared the receipt's `public_key` against the one derived
+    from your own seed, so a receipt signed by anybody else came back
+    `valid=False`. That is not what a signature check answers, and 0.8.1
+    verifies under the key on the receipt — so a third party's good receipt now
+    passes. Anyone who was reading `valid=False` as "not mine" was reading a
+    coincidence, and the boundary page has always said a key is not an identity.
+    Named here because it is a behaviour change in the permissive direction.
+
+20. **The `cpr_hash` cross-check is deliberately not authoritative.** A receipt
+    whose unsigned `cpr_hash` disagrees with its signed control-plane content
+    still returns `valid=True`, with `error` naming `cpr_hash_mismatch`. Making
+    an unsigned field able to fail a receipt would contradict the signed/unsigned
+    boundary; leaving the inconsistency silent would hide it. So it is reported
+    and does not decide. A caller that only reads `valid` will not see it.
+
+21. **`StorageMigrationError` is a new failure mode for existing callers.**
+    Opening a receipt store whose schema cannot be migrated now raises where it
+    previously mislabelled the database and carried on. That is the point, but
+    it means a corrupt store fails at `_get_connection()` rather than returning
+    wrong rows — code that opened a store defensively should expect it.
+
+22. **The docs now describe two SDK versions on every verification page.** Until
+    0.8.1 ships, `pip install glacis` serves 0.8.0, whose `verify()` and CLI do
+    not check signatures. Each page states both. That is honest and it is also
+    clutter; the paragraphs collapse to one version the day a release goes out.

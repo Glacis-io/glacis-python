@@ -12,6 +12,56 @@ described below.
 
 ### Fixed
 
+- **Offline `verify()` did not verify anything.** `Glacis._verify_offline()`
+  derived a public key from the client's own `signing_seed` and compared it to
+  `attestation.public_key`; if they matched it returned `valid=True` and
+  `signature_valid=True` **without looking at `signature`**, and with no seed at
+  all `signature_valid` was hardcoded `True`. The CLI's `verify_offline()` was
+  weaker still: `id` starts `oatt_`, two fields are 64 characters, `signature`
+  is non-empty. Both reported `Signature: PASS` over 128 zeroes.
+
+  The consequence was not theoretical. The receipt store is a file the SDK
+  itself writes: edit `control_plane_json` in the SQLite row, or strip both the
+  CPR and the unsigned `cpr_hash`, and the SDK called the reloaded receipt valid
+  while an independent Ed25519 check failed. Same for any receipt handed to you
+  by someone else.
+
+  Offline verification is now a real Ed25519 check, and there is exactly one
+  implementation of it — `glacis.verify.verify_offline()` — which both
+  `Glacis.verify()` and `python -m glacis verify` call:
+
+  - `crypto.offline_signed_payload()` is the single definition of the signed
+    bytes. The signer builds them with it and the verifier rebuilds them with
+    it, so the two cannot drift.
+  - `Ed25519Runtime.verify()` checks the signature under the public key **on
+    the receipt**. No signing seed is required, which is what makes a receipt
+    checkable by the party it was handed to.
+  - `error` names the failure: `signature_invalid` (rebuilt, does not verify),
+    `structural` (undecodable key or signature, or no timestamp — "could not
+    check" is not "wrong"), `cpr_unrecoverable` (the store could not return
+    signed content, so no verdict is possible).
+  - `cpr_hash` is **unsigned**, so a mismatch against the recovered
+    control-plane results never overrides the signature. It is reported by name
+    (`cpr_hash_mismatch`, `cpr_hash_orphaned`) alongside `valid=True`, because a
+    receipt that disagrees with itself is worth saying out loud.
+
+  Return shape is unchanged. Verifying a receipt signed by a key that is not
+  yours now succeeds when the signature is good, where 0.8.0 rejected it —
+  correctly, since a signature is checked against the key on the receipt, and
+  that establishes internal consistency and not identity.
+
+- **A failed schema migration stamped itself as successful.**
+  `_run_migrations()` caught every `sqlite3.OperationalError` as "column already
+  exists" and then wrote `schema_version = 5` regardless. A database claiming v4
+  without an `offline_receipts` table — crafted, truncated, half-restored — came
+  out recorded as a migrated v5 and was read from then on through a schema it
+  did not have. Only `duplicate column name` now means "already exists";
+  anything else raises `StorageMigrationError`, naming the version pair, and the
+  version stamp is written only after every step has actually been applied. The
+  same applies to the v3→v4 step, which now reads the columns before deciding
+  whether to rename. A connection whose migrations failed is closed and
+  discarded rather than handed to the caller.
+
 - **Persisted offline receipts lost signed control-plane content.**
   `control_plane_results` is *inside* the offline signature —
   `Glacis._attest_offline` puts the whole structure into the payload it signs —
@@ -20,8 +70,8 @@ described below.
   had been through `store_receipt()` / `get_receipt()`, so rebuilding the signed
   payload from a reloaded receipt produced different bytes and **independent
   Ed25519 verification failed**. The SDK's own offline `verify()` did not notice,
-  because it only compares the locally derived public key and never checks a
-  signature.
+  because it only compared the locally derived public key and never checked a
+  signature — fixed above, so this class of loss now fails locally too.
 
   Present in every release that had `control_plane_results`, up to and including
   0.8.0. Anyone who attached control-plane results and relied on the local store
@@ -58,9 +108,31 @@ described below.
 
 ### Added
 
+- `Ed25519Runtime.verify(public_key_hex, message, signature_hex)` — Ed25519
+  verification over exact bytes. Returns `False` for a well-formed signature
+  that does not verify; raises `CryptoError` when the key or the signature
+  cannot be decoded, because "could not check" is a different answer.
+- `crypto.offline_signed_payload()` / `offline_signed_payload_for()` — the
+  signed bytes of an offline attestation, in one place, used by the signer and
+  the verifier. Read this one function to write a compatible verifier.
+- `glacis.verify.verify_offline(receipt)` is now the SDK's offline
+  verification, importable and usable on its own. `Glacis.verify()` delegates
+  to it.
+- `storage.StorageMigrationError` — raised when a schema migration cannot be
+  applied, instead of stamping a version the database has not reached.
 - `Attestation.cpr_recovery_error` — SDK convenience, never signed and never
   transmitted. Set only by storage reconstruction, to name a loss instead of
   hiding it.
+
+### Changed
+
+- `python -m glacis verify` exits `1` on an offline receipt whose signature does
+  not verify, and prints the named reason. On 0.8.0 it exited `0`. A CI gate on
+  this command means something for the first time; pin `glacis>=0.8.1` if you
+  are relying on that.
+- `OfflineVerifyResult.error` is now set on some receipts that **passed**, when
+  an unsigned field disagrees with the signed content. `valid` still follows the
+  signature alone.
 
 ## [0.5.0] - 2025-02-24
 
