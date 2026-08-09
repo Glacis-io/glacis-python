@@ -192,6 +192,12 @@ against a closed local port made **exactly four attempts** and returned after
 **8.4 seconds**, all of it sleeping. Expect anywhere in the 7.0–9.1 second band,
 because the jitter is random.
 
+**The async wrapper is not exempt — it is worse.**
+`attested_litellm().acompletion()` is a coroutine, but it calls
+`attest_and_store()` synchronously with no `to_thread` and no executor. The
+retry loop's `time.sleep()` therefore runs *on the event loop*, so a retry storm
+does not stall one request, it stalls every task sharing that loop.
+
 Not every failure retries. Reading `_request_with_retry`, only
 `httpx.ConnectError` and `httpx.TimeoutException` are caught for another go,
 along with 5xx responses. A 4xx raises `GlacisApiError` and a 429 raises

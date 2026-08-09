@@ -18,8 +18,8 @@ script that runs the code.
 ## How snippets were verified
 
 `docs/scripts/verify-doc-snippets.py` executes the documented behaviour against
-the SDK in this repo. **117 checks, all passing** as of this commit
-(53 from the original rebuild, 24 added in round 2, 40 added in round 3), plus
+the SDK in this repo. **118 checks, all passing** as of this commit
+(53 from the original rebuild, 24 added in round 2, 41 added in round 3), plus
 **7 `NOT COVERED` lines** — claims the script cannot execute, printed with a
 reason and counted separately so that a green run is never read as complete
 coverage.
@@ -595,13 +595,13 @@ describe a green run as "everything is verified".
 
 ### What the round-3 checks pin
 
-40 new executable checks, 77 → **117**, plus 7 NOT COVERED lines:
+41 new executable checks, 77 → **118**, plus 7 NOT COVERED lines:
 
 | Finding | Checks added |
 | --- | --- |
 | 5 — the sixteen-row boundary | 8 (`version`, `mode`, `supersedes` edited, `supersedes` added, CPR removed, `evidence`/`review`/`sampling_decision`, `public_key` swapped, `public_key` re-signed) |
 | 4 — persisted CPR | 7 (verifies before storage; carries CPR after reload; verifies after reload; a pre-0.8.1 row loses it; that row fails independent verification; the loss is named; `verify()` fails closed with the reason) |
-| 2 — retry and latency | 11 (the four defaults; the backoff sequence; the 129.1s arithmetic; four attempts on connect failure and on 5xx; one attempt on 4xx and 429; both exception types; no thread/queue in `attest_and_store`; ordering inside the wrapper; no timeout knob on any factory) |
+| 2 — retry and latency | 12 (the four defaults; the backoff sequence; the 129.1s arithmetic; four attempts on connect failure and on 5xx; one attempt on 4xx and 429; both exception types; no thread/queue in `attest_and_store`; ordering inside the wrapper; no timeout knob on any factory; `acompletion()` attesting on the event loop) |
 | 3 — the data boundary | 11 (body carries only hashes; CPR verbatim including PHI-shaped fields; `cpr_hash` alongside not instead; key in the header; no timestamp; L1/L2 raw I/O on the object; `model_dump` leaks it and `exclude=` fixes it; offline never populates `evidence`; three wrapper-projection checks) |
 | 5 — canonicalisation | 2 (arbitrary-precision integers; an int and its nearest double hash differently past 2⁵³) |
 | version scope | 1 (the SDK under test is 0.8.0 or the unpublished 0.8.1) |
@@ -611,7 +611,7 @@ describe a green run as "everything is verified".
 | Check | Result |
 | --- | --- |
 | `python -m pytest` (SDK) | **499 passed, 63 skipped** (481 before; +18) |
-| `python docs/scripts/verify-doc-snippets.py` | **117/117 checks pass, 7 NOT COVERED** |
+| `python docs/scripts/verify-doc-snippets.py` | **118/118 checks pass, 7 NOT COVERED** |
 | `cd docs && npm run build` | Green — 25 pages, 42 HTML files |
 | Internal link check over `dist/` | **0 broken links** |
 | Cross-page anchor check over `dist/` | **0 missing anchors** |

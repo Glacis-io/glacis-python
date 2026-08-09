@@ -196,6 +196,11 @@ Receipt tracking uses `contextvars`, so concurrent tasks under
   30-second timeouts and blocking backoff — a ceiling of **129.1 seconds** on
   one call. See
   [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
+
+  `acompletion()` is a coroutine, but it calls `attest_and_store()`
+  synchronously — no `to_thread`, no executor. The retry loop's `time.sleep()`
+  runs on the **event loop**, so a retry storm stalls every task sharing it, not
+  just this request.
 </Aside>
 
 ## `attested_litellm()` reference

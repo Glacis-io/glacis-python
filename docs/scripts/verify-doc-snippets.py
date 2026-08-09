@@ -1252,6 +1252,22 @@ def main() -> int:
         ),
     )
 
+    import asyncio
+
+    _acompletion = sys.modules["glacis.integrations.litellm"].AttestedLiteLLM.acompletion
+    _ll_src = inspect.getsource(_acompletion)
+    check(
+        "acompletion() attests on the event loop — the blocking retry sleep is "
+        "not offloaded",
+        asyncio.iscoroutinefunction(_acompletion)
+        and "attest_and_store(ctx," in _ll_src
+        and not any(
+            tok in _ll_src for tok in ("to_thread", "run_in_executor", "await attest")
+        ),
+        "so an online retry storm stalls every other task on the loop, not just "
+        "this one",
+    )
+
     # ------------------------------------------------------------------
     # What this run does NOT establish.
     #
