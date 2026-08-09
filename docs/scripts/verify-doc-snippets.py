@@ -363,11 +363,14 @@ def main() -> int:
     cpr_dict = json.loads(json.dumps(with_cpr.model_dump(), default=str))
     sup_dict = json.loads(json.dumps(with_supersedes.model_dump(), default=str))
 
-    # --- The six OUTSIDE rows ------------------------------------------------
+    # --- The INERT outside rows ----------------------------------------------
+    # `is_offline` used to be checked here, with `still_verifies` — raw signature
+    # bytes. That is true of it and beside the point: it is not signed, and it
+    # selects the verification route. It is checked through public dispatch in
+    # the load-bearing section below, which is where the page now lists it.
     for field, value in (
         ("id", "oatt_not-the-real-id"),
         ("cpr_hash", "0" * 64),
-        ("is_offline", False),
         ("an_extra_field_nobody_signed", "anything"),
     ):
         check(
@@ -453,6 +456,106 @@ def main() -> int:
             _cpr_hash_edited.valid is True
             and (_cpr_hash_edited.error or "").startswith("cpr_hash_mismatch: "),
             "the signature is the authority; cpr_hash is not signed",
+        )
+
+        # `is_offline` is the third unsigned-but-load-bearing row. Nothing
+        # signs it and the raw check above would pass on it — but it selects
+        # which verification runs, so it is checked where it acts: through the
+        # public `Glacis.verify()` dispatch, not by re-verifying signature
+        # bytes. Pass 4 of the Codex review found it listed as inert on the
+        # page and tested here as if editing it were a no-op; setting
+        # `is_offline=False` and pointing `id` at a valid online attestation
+        # used to route straight past the signature check.
+        _asked: list[str] = []
+        _real_transport = g._request_with_retry
+
+        def _entry(**fields):
+            base = {
+                "entryId": "att_a-real-online-attestation",
+                "timestamp": "2026-08-08T00:00:00Z",
+                "orgId": "org_real",
+                "serviceId": "svc",
+                "operationType": "inference",
+                "evidenceHash": "9" * 64,
+                "signature": "7" * 128,
+                "leafIndex": 1,
+                "leafHash": "8" * 64,
+            }
+            base.update(fields)
+            return {
+                "valid": True,
+                "attestation": base,
+                "verification": {"signatureValid": True, "proofValid": True},
+            }
+
+        def _stubbed_transport(_method, url, **_kwargs):
+            """No socket is opened: this is the SDK/httpx seam, replaced.
+
+            It answers per id, because that is what a log does — which is the
+            whole reason a lookup has to be bound to the receipt in hand.
+            """
+            asked_id = url.rsplit("/", 1)[-1]
+            _asked.append(asked_id)
+            if asked_id == receipt.id:
+                return _entry(
+                    entryId=receipt.id,
+                    signature=receipt.signature,
+                    evidenceHash=receipt.evidence_hash,
+                    serviceId=receipt.service_id,
+                    operationType=receipt.operation_type,
+                )
+            return _entry()
+
+        g._request_with_retry = _stubbed_transport
+        try:
+            _reclassified = g.verify(
+                with_cpr.model_copy(
+                    deep=True,
+                    update={
+                        "control_plane_results": {"policy": {"id": "tampered"}},
+                        "is_offline": False,
+                        "id": "att_a-real-online-attestation",
+                    },
+                )
+            )
+            _flipped_honest = g.verify(
+                receipt.model_copy(deep=True, update={"is_offline": False})
+            )
+            _flipped_and_repointed = g.verify(
+                receipt.model_copy(
+                    deep=True,
+                    update={
+                        "is_offline": False,
+                        "id": "att_a-real-online-attestation",
+                    },
+                )
+            )
+        finally:
+            g._request_with_retry = _real_transport
+
+        check(
+            "`is_offline` flipped to false cannot route a bad signature past "
+            "the check (public dispatch, stubbed transport)",
+            _reclassified.valid is False
+            and (_reclassified.error or "").startswith("signature_invalid: ")
+            and _asked[0] == "att_a-real-online-attestation",
+            "the id was looked up; the answer was not applied to bytes it did not describe",
+        )
+        check(
+            "`is_offline` flipped on an honest receipt still verifies, and the "
+            "route it selected is named",
+            _flipped_honest.valid is True
+            and _asked[1] == receipt.id
+            and (_flipped_honest.error or "").startswith("bound: "),
+            "editing it changes which check runs, never whether one runs",
+        )
+        check(
+            "`id` chooses which log entry is fetched, and a receipt that does "
+            "not match the one it points at cannot borrow its verdict",
+            _asked[2] == "att_a-real-online-attestation"
+            and _flipped_and_repointed.valid is True
+            and "unbound: " in (_flipped_and_repointed.error or ""),
+            "valid is the receipt's own signature; nothing from that record is applied",
         )
 
     # --- The ten INSIDE rows -------------------------------------------------
@@ -720,8 +823,13 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Connect › index — "fail-open" is about exceptions, not about latency
     #
-    # The page states an added-latency ceiling. Everything below runs against
-    # a stubbed transport: no socket is opened and no host is contacted.
+    # The page states the arithmetic of one scenario — four attempts that each
+    # hang and then time out once — and says in as many words that it is not a
+    # ceiling: `httpx` sets per-operation timeouts, not a total deadline, so a
+    # drip-feeding endpoint runs past this with no bound at all. What is
+    # checked below is that arithmetic and the attempt count, nothing wider.
+    # Everything runs against a stubbed transport: no socket is opened and no
+    # host is contacted.
     # ------------------------------------------------------------------
     import httpx
 
@@ -751,13 +859,16 @@ def main() -> int:
         and round(sum(s * 1.3 for s in _sleeps), 1) == 9.1,
     )
     check(
-        "documented worst case is 129.1s of added latency on one wrapped call",
+        "the documented 129.1s scenario adds up — four attempts that each hang "
+        "and then time out once, plus backoff with maximum jitter",
         round(
             (DEFAULT_MAX_RETRIES + 1) * DEFAULT_TIMEOUT
             + sum(s * 1.3 for s in _sleeps),
             1,
         )
         == 129.1,
+        "one scenario, not a ceiling: httpx timeouts are per-operation, so "
+        "nothing here bounds the wall-clock time of a call",
     )
 
     def _attempt_count(responder) -> int:
@@ -1480,10 +1591,13 @@ def main() -> int:
         "transport, but no real server response has been seen",
     )
     not_covered(
-        "the 129.1s worst-case latency, measured",
+        "the 129.1s scenario, measured",
         "the arithmetic and the four-attempt count are checked; actually "
         "observing four 30-second timeouts needs an endpoint that hangs, and "
-        "would make this script take over two minutes",
+        "would make this script take over two minutes. Nor is the page's wider "
+        "claim covered — that there is no default bound at all, because httpx "
+        "read timeouts cap the gap between chunks and not the response; a "
+        "drip-feeding endpoint would be needed to show it",
     )
     not_covered(
         "provider wrappers end to end (OpenAI/Anthropic/Gemini/LiteLLM)",

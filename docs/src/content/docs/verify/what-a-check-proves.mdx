@@ -34,18 +34,17 @@ fields inside it:
 | `control_plane_results` | Only when non-empty — the whole structure, not a hash of it |
 | `supersedes` | Only when set |
 
-**And these fields ride alongside the signature, not inside it.** Five of them
+**And these fields ride alongside the signature, not inside it.** Four of them
 are inert — edit them and the check returns exactly what it returned before:
 
 | Outside the signature, and inert | Consequence of editing it |
 | --- | --- |
-| `id` (`oatt_…`) | The receipt still verifies. The identifier is not bound to the signed content. |
+| `id` (`oatt_…`) | The signature still verifies. The identifier is not bound to the signed content. (It is not inert to the *routing* — see the next table.) |
 | `cpr_hash` | The receipt still verifies. The control-plane *content* is signed; this convenience hash of it is not. The SDK additionally reports `cpr_hash_mismatch` by name when the two disagree, and still returns `valid=True` — the signature is the authority, not the hash. |
-| `is_offline` | The receipt still verifies. |
 | `evidence`, `review`, `sampling_decision` | Not populated on offline receipts; adding them changes nothing about the check. |
 | Any extra key you add to the JSON | Ignored entirely by the signature. |
 
-Two more are unsigned and yet decide the outcome, which sounds like a
+Four more are unsigned and yet decide the outcome, which sounds like a
 contradiction and is not: they are not *inputs to* the signed payload, they are
 inputs to **the verifier**. Editing them does not forge a signature; it changes
 which check gets run, or whether one runs at all.
@@ -54,14 +53,30 @@ which check gets run, or whether one runs at all.
 | --- | --- |
 | `public_key` | Swapping it alone **breaks** the check. The key is not signed content — it *is the verifier*, so a receipt verified under a different key verifies nothing. What the key is not is bound to an identity: re-sign the same payload with your own key, swap both fields, and the result verifies perfectly. See *not that the signer is who they say they are*, below. |
 | `cpr_recovery_error` | Never signed, never transmitted by the SDK, and set by *your* receipt store rather than by the signer: it means the store could not return the signed `control_plane_results`. When it is set the SDK **refuses** to verify and names it (`cpr_unrecoverable`), because the signed payload cannot be rebuilt. Editing it can therefore turn a good receipt into a refusal — never a bad receipt into a pass. |
+| `is_offline` | Unsigned, and it **selects the verification route**. It does not select whether a signature is checked: `Glacis.verify()` runs the offline Ed25519 check on any receipt object you hand it, always. Setting it to `false` *adds* a lookup of the receipt's `id` on top, and that answer is applied to your receipt only if the two agree on `signature` and `evidence_hash`. Editing it can widen what is checked or narrow it — it cannot skip the signature. |
+| `id`, when `is_offline` is `false` | Then the identifier chooses **which log entry gets fetched**, and a receipt that does not match the entry it points at is reported as unbound: nothing from that record is applied to it and `valid` is the receipt's own signature result. Pointing a receipt at somebody else's attestation therefore cannot borrow that attestation's verdict. |
 
-All seventeen rows above are checked by tampering with a real receipt and
-re-running the verification — ten signed fields that must break, five unsigned
-ones that must not, and two unsigned ones that must — and the check script in
-`docs/scripts/` does it on every run. **"Altering any character breaks the
-signature" is false**, and a verifier that implies otherwise is overclaiming.
-What is true is that altering any *signed* field breaks it, and that two
-unsigned fields break it for a reason that has nothing to do with forgery.
+All eighteen rows above are checked by tampering with a real receipt and
+re-running the verification — ten signed fields that must break, four unsigned
+ones that must not, and four unsigned ones that change what gets checked — and
+the check script in `docs/scripts/` does it on every run. **"Altering any
+character breaks the signature" is false**, and a verifier that implies
+otherwise is overclaiming. What is true is that altering any *signed* field
+breaks it, and that the four unsigned inputs to the verifier change the
+outcome for reasons that have nothing to do with forgery.
+
+<Aside type="caution" title="`is_offline` was described here as inert until 0.8.1.dev0">
+  It was listed on this page as a field you could edit with no consequence, and
+  in `glacis` 0.8.1.dev0 and earlier that was worse than wrong: `Glacis.verify()`
+  picked its verifier *from* it. Setting `is_offline=false` and `id` to some
+  valid online attestation routed the call to a server lookup, and the receipt
+  you handed in — signature and all — was never examined. The server answered
+  about the id; the caller read it as an answer about their bytes.
+
+  Fixed in this repository, staged as 0.8.1 and unpublished: the offline
+  signature check now runs on every supplied receipt object, and a lookup only
+  speaks for a receipt that binds to the entry it returns.
+</Aside>
 
 <Aside type="caution" title="`control_plane_results` has to survive your storage, too">
   Being inside the signature cuts both ways: a receipt that **loses** its

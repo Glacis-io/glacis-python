@@ -103,9 +103,11 @@ attestation = glacis.attest(
 
 ### glacis.verify()
 
-Verify an attestation. For online attestations, calls the server API. For offline
-attestations, verifies the Ed25519 signature locally — see the version note below,
-because 0.8.0 did **not**.
+Verify an attestation. Given an **id string** this is a lookup: an `oatt_` id is
+read back from local storage and its signature checked, anything else is
+verified by the server. Given an **`Attestation` object**, the object's own
+Ed25519 signature is always checked — see the version note below, because 0.8.0
+did **not** — and `is_offline=False` adds a server lookup on top of it.
 
 ```python
 # Verify with an Attestation object
@@ -157,13 +159,41 @@ if isinstance(result, OfflineVerifyResult):
   written out longhand, and it works against any version.
 </Aside>
 
+<Aside type="caution" title="An unsigned field chose the verifier until 0.8.1.dev0">
+  `is_offline` and `id` are not inside the signature. Until 0.8.1.dev0 they
+  chose the verifier outright: setting `is_offline=False` and `id` to a valid
+  online attestation routed `verify()` to a server lookup, and the object you
+  passed in was never examined. The server answered about the id and the caller
+  read `valid=True` as an answer about their bytes. The CLI reclassified the
+  same way.
+
+  Fixed in this repository, staged as 0.8.1 and unpublished. `is_offline` now
+  selects **additional** verification, never a bypass:
+
+  - The offline signature check runs on every supplied object, always.
+  - `is_offline=False` also looks up `receipt.id`. That answer is about an id,
+    so it is applied to your object only if the two **bind** — matching
+    `signature` and `evidence_hash`, plus `service_id` and `operation_type`
+    when both carry them.
+  - **Bound:** you get the server's [`VerifyResult`](#verifyresult), with
+    `error` naming the binding and what the log entry carries nothing about
+    (`control_plane_results`, `cpr_hash`, `evidence`, `review`, and the rest).
+  - **Unbound:** none of the server's answer is returned — not the org, not the
+    proof, not the tree head. You get the object's own
+    [`OfflineVerifyResult`](#offlineverifyresult), `valid` reflecting the bytes
+    you passed, and `error` saying the lookup happened and was not applied.
+
+  So a receipt whose signature does not verify is `valid=False` whatever the
+  server says about the id it claims.
+</Aside>
+
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `receipt` | `str \| Attestation` | Yes | Attestation ID string or `Attestation` object |
 
-**Returns:** [`VerifyResult`](#verifyresult) (online) or [`OfflineVerifyResult`](#offlineverifyresult) (offline)
+**Returns:** [`VerifyResult`](#verifyresult) — the log entry's verdict, for an id looked up directly or an object bound to its entry — or [`OfflineVerifyResult`](#offlineverifyresult), the supplied object's own signature check
 
 ---
 
@@ -555,7 +585,7 @@ class VerifyResult(BaseModel):
 | `verification` | `Optional[Verification]` | Verification details (contains `signature_valid`, `proof_valid`) |
 | `proof` | `Optional[InclusionProof]` | Merkle inclusion proof |
 | `tree_head` | `Optional[SignedTreeHead]` | Signed tree head at verification time |
-| `error` | `Optional[str]` | Why it failed, prefixed with the failure's name. Also set on a receipt that **passed** when an unsigned field disagrees with the signed content (`cpr_hash_mismatch`) |
+| `error` | `Optional[str]` | Why it failed, prefixed with the failure's name. Also set — on a result that **passed** — when you verified an `Attestation` object rather than an id, to name the binding: `bound:` says the object matches this log entry on `signature` and `evidence_hash`, and lists what the entry carries nothing about |
 
 Access signature and proof validity through the nested `verification` object:
 
@@ -587,7 +617,7 @@ class OfflineVerifyResult(BaseModel):
 | `witness_status` | `Literal["UNVERIFIED"]` | Always `"UNVERIFIED"` for offline attestations |
 | `signature_valid` | `bool` | A real Ed25519 check as of 0.8.1; **not** one in 0.8.0 — see the version note under [`verify()`](#glacisverify) |
 | `attestation` | `Optional[Attestation]` | The verified attestation |
-| `error` | `Optional[str]` | Error message if invalid |
+| `error` | `Optional[str]` | Set when verification failed, **or** carries the advisory `cpr_hash_mismatch` on a receipt whose `valid` follows the signature. `cpr_hash` is unsigned and the signature covers the control-plane *content*, so a hash that disagrees with it is reported by name alongside `valid=True` rather than deciding it. Also carries `unbound:` when you passed an `Attestation` object with `is_offline=False` whose id was looked up and did not describe it — see [`verify()`](#glacisverify) |
 
 ---
 
