@@ -59,7 +59,7 @@ glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
 ```
 
 - Requires a workspace key (`glsk_test_…` / `glsk_live_…`) from
-  [app.glacis.dev](https://app.glacis.dev).
+  [app.glacis.io](https://app.glacis.io).
 - Sends the **hash and metadata** to `api.glacis.io` — never the payload.
 - The server signs and returns an attestation; the SDK returns whatever the
   server sent, with `is_offline=False`.
@@ -124,7 +124,7 @@ reader can check both without trusting the author.
 The `glacis` SDK does not produce that artifact at 0.8.0 — neither mode returns
 a second signature or an inclusion proof. What adds it is the **portal's mint
 path in the launch build**: mint a receipt at
-[app.glacis.dev](https://app.glacis.dev) and the hosted witness's own response —
+[app.glacis.io](https://app.glacis.io) and the hosted witness's own response —
 receipt plus its inclusion envelope, signed tree head included — is what you get
 back and what the permalink carries. The portal shows WITNESSED only when the
 log reports the entry as included *with* a proof and a signed tree head, and an
