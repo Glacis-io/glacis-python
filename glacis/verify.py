@@ -1,19 +1,29 @@
 """
-Glacis CLI - Receipt Verification
+Glacis receipt verification — the CLI, and the offline check behind it.
 
 Usage:
     python -m glacis verify <receipt.json>
     python -m glacis verify <receipt.json> --base-url https://api.glacis.io
+
+``verify_offline()`` here is the one offline verification in the SDK:
+``Glacis.verify()`` calls it too, so the library and the command line can never
+give different answers about the same receipt.
 """
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 import httpx
 
+from glacis.crypto import (
+    CryptoError,
+    get_ed25519_runtime,
+    hash_payload,
+    offline_signed_payload_for,
+)
 from glacis.models import (
     Attestation,
     OfflineVerifyResult,
@@ -43,41 +53,115 @@ def verify_online(attestation_id: str, base_url: str) -> VerifyResult:
         )
 
 
+def _cpr_degradation(receipt: Attestation) -> Optional[str]:
+    """Name a control-plane inconsistency, if there is one.
+
+    This is a fast SHA-256 cross-check, and it is *not* the authority.
+    ``cpr_hash`` is **outside** the signature — a receipt with an edited
+    ``cpr_hash`` still verifies, because the signature covers the
+    control-plane *content*, not this convenience hash of it. So a mismatch
+    here never decides ``valid``; it is reported by name alongside whatever
+    the signature says, because a receipt that disagrees with itself is worth
+    telling the caller about either way.
+    """
+    if not receipt.cpr_hash:
+        return None
+
+    if receipt.control_plane_results is None:
+        return (
+            "cpr_hash_orphaned: the receipt carries a cpr_hash but no "
+            "control_plane_results. The content is inside the signature, so "
+            "the signed payload cannot be rebuilt from this receipt."
+        )
+
+    recomputed = hash_payload(receipt.control_plane_results)
+    if recomputed != receipt.cpr_hash:
+        return (
+            "cpr_hash_mismatch: the receipt's cpr_hash is not a SHA-256 over "
+            "the control_plane_results it carries. cpr_hash is unsigned, so "
+            "the signature — not this hash — decides whether the receipt is "
+            f"intact (expected {recomputed}, receipt says {receipt.cpr_hash})."
+        )
+
+    return None
+
+
 def verify_offline(receipt: Attestation) -> OfflineVerifyResult:
+    """Verify an offline receipt's Ed25519 signature.
+
+    This is a real cryptographic check: the payload is rebuilt from the
+    receipt's own signed fields (``glacis.crypto.offline_signed_payload``) and
+    the signature is verified against it under the public key **on the
+    receipt**. No signing seed is needed — a third party holding nothing but
+    the receipt runs exactly this check.
+
+    Tampering with any signed field — ``service_id``, ``evidence_hash``, the
+    timestamp, or the ``control_plane_results`` content, including losing it in
+    storage — makes the check fail.
+
+    What it does *not* establish is who holds the key. Verifying against a
+    public key found in the same document establishes internal consistency and
+    nothing more. See /verify/what-a-check-proves/.
+
+    ``error`` names what happened:
+
+    * ``cpr_unrecoverable`` — the receipt came back from a store that could not
+      return its signed control-plane content. No check is possible.
+    * ``structural`` — the receipt cannot be turned into verifiable form at all
+      (undecodable key or signature, no timestamp).
+    * ``signature_invalid`` — the payload rebuilt, and the signature does not
+      verify over it.
+    * ``cpr_hash_mismatch`` / ``cpr_hash_orphaned`` — a named degradation of an
+      unsigned field. It can accompany ``valid=True``, because the signature is
+      the authority.
     """
-    Verify an offline attestation.
 
-    Note: Full cryptographic signature verification of offline receipts requires
-    the original signing seed or the complete signed payload (which includes
-    a timestamp). Without these, we validate the receipt structure and format.
-
-    For full cryptographic verification, use the Glacis client with the
-    original signing_seed that created the receipt.
-    """
-    try:
-        # Validate receipt structure and format
-        valid = (
-            receipt.id.startswith("oatt_")
-            and len(receipt.evidence_hash) == 64
-            and len(receipt.public_key) == 64
-            and len(receipt.signature) > 0
-            and receipt.witness_status == "UNVERIFIED"
-        )
-
-        return OfflineVerifyResult(
-            valid=valid,
-            witness_status="UNVERIFIED",
-            signature_valid=valid,  # Structure valid (not full crypto verification)
-            attestation=receipt,
-        )
-    except Exception as e:
+    def failed(reason: str) -> OfflineVerifyResult:
         return OfflineVerifyResult(
             valid=False,
             witness_status="UNVERIFIED",
             signature_valid=False,
             attestation=receipt,
-            error=str(e),
+            error=reason,
         )
+
+    # A store that dropped signed control-plane content leaves nothing to
+    # check: the signed bytes cannot be rebuilt by us or by anyone else.
+    if receipt.cpr_recovery_error:
+        return failed(f"cpr_unrecoverable: {receipt.cpr_recovery_error}")
+
+    degradation = _cpr_degradation(receipt)
+
+    try:
+        message = offline_signed_payload_for(receipt)
+    except (ValueError, AttributeError) as e:
+        return failed(f"structural: {e}")
+
+    try:
+        signature_valid = get_ed25519_runtime().verify(
+            receipt.public_key, message, receipt.signature
+        )
+    except CryptoError as e:
+        return failed(f"structural: {e}")
+
+    if not signature_valid:
+        reason = (
+            "signature_invalid: the Ed25519 signature does not verify over the "
+            "payload rebuilt from this receipt's signed fields, under the "
+            "public_key the receipt carries. A signed field has been altered "
+            "since signing, or the signature does not belong to this receipt."
+        )
+        if degradation:
+            reason = f"{reason} Also: {degradation}"
+        return failed(reason)
+
+    return OfflineVerifyResult(
+        valid=True,
+        witness_status="UNVERIFIED",
+        signature_valid=True,
+        attestation=receipt,
+        error=degradation,
+    )
 
 
 def verify_command(args: argparse.Namespace) -> None:
@@ -126,6 +210,11 @@ def verify_command(args: argparse.Namespace) -> None:
         print(f"  Signature: {'PASS' if sig_valid else 'FAIL'}")
         if isinstance(result, VerifyResult) and result.verification:
             print(f"  Merkle proof: {'PASS' if result.verification.proof_valid else 'FAIL'}")
+        if result.error:
+            # A passing signature with something still wrong — an unsigned
+            # field that disagrees with the signed content. Say so; do not let
+            # "VALID" swallow it.
+            print(f"  Note: {result.error}")
     else:
         print("Status: INVALID")
         if result.error:

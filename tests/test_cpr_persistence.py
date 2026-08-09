@@ -341,7 +341,11 @@ class TestLegacyRowsDegradeByName:
 
         assert result.valid is False
         assert result.signature_valid is False
-        assert result.error == reloaded.cpr_recovery_error
+        # Named failure, and the name says which of the three it is.
+        assert result.error is not None
+        assert result.error.startswith("cpr_unrecoverable: ")
+        assert reloaded.cpr_recovery_error is not None
+        assert reloaded.cpr_recovery_error in result.error
 
     def test_legacy_row_without_cpr_hash_is_not_a_degradation(self, tmp_path: Path):
         """A 0.8.0 row for a receipt that never had CPR reads back clean."""

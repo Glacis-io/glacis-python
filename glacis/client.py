@@ -28,7 +28,6 @@ Example (offline):
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 import time
@@ -41,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 import httpx
 
 from glacis.config import SamplingConfig
-from glacis.crypto import hash_payload
+from glacis.crypto import hash_payload, offline_signed_payload
 from glacis.models import (
     Attestation,
     ControlPlaneResults,
@@ -54,6 +53,7 @@ from glacis.models import (
     TreeHeadResponse,
     VerifyResult,
 )
+from glacis.verify import verify_offline as verify_offline_receipt
 
 if TYPE_CHECKING:
     from glacis.crypto import Ed25519Runtime
@@ -414,35 +414,25 @@ class Glacis:
         op_id = operation_id or str(uuid.uuid4())
         op_seq = operation_sequence if operation_sequence is not None else 0
 
-        # Build attestation payload (this is what gets signed)
-        attestation_payload: dict[str, Any] = {
-            "version": 1,
-            "service_id": service_id,
-            "operation_type": operation_type,
-            "evidence_hash": evidence_hash,
-            "timestamp_ms": str(timestamp_ms),
-            "operation_id": op_id,
-            "operation_sequence": op_seq,
-            "mode": "offline",
-        }
-
-        if control_plane_results:
-            attestation_payload["control_plane_results"] = control_plane_results
-        if supersedes:
-            attestation_payload["supersedes"] = supersedes
-
-        # Sign using WASM
-        attestation_json = json.dumps(
-            attestation_payload, separators=(",", ":"), sort_keys=True
+        # The exact bytes that get signed. `glacis.verify.verify_offline()`
+        # rebuilds them with the same function, so signing and verification
+        # cannot drift apart.
+        message = offline_signed_payload(
+            service_id=service_id,
+            operation_type=operation_type,
+            evidence_hash=evidence_hash,
+            timestamp_ms=str(timestamp_ms),
+            operation_id=op_id,
+            operation_sequence=op_seq,
+            control_plane_results=control_plane_results,
+            supersedes=supersedes,
         )
+
         assert self._ed25519 is not None
         assert self._signing_seed is not None
         assert self._public_key is not None
 
-        signed_json = self._ed25519.sign_attestation_json(
-            self._signing_seed, attestation_json
-        )
-        signed = json.loads(signed_json)
+        signature_hex = self._ed25519.sign(self._signing_seed, message).hex()
 
         attestation = Attestation(
             id=attestation_id,
@@ -455,7 +445,7 @@ class Glacis:
             supersedes=supersedes,
             control_plane_results=control_plane_results,
             public_key=self._public_key,
-            signature=signed["signature"],
+            signature=signature_hex,
             is_offline=True,
             timestamp=timestamp_ms,
         )
@@ -627,43 +617,16 @@ class Glacis:
         return VerifyResult.model_validate(response)
 
     def _verify_offline(self, attestation: Attestation) -> OfflineVerifyResult:
-        """Verify an offline attestation's signature locally."""
+        """Verify an offline attestation's Ed25519 signature locally.
+
+        This is a real cryptographic check against the payload rebuilt from
+        the receipt's signed fields — see ``glacis.verify.verify_offline``,
+        which is the single implementation the CLI uses as well. It needs no
+        signing seed, so it works on a receipt someone else signed, and it
+        fails when any signed field has been altered since signing.
+        """
         self._debug(f"Verifying (offline): {attestation.id}")
-
-        # Fail closed, with the reason, when the receipt reached us through a
-        # store that dropped signed control-plane content. Nothing downstream
-        # can rebuild the signed payload, so nothing downstream can verify it.
-        if attestation.cpr_recovery_error:
-            return OfflineVerifyResult(
-                valid=False,
-                witness_status="UNVERIFIED",
-                signature_valid=False,
-                attestation=attestation,
-                error=attestation.cpr_recovery_error,
-            )
-
-        try:
-            if self._ed25519 and self._signing_seed:
-                derived_pubkey = self._ed25519.get_public_key_hex(self._signing_seed)
-                signature_valid = derived_pubkey == attestation.public_key
-            else:
-                signature_valid = True  # Trusted from local storage
-
-            return OfflineVerifyResult(
-                valid=signature_valid,
-                witness_status="UNVERIFIED",
-                signature_valid=signature_valid,
-                attestation=attestation,
-            )
-
-        except Exception as e:
-            return OfflineVerifyResult(
-                valid=False,
-                witness_status="UNVERIFIED",
-                signature_valid=False,
-                attestation=attestation,
-                error=str(e),
-            )
+        return verify_offline_receipt(attestation)
 
     def get_last_receipt(self) -> Optional[Attestation]:
         """
