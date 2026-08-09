@@ -27,6 +27,7 @@ from nacl.signing import VerifyKey
 
 from glacis import Glacis
 from glacis.storage import JsonStorageBackend, ReceiptStorage
+from tests.conftest import V4_EVIDENCE_TABLE
 
 SEED = bytes.fromhex(
     "9a3f1c0b7d2e4a5f8091c2d3e4f50617a8b9cadbec0d1e2f30415263748596a7"
@@ -233,7 +234,7 @@ CREATE TABLE offline_receipts (
 );
 CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
 INSERT INTO schema_version (version) VALUES (4);
-"""
+""" + V4_EVIDENCE_TABLE
 
 
 def _write_legacy_v4_row(db_path: Path, receipt: Any) -> None:

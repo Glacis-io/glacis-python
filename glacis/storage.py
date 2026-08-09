@@ -274,6 +274,139 @@ MIGRATION_V4_TO_V5 = """
 ALTER TABLE offline_receipts ADD COLUMN control_plane_json TEXT;
 """
 
+# The indexes SCHEMA declares, restated as idempotent statements so that a
+# database arriving from any older version ends up with the set a fresh one
+# gets. None of the migration steps above creates the three convenience indexes
+# on offline_receipts, so without this a migrated database would be missing
+# them for good. Every statement is IF NOT EXISTS, so this is a no-op on a
+# database that already has them — and a genuine failure on one whose columns
+# are not there to index.
+ENSURE_DECLARED_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_service_id ON offline_receipts(service_id);
+CREATE INDEX IF NOT EXISTS idx_timestamp ON offline_receipts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_evidence_hash ON offline_receipts(evidence_hash);
+CREATE INDEX IF NOT EXISTS idx_created_at ON offline_receipts(created_at);
+CREATE INDEX IF NOT EXISTS idx_operation_id ON offline_receipts(operation_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_id ON evidence(attestation_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_attestation_hash ON evidence(attestation_hash);
+CREATE INDEX IF NOT EXISTS idx_evidence_service_id ON evidence(service_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
+"""
+
+
+# =============================================================================
+# Required schema — the postcondition of a migration, stated as data
+# =============================================================================
+#
+# A migration step reporting success is not evidence that the schema is now
+# what the version number claims. `ALTER TABLE … ADD COLUMN` failing with
+# "duplicate column name" means only that *that column* is present; it says
+# nothing about the fifteen others, the second table, or the indexes. A v4
+# database whose `offline_receipts` held nothing but `control_plane_json`
+# therefore used to swallow the duplicate-column error and get stamped v5.
+#
+# So the required shape is written down per version target and checked against
+# the live database before anything is stamped. Columns are the ones the
+# storage code actually reads and writes; the hash column is deliberately
+# absent below v4, because it is still named `payload_hash` there and the
+# v3->v4 step checks it by name.
+
+_OFFLINE_RECEIPTS_BASE = {
+    "attestation_id",
+    "timestamp",
+    "service_id",
+    "operation_type",
+    "signature",
+    "public_key",
+    "created_at",
+    "input_preview",
+    "output_preview",
+    "metadata_json",
+}
+
+_OFFLINE_RECEIPTS_V4 = _OFFLINE_RECEIPTS_BASE | {
+    "evidence_hash",
+    "operation_id",
+    "operation_sequence",
+    "supersedes",
+    "cpr_hash",
+}
+
+_EVIDENCE_V2 = {
+    "id",
+    "attestation_id",
+    "attestation_hash",
+    "mode",
+    "service_id",
+    "operation_type",
+    "timestamp",
+    "created_at",
+    "input_json",
+    "output_json",
+    "control_plane_json",
+    "metadata_json",
+}
+
+_EVIDENCE_V3 = _EVIDENCE_V2 | {"sampling_level"}
+
+_EVIDENCE_INDEXES = {
+    "idx_evidence_attestation_id",
+    "idx_evidence_attestation_hash",
+    "idx_evidence_service_id",
+    "idx_evidence_timestamp",
+}
+
+#: version -> (required tables and their columns, required indexes).
+#: Cumulative: each entry is the whole shape a database must have to be called
+#: that version, not just what the last step added. The index sets list only
+#: what the migration path itself creates — the three convenience indexes on
+#: offline_receipts are added by ENSURE_DECLARED_INDEXES and checked in
+#: DECLARED_INDEXES below, after that step has run.
+REQUIRED_SCHEMA: dict[int, tuple[dict[str, set[str]], set[str]]] = {
+    2: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_BASE,
+            "evidence": _EVIDENCE_V2,
+            "schema_version": {"version"},
+        },
+        set(_EVIDENCE_INDEXES),
+    ),
+    3: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_BASE,
+            "evidence": _EVIDENCE_V3,
+            "schema_version": {"version"},
+        },
+        set(_EVIDENCE_INDEXES),
+    ),
+    4: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_V4,
+            "evidence": _EVIDENCE_V3,
+            "schema_version": {"version"},
+        },
+        _EVIDENCE_INDEXES | {"idx_operation_id", "idx_evidence_hash"},
+    ),
+    5: (
+        {
+            "offline_receipts": _OFFLINE_RECEIPTS_V4 | {"control_plane_json"},
+            "evidence": _EVIDENCE_V3,
+            "schema_version": {"version"},
+        },
+        _EVIDENCE_INDEXES | {"idx_operation_id", "idx_evidence_hash"},
+    ),
+}
+
+#: Every index SCHEMA declares. Checked once, at the end, after
+#: ENSURE_DECLARED_INDEXES has had its chance to create the missing ones.
+DECLARED_INDEXES = _EVIDENCE_INDEXES | {
+    "idx_service_id",
+    "idx_timestamp",
+    "idx_evidence_hash",
+    "idx_created_at",
+    "idx_operation_id",
+}
+
 
 class StorageMigrationError(RuntimeError):
     """A schema migration could not be applied.
@@ -320,6 +453,61 @@ def _table_columns(cursor: sqlite3.Cursor, table: str) -> set[str]:
     return {row[1] for row in cursor.execute(f"PRAGMA table_info({table})")}
 
 
+def _index_names(cursor: sqlite3.Cursor) -> set[str]:
+    """Every index the database defines, by name."""
+    return {
+        row[0]
+        for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+
+
+def _validate_schema(
+    cursor: sqlite3.Cursor,
+    version: int,
+    *,
+    indexes: Optional[set[str]] = None,
+) -> None:
+    """Check the live schema against what ``version`` requires, or raise.
+
+    This is the postcondition, and it is what decides whether a version may be
+    stamped — not the fact that the ALTERs raised nothing worth stopping for.
+    It runs after every step set, so a corrupt shape that survives the ALTERs
+    is caught at the step that was supposed to produce it rather than being
+    discovered later by a reader.
+
+    Every missing thing is collected and named, so one open tells the caller
+    the whole story instead of one item per attempt.
+    """
+    tables, required_indexes = REQUIRED_SCHEMA[version]
+    if indexes is not None:
+        required_indexes = indexes
+
+    missing: list[str] = []
+
+    for table, columns in tables.items():
+        present = _table_columns(cursor, table)
+        if not present:
+            missing.append(f"table {table}")
+            continue
+        absent = columns - present
+        if absent:
+            missing.append(f"{table} columns {', '.join(sorted(absent))}")
+
+    absent_indexes = required_indexes - _index_names(cursor)
+    if absent_indexes:
+        missing.append(f"indexes {', '.join(sorted(absent_indexes))}")
+
+    if missing:
+        raise StorageMigrationError(
+            f"schema postcondition for v{version} failed: {'; '.join(missing)}. "
+            "The migration steps raised nothing, but the database does not have "
+            f"the shape v{version} requires — a duplicate-column error means one "
+            "column was already there, not that the migration is complete. The "
+            "database has been left at its previous schema version; nothing was "
+            "stamped as migrated."
+        )
+
+
 class ReceiptStorage:
     """
     SQLite storage backend for attestation receipts and evidence.
@@ -364,6 +552,11 @@ class ReceiptStorage:
         )
         if cursor.fetchone() is None:
             cursor.executescript(SCHEMA)
+            # The same postcondition a migrated database has to satisfy. A
+            # fresh database is where SCHEMA and REQUIRED_SCHEMA would drift
+            # apart unnoticed, so it is checked here too: if the two disagree,
+            # every new store fails loudly instead of only the upgrade path.
+            _validate_schema(cursor, SCHEMA_VERSION, indexes=DECLARED_INDEXES)
             cursor.execute(
                 "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                 (SCHEMA_VERSION,),
@@ -388,6 +581,12 @@ class ReceiptStorage:
         looks like. Anything else propagates as ``StorageMigrationError`` and
         the version stamp is never written, so the database keeps saying the
         version it actually is.
+
+        A step that raises nothing is not proof that it worked, so each step
+        set is followed by ``_validate_schema()``: the required tables,
+        columns and indexes for that version target, checked against the live
+        database. The version is stamped only after the *declared* schema —
+        everything a freshly created database has — validates in full.
         """
         conn = self._conn
         if conn is None:
@@ -397,19 +596,29 @@ class ReceiptStorage:
 
         if from_version < 2:
             _migrate_step(cursor, MIGRATION_V1_TO_V2, from_version, 2)
+            _validate_schema(cursor, 2)
 
         if from_version < 3:
             _migrate_step(cursor, MIGRATION_V2_TO_V3, from_version, 3)
+            _validate_schema(cursor, 3)
 
         # Migration v3 to v4: rename payload_hash -> evidence_hash, add new columns
         if from_version < 4:
             self._migrate_v3_to_v4(cursor)
+            _validate_schema(cursor, 4)
 
         # Migration v4 to v5: add control_plane_json to offline_receipts
         if from_version < 5:
             _migrate_step(cursor, MIGRATION_V4_TO_V5, from_version, 5)
+            _validate_schema(cursor, 5)
 
-        # Only now, with every step applied or legitimately already present.
+        # The index set is the last thing to bring across, and it is the only
+        # part of the declared schema no version step creates in full.
+        _migrate_step(cursor, ENSURE_DECLARED_INDEXES, from_version, SCHEMA_VERSION)
+        _validate_schema(cursor, SCHEMA_VERSION, indexes=DECLARED_INDEXES)
+
+        # Only now, with every step applied and the resulting schema checked
+        # against what SCHEMA_VERSION means.
         cursor.execute("DELETE FROM schema_version")
         cursor.execute(
             "INSERT INTO schema_version (version) VALUES (?)",

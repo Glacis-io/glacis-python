@@ -33,6 +33,7 @@ from glacis.crypto import get_ed25519_runtime, offline_signed_payload_for
 from glacis.models import Attestation, OfflineVerifyResult, VerifyResult
 from glacis.storage import ReceiptStorage
 from glacis.verify import verify_command, verify_offline
+from tests.conftest import V4_EVIDENCE_TABLE
 
 SEED = bytes.fromhex(
     "3f1c0b7d2e4a5f8091c2d3e4f50617a8b9cadbec0d1e2f30415263748596a79a"
@@ -805,6 +806,7 @@ class TestLegacyStoreStillDegradesByName:
             CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
             INSERT INTO schema_version (version) VALUES (4);
             """
+            + V4_EVIDENCE_TABLE
         )
         conn.execute(
             "INSERT INTO offline_receipts (attestation_id, timestamp, service_id, "
