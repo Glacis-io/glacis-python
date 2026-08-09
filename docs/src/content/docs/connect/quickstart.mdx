@@ -154,11 +154,13 @@ exact behaviour rather than on the name "RFC 8785".
 
 <Aside type="note" title="Two serialisers, not one">
   `hash_payload()` (the `evidence_hash` path) uses `glacis.crypto.canonical_json`.
-  The offline **signature** path does not: it calls
-  `json.dumps(payload, sort_keys=True, separators=(",", ":"))` directly on the
-  attestation payload. For the field types that payload contains the two produce
-  the same bytes, but they are separate code paths and a reimplementation has to
-  match the right one.
+  The offline **signature** path does not: `glacis.crypto.offline_signed_payload()`
+  calls `json.dumps(payload, sort_keys=True, separators=(",", ":"))` directly on
+  the attestation payload. For the field types that payload contains the two
+  produce the same bytes, but they are separate code paths and a reimplementation
+  has to match the right one. `offline_signed_payload()` is the only definition
+  of those bytes — the SDK signs with it and verifies against it — so reading
+  that one function is enough to write a compatible verifier.
 </Aside>
 
 ## Save it, check it
@@ -182,12 +184,14 @@ Status: VALID
   Signature: PASS
 ```
 
-<Aside type="caution" title="`Signature: PASS` here is weaker than it looks">
-  For offline receipts, both the CLI and `Glacis.verify()` in 0.8.0 check
-  **structure**, not the Ed25519 signature. A receipt with its signature
-  replaced by zeroes still prints `Signature: PASS`. Real signature checking is
-  ten lines with PyNaCl, and
-  [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself) has them.
+<Aside type="caution" title="`Signature: PASS` means what it says — as of 0.8.1">
+  As of `glacis` 0.8.1 the CLI and `Glacis.verify()` run the same real Ed25519
+  check on offline receipts: alter any signed field and you get
+  `Status: INVALID`. **In 0.8.0, the version on PyPI, both checked only the
+  receipt's structure** — a signature replaced by zeroes still printed
+  `Signature: PASS`. Pin `glacis>=0.8.1` if you are gating on that output, and
+  see [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself) for
+  the same check written out in ten lines of PyNaCl.
 </Aside>
 
 ## Make it online
@@ -220,7 +224,7 @@ What changes:
 | `witness_status` | `"UNVERIFIED"` | `"WITNESSED"` — a mode label, [not a proof](/connect/offline-vs-witnessed/) |
 | Written to the local receipt store | **Yes**, automatically | **No.** `_attest_online` never calls `store_receipt()` |
 | `get_last_receipt()` on the client | Returns the last stored receipt | Raises `RuntimeError` — it is offline-only |
-| `verify(id)` | Local structural check | `GET /v1/verify/{id}` — the server answering about its own record |
+| `verify(id)` | Local Ed25519 check over the signed payload, no network (0.8.1; 0.8.0 checked only the receipt's shape) | `GET /v1/verify/{id}` — the server answering about its own record |
 | `evidence` populated | Never | When the server's sampling decision is L1/L2 |
 
 The storage row is the one that surprises people. After switching, receipts you

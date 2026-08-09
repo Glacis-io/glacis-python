@@ -104,7 +104,8 @@ attestation = glacis.attest(
 ### glacis.verify()
 
 Verify an attestation. For online attestations, calls the server API. For offline
-attestations, see the caveat below — 0.8.0 does **not** check the signature.
+attestations, verifies the Ed25519 signature locally — see the version note below,
+because 0.8.0 did **not**.
 
 ```python
 # Verify with an Attestation object
@@ -125,26 +126,35 @@ if isinstance(result, OfflineVerifyResult):
     print(result.witness_status)  # "UNVERIFIED"
 ```
 
-<Aside type="caution" title="Offline `verify()` is not a signature check in 0.8.0">
-  The offline branch derives a public key from the client's own `signing_seed`
-  and compares it to `attestation.public_key`. If they match it returns
-  `valid=True` — **without looking at `signature` at all**. Replace the
-  signature with zeroes and it still passes. If the client has no seed (a
-  receipt loaded from local storage), `signature_valid` is hardcoded `True`.
+<Aside type="caution" title="Offline `verify()` became a signature check in 0.8.1">
+  **0.8.1 (unpublished).** The offline branch rebuilds the signed payload from
+  the receipt's own fields (`glacis.crypto.offline_signed_payload`) and verifies
+  the signature against it with `Ed25519Runtime.verify()`, under the public key
+  **on the receipt**. It needs no signing seed, so it works on receipts you did
+  not sign. Alter any signed field — `service_id`, `evidence_hash`, the
+  timestamp, the `control_plane_results` content — and it returns
+  `valid=False`. `glacis.verify.verify_offline()` is that implementation, and
+  `python -m glacis verify` calls the same one.
 
-  `glacis.crypto.Ed25519Runtime` has `sign()` and `get_public_key_hex()` but no
-  `verify()`, so the SDK cannot perform this check today.
+  `error` names which failure it was:
 
-  For a real verification, use the PyNaCl routine in
-  [Verify from Python](/verify/cli/#verify-a-receipt-yourself). This behaviour
-  is pinned by `docs/scripts/verify-doc-snippets.py` so the page cannot go
-  stale silently.
+  | Prefix | Meaning |
+  | --- | --- |
+  | `signature_invalid` | The payload rebuilt and the signature does not verify over it. |
+  | `structural` | The receipt could not be turned into verifiable form at all — undecodable `public_key` or `signature`, or no `timestamp`. |
+  | `cpr_unrecoverable` | The store could not return the signed `control_plane_results`, so the payload cannot be rebuilt and no verdict is possible. |
+  | `cpr_hash_mismatch` / `cpr_hash_orphaned` | A named degradation of the **unsigned** `cpr_hash`. It can accompany `valid=True`: the signature is the authority, not the hash. |
 
-  0.8.1 (unpublished) adds exactly one case where the offline branch returns
-  `valid=False`: a receipt reconstructed from a store that could not return its
-  signed `control_plane_results`. That is not a signature check either — it is
-  the SDK refusing to report a verdict on a payload it knows cannot be rebuilt.
-  The `error` field carries the reason.
+  **0.8.0, which is what `pip install glacis` gives you, checks none of this.**
+  It derived a public key from the client's own `signing_seed` and compared it
+  to `attestation.public_key`; if they matched it returned `valid=True` without
+  looking at `signature` at all, and if the client had no seed `signature_valid`
+  was hardcoded `True`. Both behaviours — the old one and the new one — are
+  pinned by `docs/scripts/verify-doc-snippets.py`.
+
+  The PyNaCl routine in
+  [Verify from Python](/verify/cli/#verify-a-receipt-yourself) is the check
+  written out longhand, and it works against any version.
 </Aside>
 
 **Parameters:**
@@ -545,7 +555,7 @@ class VerifyResult(BaseModel):
 | `verification` | `Optional[Verification]` | Verification details (contains `signature_valid`, `proof_valid`) |
 | `proof` | `Optional[InclusionProof]` | Merkle inclusion proof |
 | `tree_head` | `Optional[SignedTreeHead]` | Signed tree head at verification time |
-| `error` | `Optional[str]` | Error message if invalid |
+| `error` | `Optional[str]` | Why it failed, prefixed with the failure's name. Also set on a receipt that **passed** when an unsigned field disagrees with the signed content (`cpr_hash_mismatch`) |
 
 Access signature and proof validity through the nested `verification` object:
 
@@ -575,7 +585,7 @@ class OfflineVerifyResult(BaseModel):
 |-------|------|-------------|
 | `valid` | `bool` | Mirrors `signature_valid` |
 | `witness_status` | `Literal["UNVERIFIED"]` | Always `"UNVERIFIED"` for offline attestations |
-| `signature_valid` | `bool` | **Not** an Ed25519 check in 0.8.0 — see the caveat under [`verify()`](#glacisverify) |
+| `signature_valid` | `bool` | A real Ed25519 check as of 0.8.1; **not** one in 0.8.0 — see the version note under [`verify()`](#glacisverify) |
 | `attestation` | `Optional[Attestation]` | The verified attestation |
 | `error` | `Optional[str]` | Error message if invalid |
 

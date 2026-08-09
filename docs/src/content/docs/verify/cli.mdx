@@ -1,6 +1,6 @@
 ---
 title: Verify from Python
-description: What `python -m glacis verify` actually checks in 0.8.0, and a real Ed25519 verification in ten lines.
+description: What `python -m glacis verify` actually checks — a real Ed25519 verification as of 0.8.1, and the same check in ten lines you can run yourself.
 sidebar:
   order: 2
 ---
@@ -34,22 +34,26 @@ The command branches on the receipt: an `id` starting `oatt_`, or
 `is_offline: true`, takes the offline path; anything else is looked up at
 `GET {base_url}/v1/verify/{id}`.
 
-<Aside type="caution" title="`Signature: PASS` on an offline receipt is not a signature check">
-  This is the most important sentence on the page. In 0.8.0, the offline branch
-  of the CLI validates **structure**: that the `id` starts `oatt_`, that
-  `evidence_hash` is 64 characters, that `public_key` is 64 characters, that
-  `signature` is non-empty, and that the witness status is `UNVERIFIED`.
+<Aside type="caution" title="This changed in 0.8.1, and 0.8.0 is what is on PyPI">
+  `Signature: PASS` is a real Ed25519 verification as of `glacis` 0.8.1: the
+  signed payload is rebuilt from the receipt's own fields and the signature is
+  checked against it under the public key the receipt carries. Alter any signed
+  field — including `control_plane_results` — and the CLI prints
+  `Status: INVALID`, names `signature_invalid`, and exits `1`.
+  `Glacis.verify(receipt)` runs the same function, so the library and the
+  command line cannot disagree about a receipt.
 
-  It does not compute anything. Replace the signature with 128 zeroes and the
-  CLI still prints `Status: VALID` / `Signature: PASS` — we check this in
-  `docs/scripts/verify-doc-snippets.py` precisely so that this page cannot
-  quietly stop being true.
+  **In 0.8.0, published on PyPI, it did not.** The offline branch checked
+  *structure* — that `id` starts `oatt_`, that two fields were 64 characters
+  long, that `signature` was non-empty — and printed `Signature: PASS` over a
+  signature of 128 zeroes. `Glacis.verify()` had the same gap by another route:
+  it compared the public key derived from *your local seed* against the key on
+  the receipt, and said `valid=True` whatever the signature said.
 
-  `Glacis.verify(receipt)` has the same gap by a different route: for offline
-  receipts it compares the public key derived from *your local seed* against the
-  key on the receipt. Same seed, `valid=True` — regardless of the signature.
-
-  If you need a genuine cryptographic check, use the routine below.
+  So: if you are on 0.8.0, the routine below is not a nicety, it is the only
+  real check available to you. Both behaviours are pinned in
+  `docs/scripts/verify-doc-snippets.py` so this page cannot quietly stop being
+  true again.
 </Aside>
 
 For online receipts the command asks the API, and the result reflects a real
@@ -60,7 +64,11 @@ by our snippet checks — it needs a live endpoint.
 
 This needs `pynacl` for the signature (already a dependency of `glacis`) and
 `glacis.crypto.hash_payload` for the binding check. It does a real Ed25519
-verification against the exact bytes the SDK signed.
+verification against the exact bytes the SDK signed — the same bytes
+`glacis.crypto.offline_signed_payload()` builds, which is what the SDK signs
+with and verifies against. Written out longhand here because a verifier you can
+read is worth more than one you have to trust, and because it is the only real
+check available on 0.8.0.
 
 ```python
 import json
@@ -208,6 +216,8 @@ The serialised receipt carries `is_offline` instead, which is what the CLI reads
   run: python -m glacis verify receipt.json
 ```
 
-The step fails the job on a non-zero exit. Given the structural-only caveat
-above, a CI gate that actually means something should call
-`verify_offline_receipt()` rather than the CLI.
+The step fails the job on a non-zero exit, and on 0.8.1 that exit reflects a
+real signature check. **Pin the version** if you are relying on that:
+`pip install 'glacis>=0.8.1'`. On 0.8.0 the CLI passes any structurally
+plausible receipt, so a gate on that version means nothing — call
+`verify_offline_receipt()` from the section above instead.

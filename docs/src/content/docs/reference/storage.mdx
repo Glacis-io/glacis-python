@@ -176,8 +176,10 @@ signed payload can no longer be rebuilt, so nobody can verify it. See
   `control_plane_results`. A receipt that verified when `attest()` returned it
   came back from `get_receipt()` / `get_last_receipt()` without the content its
   signature covered, and independent Ed25519 verification failed.
-  `Glacis.verify()` did not catch it, because the offline branch only compares
-  the locally derived public key and never checks a signature.
+  `Glacis.verify()` did not catch it either, because the offline branch only
+  compared the locally derived public key and never checked a signature. As of
+  0.8.1 it does check the signature, so a receipt that lost its control-plane
+  content now fails there too.
 
   Fixed in this repository and staged as **0.8.1, unpublished** —
   `pip install glacis` still gives you 0.8.0. SQLite schema v5 adds

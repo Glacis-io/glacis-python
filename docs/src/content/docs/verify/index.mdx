@@ -96,9 +96,13 @@ breakdown.
 python -m glacis verify receipt.json
 ```
 
-Read [what the CLI actually checks](/verify/cli/) before you rely on that
-output. For offline receipts it is a structural check, not a cryptographic one.
-The same page has a real verification routine that needs nothing but PyNaCl.
+As of `glacis` 0.8.1 that is a real Ed25519 check on offline receipts, and so
+is `Glacis.verify()` — they run the same function. **0.8.0, the version on
+PyPI, checked only the shape of the receipt** and printed `Signature: PASS`
+over a zeroed signature. Read [what the CLI actually checks](/verify/cli/)
+before you rely on the output, and pin `glacis>=0.8.1` if you are gating on it.
+The same page has the verification routine written out longhand, which needs
+nothing but PyNaCl and works against any version.
 
 ## Before you show anyone a green check
 

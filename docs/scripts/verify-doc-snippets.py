@@ -18,13 +18,17 @@ counted as passes. Read the NOT COVERED block at the end of a run: it is the
 list of things a green result does *not* establish.
 
 Executed here: the offline signing path; canonical hashing and every
-documented divergence from RFC 8785; all sixteen rows of the signed/unsigned
-field tables, by tampering; storage round-trips on both backends including
-persisted `control_plane_results` and the pre-0.8.1 loss of it; the retry and
-latency behaviour of the online path (against a stubbed transport, no
-network); what the online request body carries; L1/L2 evidence retention;
-operation/sequence linking; sampling; the CLI; and the independent
-(third-party) signature-verification recipe.
+documented divergence from RFC 8785; all seventeen rows of the signed/unsigned
+field tables, by tampering — including the two unsigned fields that decide the
+outcome anyway, `public_key` and `cpr_recovery_error`; the real Ed25519 check
+that `verify()` and the CLI perform from 0.8.1 (and the structural-only
+behaviour 0.8.0 had, on 0.8.0); storage round-trips on both backends including
+persisted `control_plane_results` and the pre-0.8.1 loss of it; the request and
+response projections of **all four** provider wrappers; the retry and latency
+behaviour of the online path (against a stubbed transport, no network); what
+the online request body carries; L1/L2 evidence retention; operation/sequence
+linking; sampling; the CLI; and the independent (third-party)
+signature-verification recipe.
 """
 
 from __future__ import annotations
@@ -150,18 +154,68 @@ def main() -> int:
         result.witness_status == "UNVERIFIED",
     )
 
-    # The documented caveat: in 0.8.0 the offline branch of verify() compares
+    # The behaviour that changed in 0.8.1. In 0.8.0 the offline branch compared
     # the public key derived from the *local* seed against the receipt's
-    # public_key. It does not check the Ed25519 signature. Prove it by
-    # corrupting the signature and observing that verify() still says valid.
+    # public_key and never looked at `signature`; from 0.8.1 it rebuilds the
+    # signed payload and verifies the signature over it. Both are pinned, on
+    # the version that actually claims them, so neither page can go stale.
+    from glacis.verify import verify_offline as _module_verify_offline
+
     tampered = receipt.model_copy(deep=True)
     tampered.signature = "00" * 64
     tampered_result = g.verify(tampered)
-    check(
-        "verify() does NOT check the signature (documented caveat)",
-        tampered_result.valid is True,
-        "zeroed signature still reports valid=True",
-    )
+    if on_081:
+        check(
+            "verify() DOES check the signature (0.8.1)",
+            tampered_result.valid is False
+            and tampered_result.signature_valid is False
+            and (tampered_result.error or "").startswith("signature_invalid: "),
+            (tampered_result.error or "")[:60] + "…",
+        )
+        check(
+            "verify() needs no signing seed — the key on the receipt is the "
+            "verifier (0.8.1)",
+            _module_verify_offline(receipt).valid is True
+            and _module_verify_offline(tampered).valid is False,
+            "glacis.verify.verify_offline() takes a receipt and nothing else",
+        )
+        _foreign_seed = bytes.fromhex("11" * 32)
+        _foreign = Glacis(
+            mode="offline",
+            signing_seed=_foreign_seed,
+            storage_backend="json",
+            storage_path=workdir / "foreign",
+        )
+        _foreign_receipt = _foreign.attest(
+            service_id="someone-else",
+            operation_type="inference",
+            input={"prompt": "not ours"},
+            output={"response": "not ours"},
+        )
+        _foreign.close()
+        check(
+            "a receipt signed by someone else's key verifies (0.8.1)",
+            g.verify(_foreign_receipt).valid is True,
+            "internal consistency, not identity — /verify/what-a-check-proves/",
+        )
+        check(
+            "an undecodable public_key is reported as `structural`, not as a "
+            "signature verdict (0.8.1)",
+            (
+                lambda r: (r.error or "").startswith("structural: ")
+                and r.valid is False
+            )(
+                g.verify(
+                    receipt.model_copy(deep=True, update={"public_key": "zzzz"})
+                )
+            ),
+        )
+    else:
+        check(
+            "verify() does NOT check the signature (the documented 0.8.0 defect)",
+            tampered_result.valid is True,
+            "zeroed signature still reports valid=True",
+        )
 
     # ------------------------------------------------------------------
     # Verify › Verify it yourself — independent Ed25519 verification
@@ -353,6 +407,54 @@ def main() -> int:
         "a different key, a different signature, a perfectly valid receipt",
     )
 
+    # `cpr_recovery_error` is the second unsigned-but-load-bearing row. It is
+    # never signed and never transmitted by the SDK; it is set by the *reader's*
+    # store to say the signed control-plane content could not be returned. It
+    # can only turn a good receipt into a refusal, never the other way round —
+    # both directions are pinned.
+    if on_081:
+        check(
+            "`cpr_recovery_error` is OUTSIDE the signature (the independent "
+            "verifier never sees it)",
+            still_verifies({"cpr_recovery_error": "anything at all"}),
+            "it is not part of the signed payload",
+        )
+        _flagged = with_cpr.model_copy(
+            deep=True,
+            update={"cpr_recovery_error": "the store could not return the CPR"},
+        )
+        _flagged_result = g.verify(_flagged)
+        check(
+            "`cpr_recovery_error` makes the SDK refuse to verify, by name",
+            _flagged_result.valid is False
+            and (_flagged_result.error or "").startswith("cpr_unrecoverable: "),
+            "unsigned, but it controls the verifier — so it is on the boundary table",
+        )
+        check(
+            "`cpr_recovery_error` can only cause a refusal, never a pass",
+            g.verify(
+                receipt.model_copy(
+                    deep=True,
+                    update={
+                        "signature": "00" * 64,
+                        "cpr_recovery_error": None,
+                    },
+                )
+            ).valid
+            is False,
+            "clearing it does not rescue a broken signature",
+        )
+        _cpr_hash_edited = g.verify(
+            with_cpr.model_copy(deep=True, update={"cpr_hash": "0" * 64})
+        )
+        check(
+            "an edited (unsigned) `cpr_hash` still verifies, and the SDK names "
+            "the inconsistency instead of swallowing it",
+            _cpr_hash_edited.valid is True
+            and (_cpr_hash_edited.error or "").startswith("cpr_hash_mismatch: "),
+            "the signature is the authority; cpr_hash is not signed",
+        )
+
     # --- The ten INSIDE rows -------------------------------------------------
     for field, value in (
         ("service_id", "some-other-service"),
@@ -493,10 +595,12 @@ def main() -> int:
             (legacy.cpr_recovery_error or "")[:60] + "…" if legacy else "",
         )
         check(
-            "verify() fails closed on such a receipt, with the reason (0.8.1)",
+            "verify() fails closed on such a receipt, naming cpr_unrecoverable "
+            "(0.8.1)",
             legacy is not None
             and gc.verify(legacy).valid is False
-            and gc.verify(legacy).error == legacy.cpr_recovery_error,
+            and (gc.verify(legacy).error or "").startswith("cpr_unrecoverable: ")
+            and (legacy.cpr_recovery_error or "") in (gc.verify(legacy).error or ""),
         )
     else:
         check(
@@ -835,24 +939,84 @@ def main() -> int:
     )
     stub_client.close()
 
+    # All four provider wrappers, not just OpenAI. The NOT COVERED note below
+    # says these projections are pinned by reading the wrapper source; that has
+    # to mean every wrapper the docs describe, or the note is overstating.
+    _wrapper_src = {
+        name: inspect.getsource(sys.modules[f"glacis.integrations.{name}"])
+        for name in ("openai", "anthropic", "gemini", "litellm")
+    }
+
+    # (provider, the exact request projection, the response keys it keeps)
+    _projections = [
+        (
+            "openai",
+            'input_data = {"model": model, "messages": messages}',
+            ("choices", "finish_reason", "usage"),
+        ),
+        (
+            "anthropic",
+            'input_data: dict[str, Any] = {"model": model, "messages": messages}',
+            ("content", "stop_reason", "usage"),
+        ),
+        (
+            "gemini",
+            '"contents": _serialize_contents(contents),',
+            ("candidates", "model_version", "usage"),
+        ),
+        (
+            "litellm",
+            'input_data = {"model": model, "messages": messages}',
+            ("choices", "finish_reason", "usage"),
+        ),
+    ]
+
+    for provider, request_projection, response_keys in _projections:
+        src = _wrapper_src[provider]
+        check(
+            f"the {provider} wrapper stores a projection of your request, not "
+            "your request",
+            request_projection in src,
+            request_projection,
+        )
+        check(
+            f"the {provider} wrapper's stored response keeps only "
+            + "/".join(response_keys),
+            all(key in src for key in response_keys),
+        )
+        check(
+            f"the {provider} wrapper hashes that same projection, so "
+            "evidence_hash commits to it",
+            "attest_and_store(ctx, input_data, output_data" in src
+            and "input=input_data" in _base_src
+            and "output=output_data" in _base_src,
+        )
+
     check(
-        "the OpenAI wrapper stores a projection of your request, not your request",
-        'input_data = {"model": model, "messages": messages}' in _openai_src,
-        "model and messages only — temperature, tools, response_format etc. are dropped",
-    )
-    check(
-        "the OpenAI wrapper's stored response omits id/created/system_fingerprint/"
-        "tool_calls/logprobs",
+        "no wrapper's stored response carries system_fingerprint/tool_calls/logprobs",
         not any(
-            tok in _openai_src
-            for tok in ("system_fingerprint", "tool_calls", "logprobs", "created")
+            tok in src
+            for src in _wrapper_src.values()
+            for tok in ("system_fingerprint", "tool_calls", "logprobs")
         ),
     )
     check(
-        "the wrapper hashes that same projection, so evidence_hash commits to it",
-        "attest_and_store(ctx, input_data, output_data" in _openai_src
-        and "input=input_data" in _base_src
-        and "output=output_data" in _base_src,
+        "only the anthropic and gemini wrappers project a system prompt, and "
+        "only as the caller supplied it",
+        '"system"' in _wrapper_src["anthropic"]
+        and "system_instruction" in _wrapper_src["gemini"]
+        and "system_instruction" not in _wrapper_src["openai"]
+        and "system_instruction" not in _wrapper_src["litellm"],
+        "openai/litellm carry the system message inside `messages` instead",
+    )
+    check(
+        "every wrapper puts the *hash* of the system prompt in the control "
+        "plane, never the prompt",
+        all(
+            "hash_payload(" in src and "system_prompt_hash=" in src
+            for src in _wrapper_src.values()
+        ),
+        "hash_payload() of the system prompt, passed as system_prompt_hash=",
     )
     check(
         "the offline attest path stores 100-character previews, not full payloads",
@@ -1033,11 +1197,44 @@ def main() -> int:
         capture_output=True,
         text=True,
     )
-    check(
-        "CLI still passes a zeroed signature (documented caveat)",
-        proc2.returncode == 0,
-        "structural validation only",
-    )
+    if on_081:
+        check(
+            "CLI exits 1 on a zeroed signature and names signature_invalid (0.8.1)",
+            proc2.returncode == 1 and "signature_invalid" in proc2.stdout,
+            proc2.stdout.strip().replace("\n", " | "),
+        )
+
+        # The CLI and the library must not be able to disagree: they call the
+        # same function. Pinned because two verifiers is one verifier too many.
+        _cli_tampered = Attestation.model_validate(tampered_doc)
+        _cli_tampered.is_offline = True
+        check(
+            "`python -m glacis verify` and `Glacis.verify()` run the same check",
+            g.verify(_cli_tampered).error == _module_verify_offline(_cli_tampered).error,
+        )
+
+        # Editing the *unsigned* cpr_hash must not fail the receipt — but it is
+        # reported by name rather than swallowed.
+        _cprhash_path = workdir / "cpr-hash-edited.json"
+        _cprhash_doc = with_cpr.model_dump()
+        _cprhash_doc["cpr_hash"] = "0" * 64
+        _cprhash_path.write_text(json.dumps(_cprhash_doc, indent=2, default=str))
+        proc3 = subprocess.run(
+            [sys.executable, "-m", "glacis", "verify", str(_cprhash_path)],
+            capture_output=True,
+            text=True,
+        )
+        check(
+            "CLI: an edited (unsigned) cpr_hash still passes, with a named note",
+            proc3.returncode == 0 and "cpr_hash_mismatch" in proc3.stdout,
+            proc3.stdout.strip().replace("\n", " | "),
+        )
+    else:
+        check(
+            "CLI still passes a zeroed signature (the documented 0.8.0 defect)",
+            proc2.returncode == 0,
+            "structural validation only",
+        )
 
     # ------------------------------------------------------------------
     # Connect › Configuration — glacis.yaml load
@@ -1290,9 +1487,10 @@ def main() -> int:
     )
     not_covered(
         "provider wrappers end to end (OpenAI/Anthropic/Gemini/LiteLLM)",
-        "needs paid provider keys; the stored projections are pinned by reading "
-        "the wrapper source, not by making a call, so a change in a provider's "
-        "response shape would not be caught here",
+        "needs paid provider keys. All four projections are pinned by reading "
+        "the wrapper source above — not by making a call — so a change in a "
+        "provider's own response shape, or a field the SDK reads that the "
+        "provider stops sending, would not be caught here",
     )
     not_covered(
         "the browser verifier and the `#r=` permalink",
