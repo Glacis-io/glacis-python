@@ -48,3 +48,11 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A tag may be pushed for a version already on PyPI — 0.8.1 was
+          # uploaded by hand before it was tagged. PyPI is append-only, so the
+          # duplicate is refused no matter what; without this the refusal fails
+          # the run and a correct tag looks like a broken release. Skipping is
+          # not a silent success: an upload that fails for any OTHER reason
+          # still fails the job.
+          skip-existing: true
