@@ -79,15 +79,27 @@ def main() -> int:
     from glacis import Glacis
     from glacis.crypto import canonical_json, hash_payload
 
-    # The pages are written against 0.8.0 — what `pip install glacis` serves —
-    # except where they say otherwise. This repo carries the unpublished 0.8.1
-    # fixes, so the script accepts either and prints which one it ran on.
+    # The pages are written against 0.8.0 — what `pip install glacis` served
+    # before the fixes — except where they say otherwise. Anything at 0.8.1 or
+    # later (the dev build, the release, or a future version) carries the fixes;
+    # 0.8.0 does not. Detect by the release-base version, not an exact string, so
+    # a version bump for release does not silently flip the harness back to
+    # asserting the old defects.
+    def _base(v: str) -> tuple[int, ...]:
+        head = v.split("+", 1)[0]
+        for sep in (".dev", "a", "b", "rc"):
+            head = head.split(sep, 1)[0]
+        try:
+            return tuple(int(p) for p in head.split("."))
+        except ValueError:
+            return (0,)
+
+    on_081 = _base(glacis.__version__) >= (0, 8, 1)
     check(
-        "SDK under test is 0.8.0 or the unpublished 0.8.1 in this repo",
-        glacis.__version__ in ("0.8.0", "0.8.1.dev0"),
+        "SDK under test is 0.8.0, or 0.8.1+ carrying the fixes (this repo)",
+        glacis.__version__ == "0.8.0" or on_081,
         glacis.__version__,
     )
-    on_081 = glacis.__version__ == "0.8.1.dev0"
 
     workdir = Path(tempfile.mkdtemp(prefix="glacis-docs-"))
     seed = bytes.fromhex(
