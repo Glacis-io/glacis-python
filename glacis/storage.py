@@ -275,6 +275,51 @@ ALTER TABLE offline_receipts ADD COLUMN control_plane_json TEXT;
 """
 
 
+class StorageMigrationError(RuntimeError):
+    """A schema migration could not be applied.
+
+    Raised instead of stamping a version the database has not reached. The
+    caller gets a receipt store that refuses to open, which is the honest
+    answer — the alternative is a database labelled v5 that is not v5, read
+    through a schema that does not match it.
+    """
+
+
+def _is_duplicate_column(exc: sqlite3.OperationalError) -> bool:
+    """True only for SQLite's "duplicate column name: x".
+
+    That is the one failure a migration step may ignore: it means the column
+    this step adds is already there, which is what re-running a partly applied
+    migration looks like. Every other OperationalError — no such table, disk
+    I/O error, malformed schema — means the step did not do its job.
+    """
+    return "duplicate column name" in str(exc).lower()
+
+
+def _migrate_step(
+    cursor: sqlite3.Cursor,
+    script: str,
+    from_version: int,
+    to_version: int,
+) -> None:
+    """Run one migration script, tolerating only an already-present column."""
+    try:
+        cursor.executescript(script)
+    except sqlite3.OperationalError as exc:
+        if _is_duplicate_column(exc):
+            return
+        raise StorageMigrationError(
+            f"migration v{from_version}->v{to_version} failed: {exc}. "
+            "The database has been left at its previous schema version; "
+            "nothing was stamped as migrated."
+        ) from exc
+
+
+def _table_columns(cursor: sqlite3.Cursor, table: str) -> set[str]:
+    """Column names of ``table``, or an empty set when it does not exist."""
+    return {row[1] for row in cursor.execute(f"PRAGMA table_info({table})")}
+
+
 class ReceiptStorage:
     """
     SQLite storage backend for attestation receipts and evidence.
@@ -292,7 +337,18 @@ class ReceiptStorage:
         if self._conn is None:
             self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
-            self._init_schema()
+            try:
+                self._init_schema()
+            except Exception:
+                # A database whose schema could not be brought up to date is
+                # not usable, and half-opening it would hand the caller a
+                # connection whose migrations never ran. Drop it and let the
+                # error out: the version on disk is untouched, so the next
+                # open retries the same migration rather than reading rows
+                # through a schema that does not match SCHEMA_VERSION.
+                self._conn.close()
+                self._conn = None
+                raise
         return self._conn
 
     def _init_schema(self) -> None:
@@ -325,7 +381,14 @@ class ReceiptStorage:
                 self._run_migrations(current)
 
     def _run_migrations(self, from_version: int) -> None:
-        """Run schema migrations."""
+        """Run schema migrations, or fail without claiming they ran.
+
+        Every step tolerates exactly one thing — the column it adds already
+        being there, which is what a re-run of a partly applied migration
+        looks like. Anything else propagates as ``StorageMigrationError`` and
+        the version stamp is never written, so the database keeps saying the
+        version it actually is.
+        """
         conn = self._conn
         if conn is None:
             return
@@ -333,13 +396,10 @@ class ReceiptStorage:
         cursor = conn.cursor()
 
         if from_version < 2:
-            cursor.executescript(MIGRATION_V1_TO_V2)
+            _migrate_step(cursor, MIGRATION_V1_TO_V2, from_version, 2)
 
         if from_version < 3:
-            try:
-                cursor.executescript(MIGRATION_V2_TO_V3)
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            _migrate_step(cursor, MIGRATION_V2_TO_V3, from_version, 3)
 
         # Migration v3 to v4: rename payload_hash -> evidence_hash, add new columns
         if from_version < 4:
@@ -347,11 +407,9 @@ class ReceiptStorage:
 
         # Migration v4 to v5: add control_plane_json to offline_receipts
         if from_version < 5:
-            try:
-                cursor.executescript(MIGRATION_V4_TO_V5)
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            _migrate_step(cursor, MIGRATION_V4_TO_V5, from_version, 5)
 
+        # Only now, with every step applied or legitimately already present.
         cursor.execute("DELETE FROM schema_version")
         cursor.execute(
             "INSERT INTO schema_version (version) VALUES (?)",
@@ -361,50 +419,60 @@ class ReceiptStorage:
 
     def _migrate_v3_to_v4(self, cursor: sqlite3.Cursor) -> None:
         """Migrate v3 to v4: rename payload_hash, add operation_id/sequence/supersedes/cpr_hash."""
-        # Rename payload_hash -> evidence_hash (SQLite 3.25+)
-        try:
-            cursor.execute(
-                "ALTER TABLE offline_receipts RENAME COLUMN payload_hash TO evidence_hash"
+        columns = _table_columns(cursor, "offline_receipts")
+        if not columns:
+            raise StorageMigrationError(
+                "migration v3->v4 failed: there is no offline_receipts table to "
+                "migrate. The database says it is v3 but does not have a v3 schema."
             )
-        except sqlite3.OperationalError:
-            # If rename fails (old SQLite), add new column and copy
+
+        # payload_hash -> evidence_hash. Skipped outright when the column is
+        # already named the new way, which is what a re-run looks like.
+        if "evidence_hash" not in columns:
+            if "payload_hash" not in columns:
+                raise StorageMigrationError(
+                    "migration v3->v4 failed: offline_receipts has neither "
+                    "evidence_hash nor payload_hash, so the hash column cannot "
+                    "be carried across."
+                )
             try:
                 cursor.execute(
-                    "ALTER TABLE offline_receipts ADD COLUMN evidence_hash TEXT"
+                    "ALTER TABLE offline_receipts RENAME COLUMN payload_hash TO evidence_hash"
                 )
-                cursor.execute(
-                    "UPDATE offline_receipts SET evidence_hash = payload_hash"
-                )
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            except sqlite3.OperationalError as rename_exc:
+                # SQLite < 3.25 has no RENAME COLUMN. Add and copy instead —
+                # and if *that* fails, the migration has failed. It is not
+                # "already fine".
+                try:
+                    cursor.execute(
+                        "ALTER TABLE offline_receipts ADD COLUMN evidence_hash TEXT"
+                    )
+                    cursor.execute(
+                        "UPDATE offline_receipts SET evidence_hash = payload_hash"
+                    )
+                except sqlite3.OperationalError as copy_exc:
+                    raise StorageMigrationError(
+                        "migration v3->v4 failed: could not produce an "
+                        f"evidence_hash column (rename: {rename_exc}; "
+                        f"add-and-copy fallback: {copy_exc})."
+                    ) from copy_exc
 
-        # Add new v1.2 columns
+        # Add new v1.2 columns. Already present is fine; anything else is not.
         for col_sql in [
             "ALTER TABLE offline_receipts ADD COLUMN operation_id TEXT",
             "ALTER TABLE offline_receipts ADD COLUMN operation_sequence INTEGER DEFAULT 0",
             "ALTER TABLE offline_receipts ADD COLUMN supersedes TEXT",
             "ALTER TABLE offline_receipts ADD COLUMN cpr_hash TEXT",
         ]:
-            try:
-                cursor.execute(col_sql)
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            _migrate_step(cursor, col_sql, 3, 4)
 
-        # Add index for operation_id
-        try:
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_operation_id ON offline_receipts(operation_id)"
-            )
-        except sqlite3.OperationalError:
-            pass
-
-        # Update index for evidence_hash (may fail if column wasn't renamed)
-        try:
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_evidence_hash ON offline_receipts(evidence_hash)"
-            )
-        except sqlite3.OperationalError:
-            pass
+        # Both columns exist by now, so an index that will not build is a real
+        # failure rather than the expected consequence of a skipped rename.
+        for index_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_operation_id ON offline_receipts(operation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_evidence_hash ON offline_receipts(evidence_hash)",
+        ]:
+            _migrate_step(cursor, index_sql, 3, 4)
 
     def store_receipt(
         self,
