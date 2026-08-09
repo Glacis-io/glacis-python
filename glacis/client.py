@@ -53,6 +53,7 @@ from glacis.models import (
     TreeHeadResponse,
     VerifyResult,
 )
+from glacis.verify import verify_attestation
 from glacis.verify import verify_offline as verify_offline_receipt
 
 if TYPE_CHECKING:
@@ -581,18 +582,26 @@ class Glacis:
         """
         Verify an attestation.
 
-        For online attestations: Calls the server API for verification.
-        For offline attestations: Verifies the Ed25519 signature locally.
+        Given an **id string**, this is a lookup: an ``oatt_`` id is read back
+        from local storage and its signature checked, anything else is verified
+        by the server.
+
+        Given an **Attestation object**, the object's own Ed25519 signature is
+        always checked, whatever its unsigned ``is_offline`` flag says.
+        ``is_offline=False`` adds a server lookup of the object's id on top,
+        and that answer is applied to the object only if the object binds to
+        the log entry it returns. See ``glacis.verify.verify_attestation`` for
+        the whole rule and for what the previous dispatch let through.
 
         Args:
             receipt: Attestation ID string or Attestation object
 
         Returns:
-            VerifyResult (online) or OfflineVerifyResult (offline)
+            VerifyResult (the log entry's verdict, for an object bound to it or
+            an id looked up directly) or OfflineVerifyResult (the supplied
+            object's own signature check)
         """
-        if isinstance(receipt, Attestation) and receipt.is_offline:
-            return self._verify_offline(receipt)
-        elif isinstance(receipt, str):
+        if isinstance(receipt, str):
             if receipt.startswith("oatt_"):
                 if self._storage:
                     stored = self._storage.get_receipt(receipt)
@@ -601,7 +610,10 @@ class Glacis:
                 raise ValueError(f"Offline receipt not found: {receipt}")
             return self._verify_online(receipt)
         elif isinstance(receipt, Attestation):
-            return self._verify_online(receipt.id)
+            self._debug(
+                f"Verifying (object): {receipt.id} is_offline={receipt.is_offline}"
+            )
+            return verify_attestation(receipt, self._verify_online)
         else:
             raise TypeError(f"Invalid receipt type: {type(receipt)}")
 

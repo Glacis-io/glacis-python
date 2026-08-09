@@ -89,17 +89,24 @@ def sample_offline_receipt_data(sample_offline_attestation_data: dict[str, Any])
 
 @pytest.fixture
 def sample_verify_response() -> dict[str, Any]:
-    """Standard verify API response."""
+    """Standard verify API response.
+
+    The log entry describes ``sample_attestation_data``: same ``signature``,
+    ``evidenceHash``, ``serviceId`` and ``operationType``. That agreement is
+    what lets a supplied Attestation object *bind* to this record — without it
+    the SDK treats the answer as being about some other attestation and refuses
+    to apply it, which is the point of ``glacis.verify.bind_to_log_entry``.
+    """
     return {
         "valid": True,
         "attestation": {
-            "entryId": "att_test123",
+            "entryId": "att_test123abc",
             "timestamp": "2024-01-01T12:00:00Z",
             "orgId": "org_xxx",
             "serviceId": "test-service",
-            "operationType": "inference",
+            "operationType": "completion",
             "evidenceHash": "a" * 64,
-            "signature": "sig123",
+            "signature": "c" * 128,
             "leafIndex": 42,
             "leafHash": "hash123",
         },

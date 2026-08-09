@@ -16,21 +16,23 @@ the page gives.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 from nacl.signing import SigningKey
 
 from glacis import Glacis
 from glacis.crypto import get_ed25519_runtime, offline_signed_payload_for
-from glacis.models import Attestation
+from glacis.models import Attestation, OfflineVerifyResult, VerifyResult
 from glacis.storage import ReceiptStorage
-from glacis.verify import verify_offline
+from glacis.verify import verify_command, verify_offline
 
 SEED = bytes.fromhex(
     "3f1c0b7d2e4a5f8091c2d3e4f50617a8b9cadbec0d1e2f30415263748596a79a"
@@ -258,7 +260,11 @@ class TestUnsignedFieldsDoNotBreakTheCheck:
         "field,value",
         [
             ("id", "oatt_not-the-real-id"),
-            ("is_offline", True),
+            # `is_offline` used to be listed here as ("is_offline", True) on a
+            # receipt whose is_offline was already True — a no-op that asserted
+            # nothing. It is not an inert field at all: it selects the
+            # verification route. A real flip of it is exercised through public
+            # dispatch in TestIsOfflineCannotBypassTheSignatureCheck below.
         ],
     )
     def test_unsigned_field_edit_still_verifies(self, stored, field: str, value: Any):
@@ -416,6 +422,239 @@ class TestTamperedStorageFailsClosed:
         assert result.valid is False
         assert result.error is not None
         assert result.error.startswith("signature_invalid: ")
+
+
+# ---------------------------------------------------------------------------
+# The unsigned routing fields cannot skip the signature check
+# ---------------------------------------------------------------------------
+
+
+def _stub_online(g: Glacis, response: dict[str, Any]) -> list[str]:
+    """Stub the online transport. Returns the ids it gets asked about.
+
+    Nothing here opens a socket: `_request_with_retry` is the seam between the
+    SDK and httpx, and replacing it is what "the server said X" means in these
+    tests. The dispatch under test is the public one — `Glacis.verify()` — not
+    any internal verifier.
+    """
+    asked: list[str] = []
+
+    def _stub(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        asked.append(url.rsplit("/", 1)[-1])
+        return response
+
+    g._request_with_retry = _stub  # type: ignore[method-assign, assignment]
+    return asked
+
+
+def _log_entry(**fields: Any) -> dict[str, Any]:
+    entry = {
+        "entryId": "att_real-online-attestation",
+        "timestamp": "2026-08-08T00:00:00Z",
+        "orgId": "org_real",
+        "serviceId": "claims-triage",
+        "operationType": "classification",
+        "evidenceHash": "9" * 64,
+        "signature": "7" * 128,
+        "leafIndex": 12,
+        "leafHash": "8" * 64,
+    }
+    entry.update(fields)
+    return {
+        "valid": True,
+        "attestation": entry,
+        "verification": {"signatureValid": True, "proofValid": True},
+    }
+
+
+class TestIsOfflineCannotBypassTheSignatureCheck:
+    """`is_offline` and `id` are unsigned. Neither may skip a signature.
+
+    Codex's pass-4 finding: `Glacis.verify(Attestation)` chose its verifier
+    from the unsigned `is_offline` field, so setting it to False and pointing
+    `id` at a valid online attestation routed the call to a server lookup and
+    the supplied object's own bad signature was never examined. The lookup
+    answered about the id and the caller read it as an answer about the bytes
+    they held: `valid=True` for a forged receipt.
+
+    Every test here goes through the public `Glacis.verify()`.
+    """
+
+    @pytest.fixture()
+    def honest(self, tmp_path: Path):
+        g = _client(tmp_path)
+        try:
+            yield g, _attest(g, control_plane_results=CPR)
+        finally:
+            g.close()
+
+    def test_a_forged_receipt_reclassified_as_online_fails_naming_the_signature(
+        self, honest
+    ):
+        """The pass-4 attack, executed exactly as reported."""
+        g, receipt = honest
+        forged = receipt.model_copy(deep=True)
+        forged.control_plane_results = dict(CPR, determination={"action": "blocked"})
+        forged.is_offline = False
+        forged.id = "att_real-online-attestation"
+
+        asked = _stub_online(g, _log_entry())
+        result = g.verify(forged)
+
+        assert result.valid is False
+        assert result.error is not None
+        assert result.error.startswith("signature_invalid: ")
+        # The lookup was allowed to happen and simply did not rescue it.
+        assert asked == ["att_real-online-attestation"]
+        assert "unbound: " in result.error
+
+    def test_a_zeroed_signature_reclassified_as_online_still_fails(self, honest):
+        g, receipt = honest
+        forged = receipt.model_copy(
+            deep=True, update={"signature": "00" * 64, "is_offline": False}
+        )
+        forged.id = "att_real-online-attestation"
+
+        _stub_online(g, _log_entry())
+        result = g.verify(forged)
+
+        assert result.valid is False
+        assert "signature_invalid: " in (result.error or "")
+
+    def test_the_server_saying_valid_does_not_make_the_object_valid(self, honest):
+        """`valid` describes the supplied bytes, never the id they claim."""
+        g, receipt = honest
+        forged = receipt.model_copy(
+            deep=True, update={"evidence_hash": "0" * 64, "is_offline": False}
+        )
+        forged.id = "att_real-online-attestation"
+
+        _stub_online(g, _log_entry(valid=True))
+        result = g.verify(forged)
+
+        assert result.valid is False
+        # Nothing from the server's record is reported for bytes it did not
+        # describe — not the org, not the proof, not the tree head.
+        assert isinstance(result, OfflineVerifyResult)
+        assert result.attestation is not None
+        assert result.attestation.id == "att_real-online-attestation"
+
+    def test_flipping_is_offline_on_an_honest_receipt_still_verifies(self, honest):
+        """A real flip, not the no-op the pass-4 review found at line 257."""
+        g, receipt = honest
+        flipped = receipt.model_copy(deep=True, update={"is_offline": False})
+        assert receipt.is_offline is True
+
+        asked = _stub_online(g, _log_entry())
+        result = g.verify(flipped)
+
+        assert result.valid is True
+        assert isinstance(result, OfflineVerifyResult)
+        assert result.signature_valid is True
+        # The routing is named rather than silently taken: the id was looked
+        # up, the answer described a different attestation, so it was dropped.
+        assert asked == [receipt.id]
+        assert "unbound: " in (result.error or "")
+        assert "Only the supplied attestation's own Ed25519 signature was checked" in (
+            result.error or ""
+        )
+
+    def test_an_object_that_binds_to_the_log_entry_gets_the_servers_verdict(
+        self, honest
+    ):
+        """The other half: binding is what lets a lookup speak for an object."""
+        g, receipt = honest
+        flipped = receipt.model_copy(deep=True, update={"is_offline": False})
+
+        _stub_online(
+            g,
+            _log_entry(
+                entryId=receipt.id,
+                signature=receipt.signature,
+                evidenceHash=receipt.evidence_hash,
+                serviceId=receipt.service_id,
+                operationType=receipt.operation_type,
+            ),
+        )
+        result = g.verify(flipped)
+
+        assert isinstance(result, VerifyResult)
+        assert result.valid is True
+        assert (result.error or "").startswith("bound: ")
+        # And it says what the entry cannot vouch for.
+        assert "control_plane_results" in (result.error or "")
+
+    def test_a_bound_object_whose_record_is_invalid_is_invalid(self, honest):
+        g, receipt = honest
+        flipped = receipt.model_copy(deep=True, update={"is_offline": False})
+
+        _stub_online(
+            g,
+            dict(
+                _log_entry(
+                    entryId=receipt.id,
+                    signature=receipt.signature,
+                    evidenceHash=receipt.evidence_hash,
+                    serviceId=receipt.service_id,
+                    operationType=receipt.operation_type,
+                ),
+                valid=False,
+                error="revoked",
+            ),
+        )
+        result = g.verify(flipped)
+
+        assert result.valid is False
+        assert "revoked" in (result.error or "")
+
+    def test_flipping_is_offline_to_true_never_reaches_the_network(self, honest):
+        """Flipping the other way narrows the check; it cannot widen it."""
+        g, receipt = honest
+        online_shaped = Attestation(
+            id="att_real-online-attestation",
+            service_id="claims-triage",
+            operation_type="classification",
+            evidence_hash="9" * 64,
+            public_key=receipt.public_key,
+            signature="7" * 128,
+            is_offline=True,
+        )
+
+        asked = _stub_online(g, _log_entry())
+        result = g.verify(online_shaped)
+
+        assert asked == []
+        assert result.valid is False
+        assert (result.error or "").startswith("structural: ")
+
+    def test_the_cli_reclassification_path_fails_the_same_way(self, tmp_path: Path):
+        """`python -m glacis verify` had the same two-unsigned-field bypass."""
+        g = _client(tmp_path)
+        try:
+            receipt = _attest(g, control_plane_results=CPR)
+        finally:
+            g.close()
+
+        doc = receipt.model_dump()
+        doc["control_plane_results"] = dict(CPR, determination={"action": "blocked"})
+        doc["is_offline"] = False
+        doc["id"] = "att_real-online-attestation"
+        path = tmp_path / "reclassified.json"
+        path.write_text(json.dumps(doc, indent=2, default=str))
+
+        calls: list[str] = []
+
+        def _lookup(attestation_id: str, base_url: str) -> VerifyResult:
+            calls.append(attestation_id)
+            return VerifyResult.model_validate(_log_entry())
+
+        args = argparse.Namespace(receipt=str(path), base_url="https://example.invalid")
+        with mock.patch("glacis.verify.verify_online", side_effect=_lookup):
+            with pytest.raises(SystemExit) as exit_info:
+                verify_command(args)
+
+        assert exit_info.value.code == 1
+        assert calls == ["att_real-online-attestation"]
 
 
 # ---------------------------------------------------------------------------

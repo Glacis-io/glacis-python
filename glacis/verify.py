@@ -8,13 +8,17 @@ Usage:
 ``verify_offline()`` here is the one offline verification in the SDK:
 ``Glacis.verify()`` calls it too, so the library and the command line can never
 give different answers about the same receipt.
+
+``verify_attestation()`` is the one *dispatch* for a supplied ``Attestation``
+object, shared for the same reason. It never lets the unsigned ``is_offline``
+flag decide whether a signature gets looked at.
 """
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import httpx
 
@@ -164,6 +168,158 @@ def verify_offline(receipt: Attestation) -> OfflineVerifyResult:
     )
 
 
+# =============================================================================
+# Dispatch for a supplied Attestation object
+# =============================================================================
+
+#: The fields of a supplied ``Attestation`` that a transparency-log entry
+#: carries, and therefore the only ones a server lookup can be said to cover.
+#: ``signature`` and ``evidence_hash`` are the binding pair — the first is the
+#: Arbiter's, the second commits to the exchange. ``service_id`` and
+#: ``operation_type`` are compared as well, but only when both sides carry a
+#: value, so an object that simply omits them is reported as unbound rather
+#: than mistaken for a match.
+BINDABLE_FIELDS = ("signature", "evidence_hash", "service_id", "operation_type")
+
+#: Everything on the object that no log entry carries. A bound result says
+#: nothing about these, and ``bind_to_log_entry()`` says so in its report.
+UNBINDABLE_FIELDS = (
+    "control_plane_results",
+    "cpr_hash",
+    "evidence",
+    "review",
+    "timestamp",
+    "operation_id",
+    "operation_sequence",
+    "supersedes",
+)
+
+
+def _hex_matches(left: str, right: str) -> bool:
+    """Compare two hex fields, with neither side allowed to be empty.
+
+    Two empty strings are not a match. Binding on a field that neither side
+    filled in would let an object with no signature "match" a record with no
+    signature, which is the opposite of what binding is for.
+    """
+    return bool(left) and bool(right) and left.strip().lower() == right.strip().lower()
+
+
+def bind_to_log_entry(receipt: Attestation, record: VerifyResult) -> tuple[bool, str]:
+    """Decide whether ``record`` is the log entry for *these* bytes.
+
+    A server lookup answers a question about an **id**. The id is unsigned and
+    anybody can put any id on any object, so the answer only describes the
+    supplied object if the object and the entry agree on the fields they both
+    carry. That agreement is what "bound" means here, and it is checked rather
+    than assumed.
+
+    Returns ``(bound, report)``. The report names what was compared either way,
+    including what a bound entry still does not cover.
+    """
+    entry = record.attestation
+    if entry is None:
+        return False, (
+            f"the lookup of {receipt.id} came back without a log entry, so there "
+            "is nothing to compare the supplied attestation against"
+        )
+
+    mismatched = []
+    if not _hex_matches(receipt.signature, entry.signature):
+        mismatched.append("signature")
+    if not _hex_matches(receipt.evidence_hash, entry.evidence_hash):
+        mismatched.append("evidence_hash")
+    if receipt.service_id and entry.service_id and receipt.service_id != entry.service_id:
+        mismatched.append("service_id")
+    if (
+        receipt.operation_type
+        and entry.operation_type
+        and receipt.operation_type != entry.operation_type
+    ):
+        mismatched.append("operation_type")
+
+    if mismatched:
+        return False, (
+            f"the log entry for {receipt.id} does not describe the supplied "
+            f"attestation — they disagree on {', '.join(mismatched)}"
+        )
+
+    return True, (
+        f"the supplied attestation matches the log entry for {receipt.id} on "
+        "signature and evidence_hash. The entry carries nothing about "
+        f"{', '.join(UNBINDABLE_FIELDS)}, so this verdict does not cover them"
+    )
+
+
+def _with_note(existing: Optional[str], note: str) -> str:
+    """Append a routing note without discarding what the check already said."""
+    return f"{existing} Also: {note}" if existing else note
+
+
+def verify_attestation(
+    receipt: Attestation,
+    online_lookup: Callable[[str], VerifyResult],
+) -> Union[VerifyResult, OfflineVerifyResult]:
+    """Verify a supplied ``Attestation`` **object**, fail-closed.
+
+    ``is_offline`` and ``id`` are unsigned: an attacker holding a receipt can
+    set them to anything. Up to 0.8.1.dev0 they chose the verifier outright, so
+    flipping ``is_offline`` to ``False`` and pointing ``id`` at some valid
+    online attestation routed the call to a server lookup and the supplied
+    object's own bad signature was never examined — ``valid=True`` for bytes
+    nothing had checked.
+
+    Here ``is_offline`` selects **additional** verification, never a bypass:
+
+    * The offline Ed25519 check runs on every supplied object, always, over the
+      payload rebuilt from that object's own signed fields. Nothing skips it.
+    * ``is_offline=False`` adds a lookup of ``receipt.id``. The answer is about
+      an id, so it is applied to the object only if the object **binds** to the
+      returned log entry (see :func:`bind_to_log_entry`).
+    * **Bound** — the server's :class:`VerifyResult` is returned, with the
+      binding named in ``error`` along with what the entry cannot cover.
+    * **Unbound** — the server's answer described some other record, so none of
+      it is returned. The result is the object's own offline check, with
+      ``error`` naming that the lookup happened and was not applied. ``valid``
+      then reflects the supplied object, which is the only thing that was
+      actually verified.
+
+    A receipt whose own signature fails and which does not bind is therefore
+    ``valid=False`` whatever the server says about the id it claims.
+    """
+    local = verify_offline(receipt)
+
+    # is_offline=True asks for the local check and nothing more. It is already
+    # the strictest route, so there is no bypass to close here.
+    if receipt.is_offline:
+        return local
+
+    record = online_lookup(receipt.id)
+    bound, report = bind_to_log_entry(receipt, record)
+
+    if bound:
+        note = f"bound: {report}"
+        if not local.valid:
+            note += (
+                ". The supplied attestation does not additionally carry a valid "
+                f"offline signature of its own ({local.error}); the log entry, "
+                "not the object's bytes, is what this verdict rests on"
+            )
+        return record.model_copy(update={"error": _with_note(record.error, note)})
+
+    return local.model_copy(
+        update={
+            "error": _with_note(
+                local.error,
+                f"unbound: {report}. is_offline said this was a witnessed "
+                "attestation, so the id was looked up; nothing from that lookup "
+                "is reported here and it did not contribute to valid. Only the "
+                "supplied attestation's own Ed25519 signature was checked",
+            )
+        }
+    )
+
+
 def verify_command(args: argparse.Namespace) -> None:
     """Verify a receipt file."""
     receipt_path = Path(args.receipt)
@@ -179,22 +335,29 @@ def verify_command(args: argparse.Namespace) -> None:
         print(f"Error: Invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Determine receipt type and verify
+    # Classify, then verify. The classification only ever *adds* a check:
+    # `verify_attestation` runs the offline signature check on any receipt that
+    # carries one, whatever these two unsigned fields say. Flipping
+    # `is_offline` to false and pointing `id` at a valid online attestation
+    # used to route straight past that check — see `verify_attestation`.
     result: Union[VerifyResult, OfflineVerifyResult]
 
-    # Check for offline receipt - supports both camelCase and snake_case
+    # Supports both camelCase and snake_case
     att_id = data.get("attestationId") or data.get("id") or ""
-    is_offline = att_id.startswith("oatt_") or data.get("is_offline", False)
-
-    if is_offline:
-        receipt = Attestation.model_validate(data)
+    receipt = Attestation.model_validate(data)
+    if att_id.startswith("oatt_"):
+        # An `oatt_` id is a local receipt whatever the flag claims. This only
+        # ever narrows the routing to the local check.
         receipt.is_offline = True
-        result = verify_offline(receipt)
-        receipt_type = "Offline"
-    else:
-        receipt = Attestation.model_validate(data)
-        result = verify_online(receipt.id, args.base_url)
-        receipt_type = "Online"
+
+    result = verify_attestation(
+        receipt, lambda attestation_id: verify_online(attestation_id, args.base_url)
+    )
+
+    # What was actually checked, not what the file asked for: an object that
+    # claimed to be witnessed and did not bind to the log entry for its id
+    # comes back as the offline check it really got.
+    receipt_type = "Offline" if isinstance(result, OfflineVerifyResult) else "Online"
 
     # Output
     print(f"Receipt: {receipt.id}")
