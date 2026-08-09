@@ -178,15 +178,47 @@ Between attempts it calls `time.sleep(delay + jitter)` on your thread, where
 `delay = min(base_delay * 2**attempt, max_delay)` and `jitter` is up to 30% of
 it: **1s, then 2s, then 4s**, so 7.0–9.1 seconds of sleeping across a full run.
 
-So the honest arithmetic for the worst case — four attempts that each hang until
-the timeout expires:
+So the arithmetic for four attempts that each end in a single timeout:
 
 ```
 4 × 30s (timeouts) + 1.3s + 2.6s + 5.2s (backoff with maximum jitter)
 = 129.1 seconds added to a single wrapped call
 ```
 
-That is the ceiling, not the norm. A refused connection fails each attempt
+<Aside type="caution" title="129.1 seconds is one scenario, not a deadline">
+  `httpx.Client(timeout=30)` does **not** set a total deadline. It sets
+  per-operation timeouts — connect, read, write, pool — and the read timeout is
+  the maximum gap *between chunks*, not the maximum length of the response.
+  ([HTTPX timeout semantics](https://www.python-httpx.org/advanced/timeouts/).)
+
+  So a server that sends a byte every 29 seconds never trips a 30-second read
+  timeout, and one attempt alone can run far past 30 seconds. The 129.1 above is
+  exactly what it says — four attempts that each hang and then time out once —
+  and not a bound on anything else.
+
+  **The honest bound is that there is none by default.** Nothing in the SDK, and
+  nothing in `httpx`, caps the wall-clock time of an attestation call.
+
+  A caller imposes one from outside, because that is the only place it can be
+  imposed today. Through a provider wrapper the choice is the first bullet or
+  nothing — see the note below; the other two need you to hold the client:
+
+  - **Offline mode.** No request, so no clock to run over. This is the only
+    "bound" that needs nothing from you.
+  - **Your own thread.** Call `attest()` on a `ThreadPoolExecutor` and use
+    `future.result(timeout=…)`. You get control back on time; the worker thread
+    keeps running until httpx returns, so this bounds *your* latency, not the
+    process's work.
+  - **`asyncio.wait_for()`** around `AsyncGlacis.attest()`, which does cancel
+    the underlying request — but the provider wrappers do not use `AsyncGlacis`,
+    so this is only available when you call the client yourself.
+
+  A drip-feeding endpoint is a hostile or badly broken one, not the everyday
+  case. It is stated because "129.1 seconds" reads as a promise, and it is not
+  one.
+</Aside>
+
+That scenario is not the norm either. A refused connection fails each attempt
 instantly, which is the common failure and costs only the backoff: a probe
 against a closed local port made **exactly four attempts** and returned after
 **8.4 seconds**, all of it sleeping. Expect anywhere in the 7.0–9.1 second band,
@@ -217,10 +249,12 @@ round trip, not four.
   - **Do not use the wrapper for online mode.** Construct
     `Glacis(api_key=…, timeout=2.0, max_retries=0)` yourself and call
     `attest()` where you want it — including from a queue or a background
-    thread, which is the only way to get attestation off the request path.
+    thread, which is the only way to get attestation off the request path, and
+    the only place the wall-clock bounds above can be applied.
 
   If you need online attestation inside a latency budget, the second one is the
-  only answer today.
+  only answer today. Note that neither one makes `timeout=` a deadline: it
+  lowers the inactivity threshold, which is a different thing.
 </Aside>
 
 ## Decide one thing first: offline or online

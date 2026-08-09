@@ -103,9 +103,12 @@ if receipt:
   **Fail-open is about exceptions, not about time.** `attest_and_store()` runs
   synchronously between the provider response and this function's return. In
   offline mode that is a signature and a local write. In online mode it is an
-  HTTP round trip that retries up to four times with 30-second timeouts and
-  blocking backoff — a ceiling of **129.1 seconds** added to one call. The
-  arithmetic, and the only two ways to bound it at 0.8.0, are on
+  HTTP round trip that retries up to four times with 30-second per-operation
+  timeouts and blocking backoff. Four attempts that each time out once cost
+  **129.1 seconds** — one scenario, not a deadline: `timeout=30` bounds
+  inactivity between chunks, not the length of a response, so nothing bounds
+  this by default. The arithmetic, and the ways a caller can bound it at 0.8.0,
+  are on
   [Connect](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
 </Aside>
 

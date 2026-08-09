@@ -101,8 +101,10 @@ control raises `GlacisBlockedError`.
 
   Fail-open is about exceptions, not about time: attestation runs synchronously
   before this call returns, and online mode retries up to four times with
-  30-second timeouts and blocking backoff — a ceiling of **129.1 seconds** on
-  one call. See
+  30-second per-operation timeouts and blocking backoff. Four attempts that each
+  time out once cost **129.1 seconds** — one scenario, not a deadline: `timeout=30`
+  bounds inactivity, not the length of a response, so nothing bounds this by
+  default. See
   [what "best effort" costs you](/connect/#fail-open-means-no-exception-it-does-not-mean-no-delay).
 </Aside>
 
