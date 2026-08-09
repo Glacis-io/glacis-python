@@ -18,11 +18,11 @@ script that runs the code.
 ## How snippets were verified
 
 `docs/scripts/verify-doc-snippets.py` executes the documented behaviour against
-the SDK in this repo. **139 checks, all passing** as of this commit
+the SDK in this repo. **141 checks, all passing** as of this commit
 (53 from the original rebuild, 24 added in round 2, 41 in round 3, 21 in
-round 4), plus **7 `NOT COVERED` lines** — claims the script cannot execute,
-printed with a reason and counted separately so that a green run is never read
-as complete coverage.
+round 4, 3 in round 5 less one removed), plus **7 `NOT COVERED` lines** — claims
+the script cannot execute, printed with a reason and counted separately so that
+a green run is never read as complete coverage.
 
 ```
 pip install -e .          # from the repo root
@@ -35,7 +35,10 @@ divergence from RFC 8785, `verify()` — the real Ed25519 check it performs from
 0.8.1, *and* the structural-only behaviour 0.8.0 had, each asserted on the
 version that claims it — the published independent verification routine across
 every tamper case plus the `control_plane_results` and `supersedes` variants,
-all seventeen rows of the signed/unsigned field tables, the persisted-CPR round
+all eighteen rows of the signed/unsigned field tables — including the four
+unsigned ones that decide the outcome, two of which (`is_offline`, `id`) are
+checked through public `Glacis.verify()` dispatch because that is where they
+act — the persisted-CPR round
 trip and the pre-0.8.1 loss of it, the request and response projections of all
 four provider wrappers, the online path's retry and latency behaviour and
 request body (against a stubbed transport), L1/L2 evidence retention, operation
@@ -800,6 +803,195 @@ Staged, unpublished, Joe-gated. `CHANGELOG.md` carries the full entry.
 | `tests/test_offline_signature_verification.py` | New in round 4 — 36 tests: every signed field tampered after storage, the unsigned rows that must not break, tampering with the store itself, and the CLI |
 | `tests/test_storage_migrations.py` | New in round 4 — 12 tests: healthy and partly applied migrations, and three crafted-corrupt databases that fail by name |
 | `tests/test_integration_base.py` | One test: a storage failure leaves no current receipt |
+
+---
+
+## Corrections — round 5
+
+*Fourth Codex launch-gate pass (`glacis-know/2026-08-08_codex-pass4-sdk.md`,
+session 019fe40d). `glacis-plg` and `labs-plg` passed at round 3; this branch was
+blocked on two findings, with three further precision notes. All five are closed
+below. Version stays `0.8.1.dev0` — still unpublished.*
+
+### 1 · An unsigned field chose whether a signature got checked — fixed
+
+*Codex finding 2. `Glacis.verify(Attestation)` trusts the unsigned `is_offline`
+to select the verifier. Changing `is_offline=False` and `id` to a valid online
+attestation routes to `_verify_online(id)` and never examines the supplied
+object's bad signature. The CLI has the equivalent reclassification.*
+
+Round 4 made `verify_offline()` a real Ed25519 check and Codex confirms it is
+fail-closed. This is the layer above it: **the dispatch**. Two unsigned fields
+chose which verifier ran, so an attacker holding a receipt could route around
+the check entirely. The signature was never wrong; it was never consulted.
+
+The distinction matters for what the fix had to be. Hardening the offline
+verifier further would have done nothing. What was needed was a dispatch where
+`is_offline` cannot subtract a check:
+
+- **The offline signature check runs on every supplied `Attestation` object,
+  always.** Nothing skips it.
+- `is_offline=False` **adds** a lookup of `receipt.id`. That answer is about an
+  id, and anybody can put any id on any object, so it is applied to the object
+  only if the two **bind**: matching `signature` and `evidence_hash` — the
+  Arbiter's signature and the commitment to the exchange — plus `service_id` and
+  `operation_type` when both sides carry them.
+- **Bound**, the server's `VerifyResult` is returned with `error` naming the
+  binding *and* listing what the log entry carries nothing about
+  (`control_plane_results`, `cpr_hash`, `evidence`, `review`, `timestamp`,
+  `operation_id`, `operation_sequence`, `supersedes`). A verdict that covers
+  four fields should not be read as covering twelve.
+- **Unbound**, none of the server's answer is returned — not the org, not the
+  proof, not the tree head. The result is the object's own `OfflineVerifyResult`,
+  `valid` reflects the bytes that were actually checked, and `error` says the
+  lookup happened and was not applied. An object that is not the record cannot
+  borrow the record's verdict, and cannot be dressed in its evidence either.
+
+`glacis.verify.verify_attestation()` is the one implementation, called by
+`Glacis.verify()` and by `python -m glacis verify`, so the library and the
+command line cannot disagree — the same rule round 4 applied to `verify_offline`.
+The CLI now prints the type of check it *actually ran* rather than the one the
+file asked for: a receipt claiming to be witnessed that does not bind comes back
+labelled `Offline`.
+
+One consequence worth stating plainly, because it is a behaviour change:
+`verify()` on an `Attestation` object with `is_offline=False` now returns an
+`OfflineVerifyResult` when the object does not bind, where it previously
+returned whatever the server said about the id. That is the fix, not a
+side-effect.
+
+Eight adversarial tests, all **through public dispatch** rather than raw
+internals: the pass-4 attack exactly as reported; a zeroed signature
+reclassified the same way; a server saying `valid=True` about an id that does
+not describe the bytes; an honest receipt with the flag flipped (still valid,
+route named); an object that binds (server's verdict, binding named); a bound
+object whose record is invalid; the flip in the other direction (narrows the
+check, never reaches the network); and the CLI path.
+
+The no-op the review found — `tests/…:257` setting `is_offline` to `True` on a
+receipt whose `is_offline` was already `True` — is replaced by a real flip.
+
+### 2 · A tolerated ALTER error still stamped a corrupt schema v5 — fixed
+
+*Codex finding 1. `_is_duplicate_column()` treats the duplicate-column message
+as sufficient proof that the migration is complete. Reproduced in memory: a
+database declaring v4 with only `offline_receipts(control_plane_json TEXT)`
+swallowed the duplicate-column error and finished with `version 5`, `columns
+['control_plane_json']`.*
+
+Round 4 made every step fail loudly and that was genuinely not enough, for a
+reason worth writing down: **"duplicate column name" is evidence about one
+column.** It says the column this step adds is already there. It says nothing
+about the other fifteen, the second table, or the indexes. Treating it as
+"migration complete" is inferring a schema from a single error string.
+
+So the required shape is now stated as data — `REQUIRED_SCHEMA`, cumulative, one
+entry per version target — and `_validate_schema()` checks it against the live
+database **after every step set**, before anything is stamped. Every missing
+table, column and index is collected and named in one message rather than
+surfacing one per attempt. Nothing is stamped until the declared schema, the
+same one a freshly created database gets, validates in full.
+
+Two details that keep it from being decorative:
+
+- **Fresh databases are validated too.** That is where `SCHEMA` and
+  `REQUIRED_SCHEMA` would silently drift apart; now a disagreement fails every
+  new store, loudly, in the test suite.
+- **`ENSURE_DECLARED_INDEXES`** brings across the three convenience indexes on
+  `offline_receipts` that no version step ever created. A database migrated from
+  v4 was missing them permanently, so requiring them without creating them would
+  have been a check nothing could pass.
+
+Codex's exact reproduction now raises `StorageMigrationError` naming the fifteen
+missing columns, with the recorded version still 4 and the table still holding
+its one column. Tested per version target, each fixture built so that every
+ALTER for that target *succeeds* and the result is still not what the version
+means: an `evidence` table that is not one (v2), a missing `offline_receipts`
+(v3), an `evidence` left at the v2 shape (v4), and Codex's own database (v5).
+
+**The v4 fixtures in the test suite were not v4.** Three test files hand-built a
+"v4" database with no `evidence` table — which `v1→v2` adds — and the new
+postcondition rejected all of them. They now build the database they claimed to
+be. That is the check working on the tests themselves, and it is the reason nine
+tests had to change.
+
+### 3 · `is_offline` was documented as inert — fixed
+
+*Codex: the documentation incorrectly calls `is_offline` inert at
+`what-a-check-proves.mdx:37`; the harness changes it to false but checks raw
+signature bytes rather than public dispatch.*
+
+It moves to the load-bearing table beside `public_key` and `cpr_recovery_error`:
+unsigned, not an input to the signed payload, and an input to **the verifier**.
+`id` joins it, because the fix gave `id` the same character — when `is_offline`
+is false the identifier chooses which log entry is fetched. Four inert rows, four
+load-bearing, **eighteen** in all, and the prose count says so.
+
+The page also carries a caution naming what it used to say and why that was
+worse than merely wrong.
+
+In the harness, `is_offline` leaves the raw-bytes loop — true of it and beside
+the point — for three checks through public `Glacis.verify()` dispatch against a
+stubbed transport that answers per id, because answering per id is what makes
+binding necessary in the first place.
+
+### 4 · The `cpr_hash_mismatch` advisory was documented on the wrong result — fixed
+
+*Codex: `valid=True` plus `cpr_hash_mismatch` is acceptable — the signature
+authenticates CPR content and the unsigned hash is advisory. The API reference
+documents it under online `VerifyResult`, while `OfflineVerifyResult.error`
+still says "if invalid".*
+
+It is on `OfflineVerifyResult.error`, which now reads: set when verification
+failed, **or** carries the advisory `cpr_hash_mismatch` on a receipt whose
+`valid` follows the signature. `VerifyResult.error` describes the binding note it
+does carry instead.
+
+### 5 · The harness still called 129.1 seconds a ceiling — fixed
+
+*Codex: the timeout product documentation now correctly describes one scenario;
+the harness still labels 129.1 seconds a "ceiling" and "worst case".*
+
+The pages were corrected in round 4 and the harness was not, which is the
+failure mode a snippet harness exists to prevent — the executable record
+disagreeing with the page it pins. The check now says what it checks: the
+arithmetic of one scenario, four attempts that each hang and time out once. Its
+detail line and the NOT COVERED entry both name what nothing here reaches — that
+`httpx` read timeouts cap the gap between chunks, so there is no default bound
+on a call at all.
+
+### What the round-5 checks pin
+
+3 new executable checks, 138 → **141** (the `is_offline` raw-bytes row was
+removed as part of finding 3), plus the same 7 NOT COVERED lines:
+
+| Finding | Checks added |
+| --- | --- |
+| 1 / 3 — dispatch and the boundary table | 3 (a bad signature reclassified as online still fails, naming the signature, through public dispatch; an honest receipt with the flag flipped still verifies with its route named; `id` chooses which entry is fetched and a receipt that does not match it cannot borrow its verdict) |
+
+Findings 2, 4 and 5 added none: the migration fix is covered by the SDK test
+suite where a database-corruption test belongs, and the other two are wording on
+pages the harness already pins.
+
+### Round-5 verification run
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (SDK) | **562 passed, 63 skipped** (547 before; +15) |
+| `python docs/scripts/verify-doc-snippets.py` | **141/141 checks pass, 7 NOT COVERED** |
+| `cd docs && npm run build` | Green — 25 pages, 42 HTML files |
+| `ruff check` on every file this round touched | Clean — including `docs/scripts/verify-doc-snippets.py`, whose three pre-existing findings were fixed rather than carried forward again |
+
+### The 0.8.1 changes added in round 5
+
+| File | Change |
+| --- | --- |
+| `glacis/verify.py` | `verify_attestation()` — the one dispatch for a supplied object, shared with the CLI; `bind_to_log_entry()`; the CLI reports the check it ran, not the one the file asked for |
+| `glacis/client.py` | `Glacis.verify()` delegates object dispatch to `verify_attestation()`; `is_offline` no longer selects the verifier |
+| `glacis/storage.py` | `REQUIRED_SCHEMA`, `DECLARED_INDEXES`, `_validate_schema()`, `ENSURE_DECLARED_INDEXES` — postconditions checked after every step set and before any version is stamped, on fresh databases as well as migrated ones |
+| `tests/test_offline_signature_verification.py` | 36 → **43 tests**: eight adversarial dispatch tests through the public surface, replacing a no-op |
+| `tests/test_storage_migrations.py` | 12 → **20 tests**: a postcondition test per version target, including Codex's exact reproduction |
+| `tests/conftest.py` | `V4_EVIDENCE_TABLE` — what a database that really reached v4 has; the `sample_verify_response` log entry now describes `sample_attestation_data`, so a supplied object can bind to it |
 
 ## Residuals
 

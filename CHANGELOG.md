@@ -50,6 +50,36 @@ described below.
   correctly, since a signature is checked against the key on the receipt, and
   that establishes internal consistency and not identity.
 
+- **An unsigned field chose whether a signature was checked.**
+  `Glacis.verify()` selected its verifier from `Attestation.is_offline`, which
+  is not inside the signature and which anyone holding a receipt can set. With
+  `is_offline=False` and `id` pointing at a valid online attestation, the call
+  routed to a server lookup, the supplied object's own signature was never
+  examined, and the caller read `valid=True` as an answer about the bytes they
+  held. It was an answer about an id. `python -m glacis verify` reclassified on
+  the same two unsigned fields.
+
+  The signature check itself was never wrong — it was not consulted. So the
+  dispatch is what changed, and `is_offline` can no longer subtract a check:
+
+  - The offline Ed25519 check runs on **every** supplied `Attestation` object,
+    always.
+  - `is_offline=False` **adds** a lookup of `receipt.id`. Because that answer
+    describes an id and not your bytes, it is applied to the object only when
+    the two **bind**: matching `signature` and `evidence_hash`, plus
+    `service_id` and `operation_type` when both sides carry them.
+  - Bound, you get the server's `VerifyResult`, with `error` naming the binding
+    and listing what the log entry carries nothing about —
+    `control_plane_results`, `cpr_hash`, `evidence`, `review`, `timestamp`,
+    `operation_id`, `operation_sequence`, `supersedes`.
+  - Unbound, none of the server's answer is returned — not the org, not the
+    proof, not the tree head. You get the object's own `OfflineVerifyResult`,
+    `valid` reflecting the bytes that were checked, and `error` saying the
+    lookup happened and was not applied.
+
+  `glacis.verify.verify_attestation()` is that one dispatch, called by the
+  library and the CLI alike.
+
 - **A failed schema migration stamped itself as successful.**
   `_run_migrations()` caught every `sqlite3.OperationalError` as "column already
   exists" and then wrote `schema_version = 5` regardless. A database claiming v4
@@ -61,6 +91,16 @@ described below.
   same applies to the v3→v4 step, which now reads the columns before deciding
   whether to rename. A connection whose migrations failed is closed and
   discarded rather than handed to the caller.
+
+  **That was still not enough.** `duplicate column name` is evidence about one
+  column — it says the column this step adds is already there, and nothing about
+  the other fifteen, the second table, or the indexes. A database declaring v4
+  whose `offline_receipts` held only `control_plane_json` therefore swallowed
+  the error legitimately and finished stamped v5 with one column to its name.
+  The required schema is now stated per version target and validated against the
+  live database after every migration step set, before any version is stamped;
+  freshly created databases are validated the same way. Every missing table,
+  column and index is named in the error.
 
 - **Persisted offline receipts lost signed control-plane content.**
   `control_plane_results` is *inside* the offline signature —
@@ -118,6 +158,12 @@ described below.
 - `glacis.verify.verify_offline(receipt)` is now the SDK's offline
   verification, importable and usable on its own. `Glacis.verify()` delegates
   to it.
+- `glacis.verify.verify_attestation(receipt, online_lookup)` — the one dispatch
+  for a supplied `Attestation` object, used by `Glacis.verify()` and by
+  `python -m glacis verify`, and `glacis.verify.bind_to_log_entry()`, which
+  decides whether a transparency-log entry describes the object in hand.
+- `storage.REQUIRED_SCHEMA` / `storage.DECLARED_INDEXES` — the tables, columns
+  and indexes each schema version means, checked before that version is stamped.
 - `storage.StorageMigrationError` — raised when a schema migration cannot be
   applied, instead of stamping a version the database has not reached.
 - `Attestation.cpr_recovery_error` — SDK convenience, never signed and never
@@ -133,6 +179,13 @@ described below.
 - `OfflineVerifyResult.error` is now set on some receipts that **passed**, when
   an unsigned field disagrees with the signed content. `valid` still follows the
   signature alone.
+- `Glacis.verify(attestation)` on an object with `is_offline=False` returns an
+  `OfflineVerifyResult` when the object does not bind to the log entry for its
+  id, where 0.8.0 returned whatever the server said about that id. Code that
+  assumed the return type followed `is_offline` should read the type, or pass an
+  id string when it wants a lookup. `verify("att_…")` is unchanged.
+- `python -m glacis verify` prints the check it actually ran: a receipt claiming
+  to be witnessed that does not bind to its log entry is reported `Offline`.
 
 ## [0.5.0] - 2025-02-24
 
