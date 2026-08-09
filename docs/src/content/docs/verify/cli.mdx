@@ -30,9 +30,23 @@ Status: VALID
 Exit code `0` if the receipt passed, `1` if it did not, or if the file is
 missing or is not valid JSON.
 
-The command branches on the receipt: an `id` starting `oatt_`, or
-`is_offline: true`, takes the offline path; anything else is looked up at
-`GET {base_url}/v1/verify/{id}`.
+The command always checks the receipt's own Ed25519 signature. What the receipt
+claims about itself can only *add* to that: an `id` starting `oatt_`, or
+`is_offline: true`, means the local check is the whole check; anything else also
+looks the `id` up at `GET {base_url}/v1/verify/{id}` — and that answer is
+applied to your file only if the two agree on `signature` and `evidence_hash`.
+The `Type:` line reports the check that ran, so a file claiming to be witnessed
+that does not match the record it points at is reported `Offline`.
+
+<Aside type="caution" title="Until 0.8.1.dev0, those two fields chose the verifier outright">
+  Neither `is_offline` nor `id` is inside the signature. Setting
+  `is_offline: false` and `id` to a valid online attestation used to send the
+  command straight to the lookup, and the signature in the file you passed was
+  never examined — the server answered about the id and the exit code was read
+  as an answer about the file. Fixed in this repository, staged as 0.8.1 and
+  unpublished, along with the same defect in `Glacis.verify()`. See
+  [what a check proves](/verify/what-a-check-proves/#what-a-green-check-does-establish).
+</Aside>
 
 <Aside type="caution" title="This changed in 0.8.1, and 0.8.0 is what is on PyPI">
   `Signature: PASS` is a real Ed25519 verification as of `glacis` 0.8.1: the

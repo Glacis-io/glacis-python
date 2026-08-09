@@ -1595,6 +1595,15 @@ def main() -> int:
         "transport, but no real server response has been seen",
     )
     not_covered(
+        "that a real log entry binds to the attestation object it describes",
+        "the binding pair — `signature` and `evidence_hash` on the object versus "
+        "on the entry — is checked above against a stub whose entry shape this "
+        "script chose. If a live /v1/verify returns the signature in another "
+        "form, a genuine witnessed object would be reported unbound: valid=False "
+        "with the disagreeing field named. That is the fail-closed direction, "
+        "and it needs one call against a live endpoint to confirm either way",
+    )
+    not_covered(
         "the 129.1s scenario, measured",
         "the arithmetic and the four-attempt count are checked; actually "
         "observing four 30-second timeouts needs an endpoint that hangs, and "

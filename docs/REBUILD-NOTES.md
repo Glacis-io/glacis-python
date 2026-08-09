@@ -20,7 +20,7 @@ script that runs the code.
 `docs/scripts/verify-doc-snippets.py` executes the documented behaviour against
 the SDK in this repo. **141 checks, all passing** as of this commit
 (53 from the original rebuild, 24 added in round 2, 41 in round 3, 21 in
-round 4, 3 in round 5 less one removed), plus **7 `NOT COVERED` lines** — claims
+round 4, 3 in round 5 less one removed), plus **8 `NOT COVERED` lines** — claims
 the script cannot execute, printed with a reason and counted separately so that
 a green run is never read as complete coverage.
 
@@ -963,7 +963,9 @@ on a call at all.
 ### What the round-5 checks pin
 
 3 new executable checks, 138 → **141** (the `is_offline` raw-bytes row was
-removed as part of finding 3), plus the same 7 NOT COVERED lines:
+removed as part of finding 3), and an eighth NOT COVERED line — that a real
+log entry binds to the attestation object it describes, which needs one call
+against a live endpoint:
 
 | Finding | Checks added |
 | --- | --- |
@@ -978,7 +980,7 @@ pages the harness already pins.
 | Check | Result |
 | --- | --- |
 | `python -m pytest` (SDK) | **562 passed, 63 skipped** (547 before; +15) |
-| `python docs/scripts/verify-doc-snippets.py` | **141/141 checks pass, 7 NOT COVERED** |
+| `python docs/scripts/verify-doc-snippets.py` | **141/141 checks pass, 8 NOT COVERED** |
 | `cd docs && npm run build` | Green — 25 pages, 42 HTML files |
 | `ruff check` on every file this round touched | Clean — including `docs/scripts/verify-doc-snippets.py`, whose three pre-existing findings were fixed rather than carried forward again |
 
@@ -1047,6 +1049,25 @@ pages the harness already pins.
    Left alone deliberately: it is package metadata for a published release, and
    the redirect resolves it correctly. Worth updating to `https://docs.glacis.io/`
    at the next version bump.
+
+8. **The binding pair has never met a real server.** Round 5's dispatch fix
+   compares a supplied object's `signature` and `evidence_hash` against the log
+   entry `GET /v1/verify/{id}` returns, and nothing in this repo can reach a live
+   `api.glacis.io`. Every binding test — the SDK suite and the snippet harness
+   alike — runs against a stub whose entry shape we chose from
+   `models.AttestationEntry`.
+
+   If a live endpoint returns the signature in some other form, a genuine
+   witnessed `Attestation` object passed to `verify()` would be reported
+   **unbound**: `valid=False`, with the disagreeing field named in `error`. That
+   is the fail-closed direction and it is diagnosable in one read, but it is a
+   false negative and it would be a regression for anyone verifying objects
+   rather than ids. `verify("att_…")` by id is unaffected — no binding is
+   involved.
+
+   One call against a live endpoint settles it, and it should happen before
+   0.8.1 is published. It is printed as a NOT COVERED line on every harness run
+   so it cannot be lost.
 
 ### Added in round 2
 
