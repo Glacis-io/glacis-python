@@ -194,12 +194,22 @@ listed a timestamp row; the SDK never sent one.)
   body untouched.
 
   This is not hypothetical for anyone building their own control plane. The
-  wrapper-built structure is safe by construction — it carries policy id and
-  version, environment, tags, model id and provider, the **hash** of the system
-  prompt, the temperature, and per-control id/type/version/provider/latency/
-  status/score/`result_hash` — no prompt or completion text. But that safety is
-  a property of what the wrapper puts there, not of the field. If you build the
-  dictionary yourself, you own that boundary.
+  wrapper-built structure **carries no prompt or completion text**: policy id
+  and version, environment, tags, model id and provider, the **hash** of the
+  system prompt, the temperature, and per-control
+  id/type/version/provider/latency/status/score/`result_hash`.
+
+  That is narrower than "safe". Half of those values are *yours*: the policy id,
+  the policy version, the environment string and every tag are read straight
+  off `policy:` in your `glacis.yaml` (`create_control_plane_results()` in
+  `glacis/integrations/base.py`) and transmitted verbatim. A tag like
+  `patient-88231`, or a policy id naming a customer, is egress — nothing in the
+  SDK inspects those strings. The model id and provider tell the server which
+  vendor you route to, which is not secret but is not nothing either.
+
+  So the accurate statement is: the wrapper never puts the *content of the
+  exchange* in there, and everything else in it is what you named. If you build
+  the dictionary yourself, you own the whole boundary.
 
   Offline mode transmits nothing at all, so none of this applies to it.
 </Aside>
@@ -265,7 +275,8 @@ online keeps nothing on disk.
   backend wrote it. A receipt reloaded with `get_last_receipt()` or
   `get_receipt()` came back without the content its own signature covered, so a
   third party could not verify it, and `Glacis.verify()` did not notice because
-  it never checks a signature.
+  it never checked a signature. As of 0.8.1 it does, so the same loss now fails
+  locally as well as independently.
 
   Fixed in this repository and staged as 0.8.1, **not published**: both backends
   now persist and reconstruct the field. Rows already written cannot be repaired
