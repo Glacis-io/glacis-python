@@ -18,9 +18,11 @@ counted as passes. Read the NOT COVERED block at the end of a run: it is the
 list of things a green result does *not* establish.
 
 Executed here: the offline signing path; canonical hashing and every
-documented divergence from RFC 8785; all seventeen rows of the signed/unsigned
-field tables, by tampering — including the two unsigned fields that decide the
-outcome anyway, `public_key` and `cpr_recovery_error`; the real Ed25519 check
+documented divergence from RFC 8785; all eighteen rows of the signed/unsigned
+field tables, by tampering — including the four unsigned ones that decide the
+outcome anyway: `public_key` and `cpr_recovery_error`, and `is_offline` and
+`id`, which choose the verification route and are checked through public
+`Glacis.verify()` dispatch rather than by re-verifying bytes; the real Ed25519 check
 that `verify()` and the CLI perform from 0.8.1 (and the structural-only
 behaviour 0.8.0 had, on 0.8.0); storage round-trips on both backends including
 persisted `control_plane_results` and the pre-0.8.1 loss of it; the request and
@@ -34,8 +36,8 @@ signature-verification recipe.
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1482,9 +1484,10 @@ def main() -> int:
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     if pyproject.exists():
         text = pyproject.read_text()
-        declared = set(
-            re.findall(r"^([a-z0-9_-]+) = \[", text.split("[project.optional-dependencies]")[1].split("\n[project.urls]")[0], re.M)
-        )
+        _extras_block = text.split("[project.optional-dependencies]")[1].split(
+            "\n[project.urls]"
+        )[0]
+        declared = set(re.findall(r"^([a-z0-9_-]+) = \[", _extras_block, re.M))
         check(
             "documented extras match pyproject.toml",
             declared
@@ -1516,8 +1519,9 @@ def main() -> int:
         attested_gemini,
         attested_litellm,
         attested_openai,
+        get_evidence,
+        get_last_receipt,
     )
-    from glacis.integrations import get_evidence, get_last_receipt
 
     shared_kwargs = {
         "glacis_api_key",
