@@ -313,7 +313,17 @@ class Attestation(BaseModel):
 
     @property
     def witness_status(self) -> str:
-        return "UNVERIFIED" if self.is_offline else "WITNESSED"
+        """``SELF_SIGNED`` for locally signed receipts, else ``LOGGED_UNVERIFIED``.
+
+        ``WITNESSED`` is never derived from a flag on this object. It is
+        issued only by ``glacis.witness.classify_envelope`` after the
+        inclusion proof recomputes to a tree head signed under a *configured*
+        log public key — see ``HostedArtifact.verification``. (0.8.1 returned
+        ``WITNESSED`` for any ``is_offline=False`` object with zero
+        verification; a self-signed or merely-logged receipt must never carry
+        a server-attested label.)
+        """
+        return "SELF_SIGNED" if self.is_offline else "LOGGED_UNVERIFIED"
 
 
 # ==============================================================================
@@ -488,7 +498,7 @@ class OfflineVerifyResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     valid: bool = Field(description="Whether the signature is valid")
-    witness_status: Literal["UNVERIFIED"] = Field(default="UNVERIFIED")
+    witness_status: Literal["SELF_SIGNED"] = Field(default="SELF_SIGNED")
     signature_valid: bool
     attestation: Optional[Attestation] = Field(
         default=None, description="The verified attestation"
@@ -523,3 +533,4 @@ class GlacisRateLimitError(GlacisApiError):
     def __init__(self, message: str, retry_after_ms: Optional[int] = None):
         super().__init__(message, 429, "RATE_LIMITED")
         self.retry_after_ms = retry_after_ms
+

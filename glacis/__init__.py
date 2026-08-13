@@ -19,7 +19,7 @@ Example (offline):
     >>> import os
     >>> glacis = Glacis(mode="offline", signing_seed=os.urandom(32))
     >>> receipt = glacis.attest(...)  # Returns Attestation
-    >>> result = glacis.verify(receipt)  # witness_status="UNVERIFIED"
+    >>> result = glacis.verify(receipt)  # witness_status="SELF_SIGNED"
 
 Async Example:
     >>> from glacis import AsyncGlacis
