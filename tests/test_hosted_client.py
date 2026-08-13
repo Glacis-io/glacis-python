@@ -164,6 +164,69 @@ class TestHostedMint:
         assert exc.value.status == 401
         assert "GLACIS_API_KEY" in str(exc.value)
 
+    def test_401_key_revoked_is_distinct(self, httpx_mock):
+        httpx_mock.add_response(
+            url=f"{BASE}/v1/govern?sync_anchor=true",
+            status_code=401,
+            json={"error": "key_revoked"},
+        )
+        client = _make_client()
+        with pytest.raises(GlacisApiError, match="revoked"):
+            client.attest(service_id="s", operation_type="t", input=1, output=2)
+        assert len(httpx_mock.get_requests()) == 1
+
+    def test_429_abuse_limit_surfaced_not_retried(self, httpx_mock):
+        from glacis.models import GlacisRateLimitError
+
+        httpx_mock.add_response(
+            url=f"{BASE}/v1/govern?sync_anchor=true",
+            status_code=429,
+            json={"error": "abuse rate limit"},
+            headers={"Retry-After": "30"},
+        )
+        client = _make_client()
+        with pytest.raises(GlacisRateLimitError) as exc:
+            client.attest(service_id="s", operation_type="t", input=1, output=2)
+        assert exc.value.retry_after_ms == 30_000
+        assert len(httpx_mock.get_requests()) == 1
+
+    def test_503_key_validation_unavailable_is_a_refusal(self, httpx_mock):
+        """A gateway-side refusal, not a network error: no receipt was minted,
+        nothing is retried, and the message says which it was."""
+        httpx_mock.add_response(
+            url=f"{BASE}/v1/govern?sync_anchor=true",
+            status_code=503,
+            json={"error": "key_validation_unavailable"},
+        )
+        client = _make_client()
+        with pytest.raises(GlacisApiError, match="gateway-side refusal") as exc:
+            client.attest(service_id="s", operation_type="t", input=1, output=2)
+        assert exc.value.status == 503
+        assert len(httpx_mock.get_requests()) == 1
+
+    def test_glsk_test_key_accepted_labels_unaffected(self, httpx_mock, log):
+        """glsk_test_ keys authenticate like glsk_live_ ones; the key is
+        opaque to the SDK and never influences the label state machine."""
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-Glacis-Key"] == "glsk_test_some_key"
+            body = json.loads(request.content)
+            receipt_hash = hashlib.sha256(request.content).hexdigest()
+            idx = log.append(receipt_hash)
+            return httpx.Response(200, json={
+                "receipt": _receipt_for(body["request_sha256"], receipt_hash),
+                "inclusion": log.inclusion(idx),
+            })
+
+        httpx_mock.add_callback(respond, url=f"{BASE}/v1/govern?sync_anchor=true")
+        client = _make_client(
+            api_key="glsk_test_some_key", log_public_keys=[log.public_key_hex]
+        )
+        artifact = client.attest(
+            service_id="s", operation_type="t", input=1, output=2,
+        )
+        assert artifact.witness_status == "WITNESSED"
+
     def test_timeout_after_send_is_not_retried(self, httpx_mock):
         """/v1/govern is not idempotent: a timed-out mint may have minted.
         Exactly one request goes out; the error says why."""

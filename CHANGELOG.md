@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retried; only a connect error — request never sent — is retried, once.
 - Version-sync test: `pyproject.toml` and `glacis.__version__` must agree
   (0.7.0 shipped desynced once).
+- The gateway's named refusals are surfaced distinctly and never retried:
+  `401 key_revoked` (get a new key), `503 key_validation_unavailable` (a
+  gateway-side refusal, not a network failure), and `429` abuse rate limits
+  (raised as `GlacisRateLimitError` with `retry_after_ms`). Both
+  `glsk_live_` and `glsk_test_` keys are accepted; the key is opaque to the
+  SDK and never affects the label state machine.
 
 ### Changed
 

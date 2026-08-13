@@ -276,7 +276,7 @@ class Glacis:
         if not api_key:
             raise ValueError(
                 "api_key is required for hosted mode — pass api_key= or set "
-                f"{ENV_API_KEY} (a glsk_live_... key)"
+                f"{ENV_API_KEY} (a glsk_live_... or glsk_test_... key)"
             )
         self.api_key = api_key
         self._client = httpx.Client(timeout=self.timeout)
@@ -717,10 +717,37 @@ class Glacis:
             except Exception:
                 err_body = {}
             message = err_body.get("error", f"mint failed with status {response.status_code}")
-            if response.status_code == 401:
+            # The gateway names its refusals (glacis-proof PR #2); each one is
+            # surfaced distinctly and none is retried — the mint did not happen.
+            err_text = " ".join(
+                str(v) for v in (err_body.get("code"), err_body.get("error")) if v
+            )
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                retry_after_ms = int(retry_after) * 1000 if retry_after else None
+                raise GlacisRateLimitError(
+                    "the mint gateway rate-limited this org (429). Not retried "
+                    f"automatically — mint again after the window: {message}",
+                    retry_after_ms,
+                )
+            if response.status_code == 401 and "key_revoked" in err_text:
+                message = (
+                    "this API key has been revoked (401 key_revoked). Issue a "
+                    f"new key at glacis.io and update {ENV_API_KEY} / api_key=: "
+                    f"{message}"
+                )
+            elif response.status_code == 401:
                 message = (
                     "the mint gateway rejected this API key (401). Check "
-                    f"{ENV_API_KEY} / api_key= (expects glsk_live_...): {message}"
+                    f"{ENV_API_KEY} / api_key= (a glsk_live_... or glsk_test_... "
+                    f"key): {message}"
+                )
+            elif response.status_code == 503 and "key_validation_unavailable" in err_text:
+                message = (
+                    "the mint gateway refused: key validation is unavailable "
+                    "(503 key_validation_unavailable). This is a gateway-side "
+                    "refusal, not a network failure — no receipt was minted and "
+                    f"the request was not retried: {message}"
                 )
             raise GlacisApiError(message, response.status_code, err_body.get("code"), err_body)
 
