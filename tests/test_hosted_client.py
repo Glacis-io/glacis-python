@@ -253,7 +253,10 @@ class TestHostedMint:
             client.attest(service_id="s", operation_type="t", input=1, output=2)
         assert len(httpx_mock.get_requests()) == 1
 
-    def test_pending_then_anchored_via_poll(self, httpx_mock, log):
+    def test_sync_mint_answered_pending_then_anchored_via_poll(self, httpx_mock, log):
+        """Even a sync_anchor=true mint may come back PENDING while the log
+        recovers (per the gateway contract); the SDK polls to the anchor.
+        The poll GETs are public and must never carry the API key."""
         state = {}
 
         def govern(request: httpx.Request) -> httpx.Response:
@@ -268,6 +271,7 @@ class TestHostedMint:
             })
 
         def proof(request: httpx.Request) -> httpx.Response:
+            assert "X-Glacis-Key" not in request.headers
             inc = log.inclusion(state["idx"])
             return httpx.Response(200, json=inc)
 
@@ -293,6 +297,7 @@ class TestHostedMint:
             })
 
         def proof(request: httpx.Request) -> httpx.Response:
+            assert "X-Glacis-Key" not in request.headers
             return httpx.Response(404, json={"status": "unknown"})
 
         httpx_mock.add_callback(govern, url=f"{BASE}/v1/govern?sync_anchor=true")

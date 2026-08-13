@@ -676,7 +676,12 @@ class Glacis:
         """One mint POST. Never blindly retried: each /v1/govern call mints a
         NEW receipt (the translog dedupes by receipt hash, but a retry does
         not share one), so only a connect error — where the request was never
-        sent — is retried, once."""
+        sent — is retried, once.
+
+        The X-Glacis-Key header rides on EVERY mint POST — the gateway
+        enforces auth on /v1/govern regardless of the sync_anchor query
+        param. The transparency poll GETs are public and never carry the key.
+        """
         assert self._client is not None
         url = f"{self.base_url}/v1/govern"
         body = {"task_class": task_class, "request_sha256": request_sha256}
@@ -737,10 +742,16 @@ class Glacis:
                     f"{message}"
                 )
             elif response.status_code == 401:
+                # The gateway's invalid_key deliberately does not say why
+                # (malformed, bad MAC, not issued, or a test key on a
+                # live-only deployment are indistinguishable on the wire) —
+                # so this message does not pretend to know either.
                 message = (
-                    "the mint gateway rejected this API key (401). Check "
-                    f"{ENV_API_KEY} / api_key= (a glsk_live_... or glsk_test_... "
-                    f"key): {message}"
+                    "the mint gateway rejected this API key (401). The "
+                    "gateway does not say why — the key may be malformed, "
+                    "not issued, or the wrong environment for this "
+                    f"deployment. Check {ENV_API_KEY} / api_key= (a "
+                    f"glsk_live_... or glsk_test_... key): {message}"
                 )
             elif response.status_code == 503 and "key_validation_unavailable" in err_text:
                 message = (
