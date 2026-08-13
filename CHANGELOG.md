@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-13
+
+### Added
+
+- **Hosted (server-attested) minting.** `Glacis(mode="hosted")` computes the
+  local attestation exactly as offline mode does, then mints it into the
+  Glacis transparency log via `POST /v1/govern?sync_anchor=true` on
+  api.glacis.io (`X-Glacis-Key` auth). The gateway receives only
+  `{task_class, request_sha256}` — never payload text — where
+  `request_sha256` is SHA-256 over the attestation's exact signed bytes.
+  Returns a `HostedArtifact`: the local attestation, the gateway's
+  `{v:1, receipt, inclusion}` permalink envelope verbatim, the binding, and
+  the SDK's own verification result, serializable with `.save()` to one JSON
+  file that parses at glacis.io/verify.
+- **Local verification before labeling** (`glacis.witness`): RFC 6962
+  inclusion recompute from the receipt's own identifier, plus Ed25519
+  verification of the signed tree head under a log key configured via
+  `GLACIS_LOG_PUBLIC_KEY_HEX` or `log_public_keys=`. No baked-in production
+  key ships in the SDK; the tree head's witness countersignature is not
+  pinned and not counted as verification.
+- Environment configuration: `GLACIS_API_KEY`, `GLACIS_WITNESS_API_BASE`,
+  `GLACIS_LOG_PUBLIC_KEY_HEX`, `GLACIS_SIGNING_SEED_HEX`.
+- Hosted mints run under one 8-second deadline (POST plus anchor polling),
+  matching the portal's mint client. `/v1/govern` is not idempotent, so a
+  request that may have been processed (timeout after send, 5xx) is never
+  retried; only a connect error — request never sent — is retried, once.
+- Version-sync test: `pyproject.toml` and `glacis.__version__` must agree
+  (0.7.0 shipped desynced once).
+
+### Changed
+
+- **`witness_status` no longer overclaims.** 0.8.1 returned `WITNESSED` for
+  any `is_offline=False` attestation with zero verification. The label set is
+  now: `SELF_SIGNED` (offline/locally signed), `LOGGED_UNVERIFIED` (a server
+  response exists but nothing was verified locally), and `WITNESSED` — issued
+  only by `glacis.witness.classify_envelope` after the inclusion proof
+  recomputes to a tree head signed under a configured log key.
+  `OfflineVerifyResult.witness_status` is now `SELF_SIGNED` (was
+  `UNVERIFIED`).
+
 ## [0.8.1] - 2026-08-09
 
 Not published. `pip install glacis` still serves 0.8.0, which has the defect
