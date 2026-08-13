@@ -352,6 +352,99 @@ class Receipt(BaseModel):
 
 
 # ==============================================================================
+# Hosted (server-attested) mint — 0.9.0
+# ==============================================================================
+
+
+class WitnessVerification(BaseModel):
+    """What the SDK itself verified about a hosted mint, fail-closed.
+
+    ``witness_status`` is ``WITNESSED`` only when ``inclusion_verified`` and
+    ``sth_signature_verified`` are both True under a configured log key.
+    Everything else is ``LOGGED_UNVERIFIED`` with ``reason`` naming the first
+    missing piece. ``contradicted`` marks the one case where a configured key
+    vouched for a root and this receipt's proof does not lead to it.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    witness_status: Literal["WITNESSED", "LOGGED_UNVERIFIED"]
+    inclusion_verified: bool = Field(default=False)
+    sth_signature_verified: bool = Field(default=False)
+    log_public_key_hex: Optional[str] = Field(
+        default=None, description="The configured log key that verified the tree head"
+    )
+    contradicted: bool = Field(default=False)
+    reason: Optional[str] = Field(default=None)
+    checked_at_ms: int = Field(default=0)
+
+
+class WitnessBinding(BaseModel):
+    """How the local attestation is bound to the gateway receipt.
+
+    ``request_sha256`` is SHA-256 over the local attestation's exact signed
+    bytes (``glacis.crypto.offline_signed_payload``: compact JSON, sorted
+    keys, ``version:1``, ``mode:"offline"``). The gateway echoes it verbatim
+    as ``receipt.commitments.request`` and commits to it inside the (private)
+    receipt-hash preimage that becomes the log leaf. A public verifier can
+    re-derive ``request_sha256`` from the attestation in this artifact and
+    check the echo; recomputing ``receipt_id`` from it requires the private
+    receipt shape and is not possible from this artifact alone.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scheme: Literal["glacis-attestation-binding/1"] = "glacis-attestation-binding/1"
+    request_sha256: str = Field(
+        description="sha256(offline_signed_payload bytes) of the local attestation"
+    )
+
+
+class HostedArtifact(BaseModel):
+    """The composite artifact a hosted mint returns — one pasteable JSON.
+
+    Top level is a superset of the ``{v, receipt, inclusion}`` permalink
+    envelope, so the whole artifact parses at glacis.io/verify (its envelope
+    unwrap keys on the top-level ``receipt`` object and ignores unknown
+    fields). ``receipt`` and ``inclusion`` are the gateway's response
+    verbatim — the SDK never reshapes them.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    v: int = Field(default=1)
+    artifact: Literal["glacis-hosted-mint/1"] = "glacis-hosted-mint/1"
+    attestation_mode: Literal["server-attested"] = "server-attested"
+    receipt: dict[str, Any] = Field(
+        description="Projected receipt, verbatim from POST /v1/govern"
+    )
+    inclusion: dict[str, Any] = Field(
+        description="Transparency-log record, verbatim from the gateway"
+    )
+    attestation: Attestation = Field(
+        description="The locally signed attestation (identical to offline mode)"
+    )
+    binding: WitnessBinding
+    verification: WitnessVerification
+
+    @property
+    def witness_status(self) -> str:
+        return self.verification.witness_status
+
+    def to_json(self, indent: int = 2) -> str:
+        """Serialize to the single JSON file a user can paste at glacis.io/verify."""
+        import json as _json
+
+        return _json.dumps(self.model_dump(mode="json"), indent=indent)
+
+    def save(self, path: Any) -> None:
+        """Write ``to_json()`` to ``path``."""
+        from pathlib import Path as _Path
+
+        _Path(path).write_text(self.to_json() + "\n", encoding="utf-8")
+
+
+# ==============================================================================
 # Deprecation aliases (one release)
 # ==============================================================================
 
@@ -534,3 +627,12 @@ class GlacisRateLimitError(GlacisApiError):
         super().__init__(message, 429, "RATE_LIMITED")
         self.retry_after_ms = retry_after_ms
 
+
+class GlacisMintError(Exception):
+    """A hosted mint could not produce a bound artifact.
+
+    Raised when the gateway's response cannot be tied to the request the SDK
+    made (e.g. ``receipt.commitments.request`` differs from the
+    ``request_sha256`` that was sent). This is distinct from a transport or
+    HTTP error: the server answered, and the answer does not bind.
+    """
