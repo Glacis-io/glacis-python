@@ -190,6 +190,23 @@ class TestHostedMint:
         assert exc.value.retry_after_ms == 30_000
         assert len(httpx_mock.get_requests()) == 1
 
+    def test_429_without_retry_after_header(self, httpx_mock):
+        """The gateway sets no Retry-After on its abuse 429; the error must
+        carry retry_after_ms=None gracefully, not crash or invent a window."""
+        from glacis.models import GlacisRateLimitError
+
+        httpx_mock.add_response(
+            url=f"{BASE}/v1/govern?sync_anchor=true",
+            status_code=429,
+            json={"error": "rate_limited",
+                  "detail": "abuse control on a free witness — not a quota; retry shortly"},
+        )
+        client = _make_client()
+        with pytest.raises(GlacisRateLimitError) as exc:
+            client.attest(service_id="s", operation_type="t", input=1, output=2)
+        assert exc.value.retry_after_ms is None
+        assert len(httpx_mock.get_requests()) == 1
+
     def test_503_key_validation_unavailable_is_a_refusal(self, httpx_mock):
         """A gateway-side refusal, not a network error: no receipt was minted,
         nothing is retried, and the message says which it was."""
