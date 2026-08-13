@@ -133,7 +133,7 @@ class TestVerifyOffline:
 
         assert result.valid is True
         assert result.signature_valid is True
-        assert result.witness_status == "UNVERIFIED"
+        assert result.witness_status == "SELF_SIGNED"
 
 
 class TestVerifyCommand:

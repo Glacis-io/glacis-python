@@ -6,36 +6,51 @@ to the public transparency log. Input and output data are hashed locally
 using RFC 8785 canonical JSON + SHA-256 - the actual payload never leaves
 your infrastructure.
 
-Supports two modes:
-- Online (default): Sends attestations to api.glacis.io for witnessing
+Supports three modes:
+- Hosted: Mints a server-attested artifact via the api.glacis.io gateway
+  (local attestation + transparency-log inclusion, verified locally)
+- Online: Sends attestations to api.glacis.io for witnessing (legacy)
 - Offline: Signs attestations locally using Ed25519
 
-Example (online):
+Example (hosted):
     >>> from glacis import Glacis
-    >>> glacis = Glacis(api_key="glsk_live_xxx")
-    >>> receipt = glacis.attest(
+    >>> glacis = Glacis(mode="hosted")  # GLACIS_API_KEY + GLACIS_LOG_PUBLIC_KEY_HEX
+    >>> artifact = glacis.attest(
     ...     service_id="my-ai-service",
     ...     operation_type="inference",
     ...     input={"prompt": "Hello"},
     ...     output={"response": "Hi there!"},
     ... )
+    >>> artifact.witness_status  # "LOG_INCLUSION_VERIFIED" at best — see witness.py
+    >>> artifact.save("receipt.json")  # paste at glacis.io/verify
 
 Example (offline):
     >>> glacis = Glacis(mode="offline", signing_seed=my_32_byte_seed)
     >>> receipt = glacis.attest(...)
-    >>> result = glacis.verify(receipt)  # witness_status="UNVERIFIED"
+    >>> result = glacis.verify(receipt)  # witness_status="SELF_SIGNED"
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import random
 import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
+    overload,
+)
 
 import httpx
 
@@ -46,12 +61,15 @@ from glacis.models import (
     ControlPlaneResults,
     Evidence,
     GlacisApiError,
+    GlacisMintError,
     GlacisRateLimitError,
+    HostedArtifact,
     LogQueryResult,
     OfflineVerifyResult,
     SamplingDecision,
     TreeHeadResponse,
     VerifyResult,
+    WitnessBinding,
 )
 from glacis.verify import verify_attestation
 from glacis.verify import verify_offline as verify_offline_receipt
@@ -60,12 +78,19 @@ if TYPE_CHECKING:
     from glacis.crypto import Ed25519Runtime
     from glacis.storage import StorageBackend
 
+#: What attest() returns, keyed by the client's mode: online/offline clients
+#: are Glacis[Attestation], hosted clients are Glacis[HostedArtifact]. The
+#: __init__ overloads bind it from the ``mode`` literal, so call sites get
+#: the precise type without casts.
+R = TypeVar("R", Attestation, HostedArtifact)
+
 
 class GlacisMode(str, Enum):
     """Operating mode for the Glacis client."""
 
     ONLINE = "online"
     OFFLINE = "offline"
+    HOSTED = "hosted"
 
 
 class OperationContext:
@@ -96,6 +121,15 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_DELAY = 30.0
+
+# Hosted mint: one 8s deadline covers the POST and any anchor polling —
+# matches the portal's mint client so the two surfaces time out together.
+DEFAULT_HOSTED_DEADLINE = 8.0
+
+ENV_API_KEY = "GLACIS_API_KEY"
+ENV_WITNESS_API_BASE = "GLACIS_WITNESS_API_BASE"
+ENV_LOG_PUBLIC_KEY_HEX = "GLACIS_LOG_PUBLIC_KEY_HEX"
+ENV_SIGNING_SEED_HEX = "GLACIS_SIGNING_SEED_HEX"
 
 
 def _normalize_server_response(data: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +168,7 @@ def _normalize_sampling(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
-class Glacis:
+class Glacis(Generic[R]):
     """
     Synchronous GLACIS client.
 
@@ -160,12 +194,16 @@ class Glacis:
                          l1_rate=1.0 (review all), l2_rate=0.0 (no deep inspection).
     """
 
+    # The mode literal picks the type parameter: online/offline construct a
+    # Glacis[Attestation], hosted constructs a Glacis[HostedArtifact]. The
+    # online/offline overload comes first so a bare Glacis() resolves there.
+    @overload
     def __init__(
-        self,
+        self: "Glacis[Attestation]",
         api_key: Optional[str] = None,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: Optional[str] = None,
         debug: bool = False,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         base_delay: float = DEFAULT_BASE_DELAY,
         max_delay: float = DEFAULT_MAX_DELAY,
@@ -176,11 +214,62 @@ class Glacis:
         storage_backend: str = "sqlite",
         storage_path: Optional[Path] = None,
         sampling_config: Optional[SamplingConfig] = None,
+        log_public_keys: Optional[list[str]] = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "Glacis[HostedArtifact]",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        debug: bool = False,
+        timeout: Optional[float] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_BASE_DELAY,
+        max_delay: float = DEFAULT_MAX_DELAY,
+        mode: Literal["hosted"] = ...,
+        signing_seed: Optional[bytes] = None,
+        policy_key: Optional[bytes] = None,
+        db_path: Optional[Path] = None,
+        storage_backend: str = "sqlite",
+        storage_path: Optional[Path] = None,
+        sampling_config: Optional[SamplingConfig] = None,
+        log_public_keys: Optional[list[str]] = None,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        debug: bool = False,
+        timeout: Optional[float] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_BASE_DELAY,
+        max_delay: float = DEFAULT_MAX_DELAY,
+        mode: Literal["online", "offline", "hosted"] = "online",
+        signing_seed: Optional[bytes] = None,
+        policy_key: Optional[bytes] = None,
+        db_path: Optional[Path] = None,
+        storage_backend: str = "sqlite",
+        storage_path: Optional[Path] = None,
+        sampling_config: Optional[SamplingConfig] = None,
+        log_public_keys: Optional[list[str]] = None,
     ):
         self._sampling_config = sampling_config or SamplingConfig()
         self.mode = GlacisMode(mode)
+        if base_url is None:
+            if self.mode == GlacisMode.HOSTED:
+                base_url = os.environ.get(ENV_WITNESS_API_BASE) or DEFAULT_BASE_URL
+            else:
+                base_url = DEFAULT_BASE_URL
         self.base_url = base_url.rstrip("/")
         self.debug = debug
+        if timeout is None:
+            timeout = (
+                DEFAULT_HOSTED_DEADLINE
+                if self.mode == GlacisMode.HOSTED
+                else DEFAULT_TIMEOUT
+            )
         self.timeout = timeout
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -189,7 +278,9 @@ class Glacis:
         if policy_key is not None and len(policy_key) != 32:
             raise ValueError("policy_key must be exactly 32 bytes")
 
-        if self.mode == GlacisMode.ONLINE:
+        if self.mode == GlacisMode.HOSTED:
+            self._init_hosted(api_key, signing_seed, policy_key, log_public_keys)
+        elif self.mode == GlacisMode.ONLINE:
             if not api_key:
                 raise ValueError("api_key is required for online mode")
             self.api_key = api_key
@@ -230,7 +321,54 @@ class Glacis:
             logging.basicConfig(level=logging.DEBUG)
             logger.setLevel(logging.DEBUG)
 
-    def __enter__(self) -> "Glacis":
+    def _init_hosted(
+        self,
+        api_key: Optional[str],
+        signing_seed: Optional[bytes],
+        policy_key: Optional[bytes],
+        log_public_keys: Optional[list[str]],
+    ) -> None:
+        """Hosted (server-attested) mode: local attestation + gateway mint."""
+        self._ephemeral_signing_key = False
+        api_key = api_key or os.environ.get(ENV_API_KEY)
+        if not api_key:
+            raise ValueError(
+                "api_key is required for hosted mode — pass api_key= or set "
+                f"{ENV_API_KEY} (a glsk_live_... or glsk_test_... key)"
+            )
+        self.api_key = api_key
+        self._client = httpx.Client(timeout=self.timeout)
+        self._storage = None
+        self._policy_key = policy_key
+
+        if signing_seed is None:
+            seed_hex = os.environ.get(ENV_SIGNING_SEED_HEX, "").strip()
+            if seed_hex:
+                try:
+                    signing_seed = bytes.fromhex(seed_hex)
+                except ValueError:
+                    raise ValueError(f"{ENV_SIGNING_SEED_HEX} is not valid hex")
+            else:
+                # Ephemeral per-client key: the local signature still binds the
+                # attested content; the server-attested part of the artifact
+                # carries the trust. Pass signing_seed for a stable identity.
+                signing_seed = os.urandom(32)
+                self._ephemeral_signing_key = True
+        if len(signing_seed) != 32:
+            raise ValueError("signing_seed must be exactly 32 bytes")
+        self._signing_seed = signing_seed
+
+        from glacis.crypto import get_ed25519_runtime
+
+        self._ed25519 = get_ed25519_runtime()
+        self._public_key = self._ed25519.get_public_key_hex(signing_seed)
+
+        if log_public_keys is None:
+            key_hex = os.environ.get(ENV_LOG_PUBLIC_KEY_HEX, "").strip()
+            log_public_keys = [key_hex] if key_hex else []
+        self._log_public_keys = [k.strip().lower() for k in log_public_keys if k.strip()]
+
+    def __enter__(self) -> "Glacis[R]":
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -254,6 +392,36 @@ class Glacis:
         """
         return OperationContext(operation_id)
 
+    @overload
+    def attest(
+        self: "Glacis[Attestation]",
+        service_id: str,
+        operation_type: str,
+        input: Any,
+        output: Any,
+        metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[Union[ControlPlaneResults, dict[str, Any]]] = None,
+        operation_id: Optional[str] = None,
+        operation_sequence: Optional[int] = None,
+        supersedes: Optional[str] = None,
+        task_class: str = "default",
+    ) -> Attestation: ...
+
+    @overload
+    def attest(
+        self: "Glacis[HostedArtifact]",
+        service_id: str,
+        operation_type: str,
+        input: Any,
+        output: Any,
+        metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[Union[ControlPlaneResults, dict[str, Any]]] = None,
+        operation_id: Optional[str] = None,
+        operation_sequence: Optional[int] = None,
+        supersedes: Optional[str] = None,
+        task_class: str = "default",
+    ) -> HostedArtifact: ...
+
     def attest(
         self,
         service_id: str,
@@ -265,7 +433,8 @@ class Glacis:
         operation_id: Optional[str] = None,
         operation_sequence: Optional[int] = None,
         supersedes: Optional[str] = None,
-    ) -> Attestation:
+        task_class: str = "default",
+    ) -> Union[Attestation, HostedArtifact]:
         """
         Attest an AI operation.
 
@@ -283,13 +452,18 @@ class Glacis:
             operation_id: UUID linking attestations in the same operation
             operation_sequence: Ordinal sequence within the operation
             supersedes: Attestation ID this replaces (revision chains)
+            task_class: Hosted mode only — governance task class sent to the
+                gateway. Must be one of glacis.witness.HOSTED_TASK_CLASSES.
+                Ignored in online/offline mode.
 
         Returns:
-            Attestation
+            Attestation (online/offline) or HostedArtifact (hosted)
 
         Raises:
-            GlacisApiError: On API errors (online mode)
-            GlacisRateLimitError: When rate limited (online mode)
+            GlacisApiError: On API errors (online/hosted mode)
+            GlacisRateLimitError: When rate limited
+            GlacisMintError: Hosted mode — the gateway's answer does not bind
+                to the request that was sent
         """
         # I/O-only hash (evidence_hash)
         evidence_hash = self.hash({"input": input, "output": output})
@@ -312,6 +486,14 @@ class Glacis:
                 service_id, operation_type, evidence_hash,
                 input, output, metadata, cpr_dict, cpr_hash,
                 operation_id, operation_sequence, supersedes,
+            )
+
+        if self.mode == GlacisMode.HOSTED:
+            return self._attest_hosted(
+                service_id, operation_type, evidence_hash,
+                cpr_dict, cpr_hash,
+                operation_id, operation_sequence, supersedes,
+                task_class,
             )
 
         return self._attest_online(
@@ -463,31 +645,293 @@ class Glacis:
         self._debug(f"Offline attestation created: {attestation_id}")
         return attestation
 
+    def _attest_hosted(
+        self,
+        service_id: str,
+        operation_type: str,
+        evidence_hash: str,
+        control_plane_results: Optional[dict[str, Any]],
+        cpr_hash: Optional[str],
+        operation_id: Optional[str],
+        operation_sequence: Optional[int],
+        supersedes: Optional[str],
+        task_class: str,
+    ) -> HostedArtifact:
+        """Mint a server-attested artifact via ``POST /v1/govern``.
+
+        The local attestation is computed exactly as offline mode computes it
+        (same signed-payload builder, same Ed25519 signing, ``oatt_`` id).
+        The gateway never sees payload text: it receives only ``task_class``
+        and ``request_sha256`` — SHA-256 over the attestation's exact signed
+        bytes — and echoes that commitment back as
+        ``receipt.commitments.request``.
+        """
+        from glacis.witness import HOSTED_TASK_CLASSES, classify_envelope
+
+        if task_class not in HOSTED_TASK_CLASSES:
+            raise ValueError(
+                f"task_class {task_class!r} is not in the gateway's public-safe "
+                f"label set: {sorted(HOSTED_TASK_CLASSES)}"
+            )
+
+        deadline = time.monotonic() + self.timeout
+
+        # --- local attestation, exactly as offline mode ---
+        attestation_id = f"oatt_{uuid.uuid4()}"
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        op_id = operation_id or str(uuid.uuid4())
+        op_seq = operation_sequence if operation_sequence is not None else 0
+
+        message = offline_signed_payload(
+            service_id=service_id,
+            operation_type=operation_type,
+            evidence_hash=evidence_hash,
+            timestamp_ms=str(timestamp_ms),
+            operation_id=op_id,
+            operation_sequence=op_seq,
+            control_plane_results=control_plane_results,
+            supersedes=supersedes,
+        )
+
+        assert self._ed25519 is not None
+        assert self._signing_seed is not None
+        assert self._public_key is not None
+        signature_hex = self._ed25519.sign(self._signing_seed, message).hex()
+
+        attestation = Attestation(
+            id=attestation_id,
+            operation_id=op_id,
+            operation_sequence=op_seq,
+            service_id=service_id,
+            operation_type=operation_type,
+            evidence_hash=evidence_hash,
+            cpr_hash=cpr_hash,
+            supersedes=supersedes,
+            control_plane_results=control_plane_results,
+            public_key=self._public_key,
+            signature=signature_hex,
+            is_offline=True,
+            timestamp=timestamp_ms,
+        )
+
+        # The binding: the gateway's request commitment IS the hash of the
+        # exact bytes the local attestation signed.
+        request_sha256 = hashlib.sha256(message).hexdigest()
+
+        response = self._mint_govern(task_class, request_sha256, deadline)
+
+        receipt = response.get("receipt")
+        inclusion = response.get("inclusion")
+        if not isinstance(receipt, dict) or not isinstance(inclusion, dict):
+            raise GlacisMintError(
+                "the gateway's /v1/govern response has no receipt/inclusion "
+                f"objects: {response!r}"
+            )
+
+        echoed = (receipt.get("commitments") or {}).get("request")
+        if echoed != request_sha256:
+            raise GlacisMintError(
+                "the gateway's receipt commits to a different request than "
+                f"this SDK sent (sent {request_sha256}, receipt carries "
+                f"{echoed!r}) — the artifact would not bind, so none is issued"
+            )
+        echoed_task = receipt.get("task")
+        if echoed_task != task_class:
+            raise GlacisMintError(
+                "the gateway's receipt carries a different task class than "
+                f"this SDK requested (sent {task_class!r}, receipt carries "
+                f"{echoed_task!r}) — the artifact would not bind, so none is "
+                "issued"
+            )
+
+        # G-INGEST-LAG: a just-minted receipt may be pending; poll for the
+        # anchor within what is left of the deadline.
+        if inclusion.get("status") != "included":
+            polled = self._poll_inclusion(receipt.get("receipt_id"), deadline)
+            if polled is not None:
+                inclusion = polled
+
+        envelope = {"v": 1, "receipt": receipt, "inclusion": inclusion}
+        verification = classify_envelope(envelope, self._log_public_keys)
+        # The echo checks above passed or we would have raised. Recorded as a
+        # mint-time fact only — it never upgrades witness_status, because a
+        # holder of the saved artifact cannot re-run it against the gateway.
+        verification = verification.model_copy(
+            update={"commitment_echo_verified_at_mint": True}
+        )
+        self._debug(
+            f"Hosted mint {receipt.get('receipt_id', '?')[:16]}...: "
+            f"{verification.witness_status}"
+        )
+
+        return HostedArtifact(
+            receipt=receipt,
+            inclusion=inclusion,
+            attestation=attestation,
+            binding=WitnessBinding(request_sha256=request_sha256),
+            verification=verification,
+        )
+
+    def _mint_govern(
+        self, task_class: str, request_sha256: str, deadline: float
+    ) -> dict[str, Any]:
+        """One mint POST. Never blindly retried: each /v1/govern call mints a
+        NEW receipt (the translog dedupes by receipt hash, but a retry does
+        not share one), so only a connect error — where the request was never
+        sent — is retried, once.
+
+        The X-Glacis-Key header rides on EVERY mint POST — the gateway
+        enforces auth on /v1/govern regardless of the sync_anchor query
+        param. The transparency poll GETs are public and never carry the key.
+        """
+        assert self._client is not None
+        url = f"{self.base_url}/v1/govern"
+        body = {"task_class": task_class, "request_sha256": request_sha256}
+        headers = {"X-Glacis-Key": self.api_key}
+        params = {"sync_anchor": "true"}
+
+        for attempt in (0, 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GlacisApiError("hosted mint deadline exceeded", 408)
+            try:
+                response = self._client.post(
+                    url,
+                    json=body,
+                    params=params,
+                    headers=headers,
+                    timeout=remaining,
+                )
+            except httpx.ConnectError as e:
+                if attempt == 0:
+                    continue
+                raise GlacisApiError(f"could not reach the mint gateway: {e}", 0)
+            except httpx.TimeoutException as e:
+                # The request may have been processed; a retry would mint a
+                # second receipt. Surface it instead.
+                raise GlacisApiError(
+                    f"mint request timed out after being sent — not retried "
+                    f"because /v1/govern is not idempotent: {e}",
+                    408,
+                )
+
+            if response.is_success:
+                result: dict[str, Any] = response.json()
+                return result
+
+            try:
+                err_body = response.json()
+            except Exception:
+                err_body = {}
+            message = err_body.get("error", f"mint failed with status {response.status_code}")
+            # The gateway names its refusals (glacis-proof PR #2); each one is
+            # surfaced distinctly and none is retried — the mint did not happen.
+            err_text = " ".join(
+                str(v) for v in (err_body.get("code"), err_body.get("error")) if v
+            )
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                retry_after_ms = int(retry_after) * 1000 if retry_after else None
+                raise GlacisRateLimitError(
+                    "the mint gateway rate-limited this org (429). Not retried "
+                    f"automatically — mint again after the window: {message}",
+                    retry_after_ms,
+                )
+            if response.status_code == 401 and "key_revoked" in err_text:
+                message = (
+                    "this API key has been revoked (401 key_revoked). Issue a "
+                    f"new key at glacis.io and update {ENV_API_KEY} / api_key=: "
+                    f"{message}"
+                )
+            elif response.status_code == 401:
+                # The gateway's invalid_key deliberately does not say why
+                # (malformed, bad MAC, not issued, or a test key on a
+                # live-only deployment are indistinguishable on the wire) —
+                # so this message does not pretend to know either.
+                message = (
+                    "the mint gateway rejected this API key (401). The "
+                    "gateway does not say why — the key may be malformed, "
+                    "not issued, or the wrong environment for this "
+                    f"deployment. Check {ENV_API_KEY} / api_key= (a "
+                    f"glsk_live_... or glsk_test_... key): {message}"
+                )
+            elif response.status_code == 503 and "key_validation_unavailable" in err_text:
+                message = (
+                    "the mint gateway refused: key validation is unavailable "
+                    "(503 key_validation_unavailable). This is a gateway-side "
+                    "refusal, not a network failure — no receipt was minted and "
+                    f"the request was not retried: {message}"
+                )
+            raise GlacisApiError(message, response.status_code, err_body.get("code"), err_body)
+
+        raise GlacisApiError("mint failed", 0)  # unreachable
+
+    def _poll_inclusion(
+        self, receipt_id: Optional[str], deadline: float
+    ) -> Optional[dict[str, Any]]:
+        """Poll ``/transparency/proof`` until the leaf anchors or the deadline
+        passes. Returns the included record, or None (caller keeps the honest
+        pending state, which classifies as LOGGED_UNVERIFIED)."""
+        assert self._client is not None
+        if not isinstance(receipt_id, str) or not receipt_id:
+            return None
+        url = f"{self.base_url}/transparency/proof"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                response = self._client.get(
+                    url,
+                    params={"receipt_id": receipt_id},
+                    timeout=min(remaining, 2.0),
+                )
+                if response.status_code == 200:
+                    out = response.json()
+                    if out.get("status") == "included":
+                        return {
+                            "status": "included",
+                            "leaf_index": out.get("leaf_index"),
+                            "inclusion_proof": out.get("inclusion_proof"),
+                            "sth": out.get("sth"),
+                        }
+            except httpx.HTTPError:
+                pass  # transient; the deadline bounds the loop
+            if deadline - time.monotonic() <= 0.25:
+                return None
+            time.sleep(0.25)
+
     def decompose(
         self,
         attestation: Attestation,
         items: list[dict[str, Any]],
         operation_type: str = "item",
         source_data: Any = None,
-    ) -> list[Attestation]:
+    ) -> list[R]:
         """Decompose a batch attestation into individual item attestations.
 
         All decomposed items share the same operation_id as the parent,
         with incrementing operation_sequence starting after the parent's sequence.
 
+        The parent is always the plain ``Attestation``; on a hosted client,
+        pass ``artifact.attestation`` and each item comes back as its own
+        ``HostedArtifact`` (each one is a separate mint).
+
         Args:
-            attestation: The parent batch attestation
+            attestation: The parent batch attestation (``artifact.attestation``
+                for a hosted parent)
             items: List of individual items to attest (e.g., QA pairs)
             operation_type: Operation type for decomposed items (default: "item")
             source_data: Optional shared input data for all items
 
         Returns:
-            List of Attestation objects, one per item
+            One result per item: Attestation objects on an online/offline
+            client, HostedArtifact objects on a hosted client
         """
         op_id = attestation.operation_id
         base_seq = attestation.operation_sequence + 1
 
-        results: list[Attestation] = []
+        results: list[R] = []
         for i, item in enumerate(items):
             r = self.attest(
                 service_id=attestation.service_id,

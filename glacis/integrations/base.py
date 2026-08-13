@@ -322,9 +322,12 @@ def create_glacis_client(
     storage_path: Optional[str] = None,
     sampling_config: Optional["SamplingConfig"] = None,
     policy_key: Optional[bytes] = None,
-) -> "Glacis":
+) -> "Glacis[Attestation]":
     """
     Create a Glacis client (online or offline).
+
+    Integrations never construct hosted clients, so the return type is
+    pinned to Glacis[Attestation] and attest() results store as receipts.
 
     Args:
         offline: Whether to use offline mode
@@ -690,7 +693,7 @@ def build_metadata(
 
 
 def handle_blocked_request(
-    glacis_client: "Glacis",
+    glacis_client: "Glacis[Attestation]",
     service_id: str,
     input_data: dict[str, Any],
     control_plane_results: Any,
@@ -784,7 +787,7 @@ class IntegrationContext:
     so they can be passed as a single object to the pipeline helpers.
     """
 
-    glacis: "Glacis"
+    glacis: "Glacis[Attestation]"
     cfg: "GlacisConfig"
     controls_runner: Optional["ControlsRunner"]
     effective_service_id: str

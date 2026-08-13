@@ -313,7 +313,18 @@ class Attestation(BaseModel):
 
     @property
     def witness_status(self) -> str:
-        return "UNVERIFIED" if self.is_offline else "WITNESSED"
+        """``SELF_SIGNED`` for locally signed receipts, else ``LOGGED_UNVERIFIED``.
+
+        A server-attested label is never derived from a flag on this object.
+        The most ``glacis.witness.classify_envelope`` issues is
+        ``LOG_INCLUSION_VERIFIED``, after the inclusion proof recomputes to a
+        tree head signed under a *configured* log public key — see
+        ``HostedArtifact.verification`` and ``WitnessVerification`` for why
+        ``WITNESSED`` is reserved. (0.8.1 returned ``WITNESSED`` for any
+        ``is_offline=False`` object with zero verification; a self-signed or
+        merely-logged receipt must never carry a server-attested label.)
+        """
+        return "SELF_SIGNED" if self.is_offline else "LOGGED_UNVERIFIED"
 
 
 # ==============================================================================
@@ -339,6 +350,124 @@ class Receipt(BaseModel):
     transparency_proofs: Optional[TransparencyProofs] = Field(default=None)
     public_key: str = Field(default="", description="Notary Ed25519 public key")
     signature: str = Field(default="", description="Notary Ed25519 signature")
+
+
+# ==============================================================================
+# Hosted (server-attested) mint — 0.9.0
+# ==============================================================================
+
+
+class WitnessVerification(BaseModel):
+    """What the SDK itself verified about a hosted mint, fail-closed.
+
+    The projected receipt carries no signature of its own, and its log leaf
+    commits only to the opaque ``receipt_id`` — so a passing check proves
+    that IDENTIFIER was in the log, and nothing about the ``task``,
+    ``outcome``, or ``commitments`` printed beside it. The best status this
+    shape can earn is therefore ``LOG_INCLUSION_VERIFIED``, never
+    ``WITNESSED`` — the same cap glacis.io/verify applies ("this shape's
+    verdict is never green"). The SDK must never claim more than that page
+    would for the same bytes.
+
+    * ``LOG_INCLUSION_VERIFIED`` — the inclusion proof recomputed from the
+      receipt's own identifier to a tree head signed under a configured log
+      key. ``scope`` states exactly what that covers.
+    * ``LOGGED_UNVERIFIED`` — anything less; ``reason`` names the first
+      missing piece. ``contradicted`` marks the one case where a configured
+      key vouched for a root and this receipt's proof does not lead to it.
+    * ``WITNESSED`` — reserved for receipt shapes that carry a verified
+      signature over their semantic fields. No hosted-path shape qualifies
+      today; nothing in this SDK currently issues it.
+
+    ``commitment_echo_verified_at_mint`` records that, at mint time, the
+    gateway's echoed ``commitments.request`` and ``task`` matched what this
+    SDK sent. That is a statement about the mint-time session, not about the
+    saved bytes — it does not upgrade the status.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    witness_status: Literal[
+        "WITNESSED", "LOG_INCLUSION_VERIFIED", "LOGGED_UNVERIFIED"
+    ]
+    inclusion_verified: bool = Field(default=False)
+    sth_signature_verified: bool = Field(default=False)
+    log_public_key_hex: Optional[str] = Field(
+        default=None, description="The configured log key that verified the tree head"
+    )
+    contradicted: bool = Field(default=False)
+    reason: Optional[str] = Field(default=None)
+    scope: Optional[str] = Field(
+        default=None,
+        description="On a pass: exactly what was proven, and what was not",
+    )
+    commitment_echo_verified_at_mint: bool = Field(default=False)
+    checked_at_ms: int = Field(default=0)
+
+
+class WitnessBinding(BaseModel):
+    """How the local attestation is bound to the gateway receipt.
+
+    ``request_sha256`` is SHA-256 over the local attestation's exact signed
+    bytes (``glacis.crypto.offline_signed_payload``: compact JSON, sorted
+    keys, ``version:1``, ``mode:"offline"``). The gateway echoes it verbatim
+    as ``receipt.commitments.request`` and commits to it inside the (private)
+    receipt-hash preimage that becomes the log leaf. A public verifier can
+    re-derive ``request_sha256`` from the attestation in this artifact and
+    check the echo; recomputing ``receipt_id`` from it requires the private
+    receipt shape and is not possible from this artifact alone.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scheme: Literal["glacis-attestation-binding/1"] = "glacis-attestation-binding/1"
+    request_sha256: str = Field(
+        description="sha256(offline_signed_payload bytes) of the local attestation"
+    )
+
+
+class HostedArtifact(BaseModel):
+    """The composite artifact a hosted mint returns — one pasteable JSON.
+
+    Top level is a superset of the ``{v, receipt, inclusion}`` permalink
+    envelope, so the whole artifact parses at glacis.io/verify (its envelope
+    unwrap keys on the top-level ``receipt`` object and ignores unknown
+    fields). ``receipt`` and ``inclusion`` are the gateway's response
+    verbatim — the SDK never reshapes them.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    v: int = Field(default=1)
+    artifact: Literal["glacis-hosted-mint/1"] = "glacis-hosted-mint/1"
+    attestation_mode: Literal["server-attested"] = "server-attested"
+    receipt: dict[str, Any] = Field(
+        description="Projected receipt, verbatim from POST /v1/govern"
+    )
+    inclusion: dict[str, Any] = Field(
+        description="Transparency-log record, verbatim from the gateway"
+    )
+    attestation: Attestation = Field(
+        description="The locally signed attestation (identical to offline mode)"
+    )
+    binding: WitnessBinding
+    verification: WitnessVerification
+
+    @property
+    def witness_status(self) -> str:
+        return self.verification.witness_status
+
+    def to_json(self, indent: int = 2) -> str:
+        """Serialize to the single JSON file a user can paste at glacis.io/verify."""
+        import json as _json
+
+        return _json.dumps(self.model_dump(mode="json"), indent=indent)
+
+    def save(self, path: Any) -> None:
+        """Write ``to_json()`` to ``path``."""
+        from pathlib import Path as _Path
+
+        _Path(path).write_text(self.to_json() + "\n", encoding="utf-8")
 
 
 # ==============================================================================
@@ -488,7 +617,7 @@ class OfflineVerifyResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     valid: bool = Field(description="Whether the signature is valid")
-    witness_status: Literal["UNVERIFIED"] = Field(default="UNVERIFIED")
+    witness_status: Literal["SELF_SIGNED"] = Field(default="SELF_SIGNED")
     signature_valid: bool
     attestation: Optional[Attestation] = Field(
         default=None, description="The verified attestation"
@@ -523,3 +652,13 @@ class GlacisRateLimitError(GlacisApiError):
     def __init__(self, message: str, retry_after_ms: Optional[int] = None):
         super().__init__(message, 429, "RATE_LIMITED")
         self.retry_after_ms = retry_after_ms
+
+
+class GlacisMintError(Exception):
+    """A hosted mint could not produce a bound artifact.
+
+    Raised when the gateway's response cannot be tied to the request the SDK
+    made (e.g. ``receipt.commitments.request`` differs from the
+    ``request_sha256`` that was sent). This is distinct from a transport or
+    HTTP error: the server answered, and the answer does not bind.
+    """

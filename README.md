@@ -6,9 +6,12 @@
 
 **Tamper-proof audit logs for AI systems - without exposing sensitive data.**
 
-> **Note:** Online attestation (Merkle tree proofs via the Glacis API) is not yet available.
-> The SDK currently supports **offline mode** with local Ed25519 signing.
-> Online mode will be enabled in a future release.
+Two modes ship today:
+
+- **Hosted (server-attested)** - every attestation is minted into the Glacis
+  transparency log and comes back with an RFC 6962 inclusion proof and a
+  signed tree head, which the SDK verifies locally before labeling anything.
+- **Offline (self-signed)** - local Ed25519 signing, no account needed.
 
 ## The Problem
 
@@ -42,7 +45,52 @@ pip install glacis[all]         # Everything
 
 ## Quick Start
 
-### Option 1: Drop-in Wrapper (Recommended)
+### Option 1: Hosted (server-attested) receipts
+
+```bash
+pip install glacis
+export GLACIS_API_KEY=glsk_live_...           # from glacis.io
+export GLACIS_LOG_PUBLIC_KEY_HEX=...          # the Glacis log key, published at launch
+```
+
+```python
+from glacis import Glacis
+
+glacis = Glacis(mode="hosted")
+artifact = glacis.attest(service_id="my-ai-app", operation_type="inference",
+                         input={"prompt": "..."}, output={"response": "..."})
+artifact.save("receipt.json")  # paste the file at glacis.io/verify
+```
+
+`artifact.witness_status` tells you exactly what you hold:
+
+- `LOG_INCLUSION_VERIFIED` - the SDK recomputed the RFC 6962 inclusion proof
+  from the receipt's own identifier to the signed tree head, and the tree
+  head's Ed25519 signature verified under the log key you configured. That
+  proves the receipt identifier was in the Glacis log - and only that. The
+  log leaf commits to the opaque identifier, so the task, outcome, and
+  commitments shown beside it are not covered by the proof;
+  `artifact.verification.scope` spells the boundary out. glacis.io/verify
+  applies the same ceiling to this receipt shape, and the SDK never claims
+  more than that page would for the same bytes. The tree head's witness
+  countersignature is not independently attested yet and is not counted.
+- `LOGGED_UNVERIFIED` - the mint succeeded but the SDK could not verify the
+  record (most commonly: no `GLACIS_LOG_PUBLIC_KEY_HEX` configured). The
+  reason is in `artifact.verification.reason`. Never silently upgraded.
+- `SELF_SIGNED` - offline receipts. Your own key, your own word.
+- `WITNESSED` - reserved for receipt shapes that carry a verified signature
+  over their semantic fields. No hosted receipt qualifies today, so the SDK
+  never issues it.
+
+At mint time the SDK additionally checks that the gateway echoed back the
+exact commitment and task class it sent (a mismatch raises instead of
+issuing an artifact), recorded as
+`verification.commitment_echo_verified_at_mint` - a statement about the
+mint-time session, not about the saved bytes, so it never upgrades the
+status. The SDK ships no baked-in log key: verification only happens under a
+key you configure, so a receipt can never vouch for itself.
+
+### Option 2: Drop-in Wrapper
 
 Replace your OpenAI/Anthropic/Gemini client with a wrapped version. Every API call is automatically attested.
 
@@ -99,7 +147,7 @@ response = client.models.generate_content(
 receipt = get_last_receipt()
 ```
 
-### Option 2: Direct API
+### Option 3: Direct API (offline)
 
 For custom attestations (non-OpenAI/Anthropic/Gemini, or manual control):
 
@@ -186,16 +234,18 @@ print(evidence["control_plane_results"])  # PII/jailbreak results
 
 Evidence is stored locally using SQLite (default) or JSONL backends.
 
-## Online vs Offline Mode
+## Hosted vs Offline Mode
 
-> Online mode is not yet available. Use offline mode for now.
+| Feature | Offline | Hosted |
+|---------|---------|--------|
+| Requires Glacis account | No | Yes (`GLACIS_API_KEY`) |
+| Signing | Local Ed25519 | Local Ed25519 + transparency-log inclusion |
+| Third-party verifiable | Signature only | Yes (RFC 6962 proof at glacis.io/verify) |
+| witness_status | `SELF_SIGNED` | `LOG_INCLUSION_VERIFIED` after local verification |
+| Use case | Development | Audits, regulatory |
 
-| Feature | Offline | Online (coming soon) |
-|---------|---------|----------------------|
-| Requires Glacis account | No | Yes |
-| Signing | Local Ed25519 | Glacis witness |
-| Third-party verifiable | No | Yes (Merkle proofs) |
-| Use case | Development, production | Audits, regulatory |
+Hosted mode never sends payload text - the gateway receives only a task-class
+label and `request_sha256`, the SHA-256 of the attestation's signed bytes.
 
 ## What Gets Sent to Glacis?
 
