@@ -24,7 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verification of the signed tree head under a log key configured via
   `GLACIS_LOG_PUBLIC_KEY_HEX` or `log_public_keys=`. No baked-in production
   key ships in the SDK; the tree head's witness countersignature is not
-  pinned and not counted as verification.
+  pinned and not counted as verification. A full pass classifies as
+  `LOG_INCLUSION_VERIFIED` — the ceiling for this receipt shape, because
+  the log leaf commits only to the opaque `receipt_id`: the projection's
+  task/outcome/commitments are outside the proof, and
+  `verification.scope` says so explicitly. glacis.io/verify applies the
+  same cap, and the SDK never claims more than that page would.
+- Mint-time binding checks fail closed: the gateway must echo back both the
+  exact `request_sha256` and the requested `task_class` in its receipt, or
+  `GlacisMintError` is raised and no artifact is issued. The passing echo is
+  recorded as `verification.commitment_echo_verified_at_mint` (a mint-time
+  fact; it never upgrades the status).
+- `Glacis` is now generic over its attest result: `Glacis(mode="hosted")`
+  types as `Glacis[HostedArtifact]` and online/offline as
+  `Glacis[Attestation]`, so `attest()` and `decompose()` return precise
+  types per mode with no casts.
 - Environment configuration: `GLACIS_API_KEY`, `GLACIS_WITNESS_API_BASE`,
   `GLACIS_LOG_PUBLIC_KEY_HEX`, `GLACIS_SIGNING_SEED_HEX`.
 - Hosted mints run under one 8-second deadline (POST plus anchor polling),
@@ -43,12 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`witness_status` no longer overclaims.** 0.8.1 returned `WITNESSED` for
-  any `is_offline=False` attestation with zero verification. The label set is
-  now: `SELF_SIGNED` (offline/locally signed), `LOGGED_UNVERIFIED` (a server
-  response exists but nothing was verified locally), and `WITNESSED` — issued
-  only by `glacis.witness.classify_envelope` after the inclusion proof
-  recomputes to a tree head signed under a configured log key.
-  `OfflineVerifyResult.witness_status` is now `SELF_SIGNED` (was
+  any `is_offline=False` attestation with zero verification. The label set
+  is now: `SELF_SIGNED` (offline/locally signed), `LOGGED_UNVERIFIED` (a
+  server response exists but nothing was verified locally), and
+  `LOG_INCLUSION_VERIFIED` — issued only by
+  `glacis.witness.classify_envelope` after the inclusion proof recomputes to
+  a tree head signed under a configured log key, and scoped to exactly what
+  that proves. `WITNESSED` is reserved for receipt shapes carrying a
+  verified signature over their semantic fields; nothing in the SDK issues
+  it today. `OfflineVerifyResult.witness_status` is now `SELF_SIGNED` (was
   `UNVERIFIED`).
 
 ## [0.8.1] - 2026-08-09

@@ -64,20 +64,31 @@ artifact.save("receipt.json")  # paste the file at glacis.io/verify
 
 `artifact.witness_status` tells you exactly what you hold:
 
-- `WITNESSED` - the SDK recomputed the RFC 6962 inclusion proof from the
-  receipt's own identifier to the signed tree head, and the tree head's
-  Ed25519 signature verified under the log key you configured. This is what
-  "server-attested" means here: the receipt is logged, and its inclusion is
-  verified under the Glacis log. The tree head also carries a witness
-  countersignature; that countersigner is not independently attested yet, so
-  the SDK does not count it as verification.
+- `LOG_INCLUSION_VERIFIED` - the SDK recomputed the RFC 6962 inclusion proof
+  from the receipt's own identifier to the signed tree head, and the tree
+  head's Ed25519 signature verified under the log key you configured. That
+  proves the receipt identifier was in the Glacis log - and only that. The
+  log leaf commits to the opaque identifier, so the task, outcome, and
+  commitments shown beside it are not covered by the proof;
+  `artifact.verification.scope` spells the boundary out. glacis.io/verify
+  applies the same ceiling to this receipt shape, and the SDK never claims
+  more than that page would for the same bytes. The tree head's witness
+  countersignature is not independently attested yet and is not counted.
 - `LOGGED_UNVERIFIED` - the mint succeeded but the SDK could not verify the
   record (most commonly: no `GLACIS_LOG_PUBLIC_KEY_HEX` configured). The
   reason is in `artifact.verification.reason`. Never silently upgraded.
 - `SELF_SIGNED` - offline receipts. Your own key, your own word.
+- `WITNESSED` - reserved for receipt shapes that carry a verified signature
+  over their semantic fields. No hosted receipt qualifies today, so the SDK
+  never issues it.
 
-The SDK ships no baked-in log key: verification only happens under a key you
-configure, so a receipt can never vouch for itself.
+At mint time the SDK additionally checks that the gateway echoed back the
+exact commitment and task class it sent (a mismatch raises instead of
+issuing an artifact), recorded as
+`verification.commitment_echo_verified_at_mint` - a statement about the
+mint-time session, not about the saved bytes, so it never upgrades the
+status. The SDK ships no baked-in log key: verification only happens under a
+key you configure, so a receipt can never vouch for itself.
 
 ### Option 2: Drop-in Wrapper
 
@@ -230,7 +241,7 @@ Evidence is stored locally using SQLite (default) or JSONL backends.
 | Requires Glacis account | No | Yes (`GLACIS_API_KEY`) |
 | Signing | Local Ed25519 | Local Ed25519 + transparency-log inclusion |
 | Third-party verifiable | Signature only | Yes (RFC 6962 proof at glacis.io/verify) |
-| witness_status | `SELF_SIGNED` | `WITNESSED` after local verification |
+| witness_status | `SELF_SIGNED` | `LOG_INCLUSION_VERIFIED` after local verification |
 | Use case | Development | Audits, regulatory |
 
 Hosted mode never sends payload text - the gateway receives only a task-class

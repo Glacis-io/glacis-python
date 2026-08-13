@@ -76,12 +76,31 @@ class TestCrossRepoVector:
             == vector["log_public_key_hex"]
         )
 
-    def test_full_classification_is_witnessed(self, vector: dict, envelope: dict):
+    def test_full_classification_caps_at_log_inclusion(self, vector: dict, envelope: dict):
+        """A full pass is LOG_INCLUSION_VERIFIED — never WITNESSED. The leaf
+        commits only to the opaque receipt_id, so the projection's task/
+        outcome/commitments are outside the proof; glacis.io/verify applies
+        the same ceiling (this shape's verdict is never green)."""
         v = classify_envelope(envelope, [vector["log_public_key_hex"]])
-        assert v.witness_status == "WITNESSED"
+        assert v.witness_status == "LOG_INCLUSION_VERIFIED"
+        assert v.witness_status != "WITNESSED"
         assert v.inclusion_verified and v.sth_signature_verified
         assert v.log_public_key_hex == vector["log_public_key_hex"]
         assert v.reason is None
+        assert "NOT proven" in v.scope and "receipt identifier" in v.scope
+
+    def test_tampered_projection_fields_never_witnessed(self, vector: dict, envelope: dict):
+        """Codex P1 regression: altering outcome/task/commitments while
+        keeping receipt_id cannot be detected by the proof (the leaf is the
+        id alone) — so the classification must not claim more than inclusion,
+        and must never say WITNESSED."""
+        envelope["receipt"]["outcome"] = "BLOCKED"
+        envelope["receipt"]["task"] = "safety-chat"
+        envelope["receipt"]["commitments"]["request"] = "c" * 64
+        v = classify_envelope(envelope, [vector["log_public_key_hex"]])
+        assert v.witness_status != "WITNESSED"
+        assert v.witness_status == "LOG_INCLUSION_VERIFIED"  # id inclusion still holds
+        assert "NOT proven" in v.scope  # ...and says exactly that
 
     def test_wrong_key_is_not_witnessed(self, envelope: dict):
         other = bytes(nacl.signing.SigningKey(b"\x09" * 32).verify_key).hex()
@@ -245,7 +264,7 @@ class TestReferenceLogSelfConsistency:
             "inclusion": log.inclusion(idx),
         }
         v = classify_envelope(envelope, [log.public_key_hex])
-        assert v.witness_status == "WITNESSED"
+        assert v.witness_status == "LOG_INCLUSION_VERIFIED"
 
 
 class TestTaskClasses:

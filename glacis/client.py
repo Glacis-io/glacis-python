@@ -21,7 +21,7 @@ Example (hosted):
     ...     input={"prompt": "Hello"},
     ...     output={"response": "Hi there!"},
     ... )
-    >>> artifact.witness_status  # "WITNESSED" only after local verification
+    >>> artifact.witness_status  # "LOG_INCLUSION_VERIFIED" at best — see witness.py
     >>> artifact.save("receipt.json")  # paste at glacis.io/verify
 
 Example (offline):
@@ -41,7 +41,16 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
+    overload,
+)
 
 import httpx
 
@@ -68,6 +77,12 @@ from glacis.verify import verify_offline as verify_offline_receipt
 if TYPE_CHECKING:
     from glacis.crypto import Ed25519Runtime
     from glacis.storage import StorageBackend
+
+#: What attest() returns, keyed by the client's mode: online/offline clients
+#: are Glacis[Attestation], hosted clients are Glacis[HostedArtifact]. The
+#: __init__ overloads bind it from the ``mode`` literal, so call sites get
+#: the precise type without casts.
+R = TypeVar("R", Attestation, HostedArtifact)
 
 
 class GlacisMode(str, Enum):
@@ -153,7 +168,7 @@ def _normalize_sampling(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
-class Glacis:
+class Glacis(Generic[R]):
     """
     Synchronous GLACIS client.
 
@@ -178,6 +193,49 @@ class Glacis:
         sampling_config: Sampling configuration (l1_rate, l2_rate). If None, defaults to
                          l1_rate=1.0 (review all), l2_rate=0.0 (no deep inspection).
     """
+
+    # The mode literal picks the type parameter: online/offline construct a
+    # Glacis[Attestation], hosted constructs a Glacis[HostedArtifact]. The
+    # online/offline overload comes first so a bare Glacis() resolves there.
+    @overload
+    def __init__(
+        self: "Glacis[Attestation]",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        debug: bool = False,
+        timeout: Optional[float] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_BASE_DELAY,
+        max_delay: float = DEFAULT_MAX_DELAY,
+        mode: Literal["online", "offline"] = "online",
+        signing_seed: Optional[bytes] = None,
+        policy_key: Optional[bytes] = None,
+        db_path: Optional[Path] = None,
+        storage_backend: str = "sqlite",
+        storage_path: Optional[Path] = None,
+        sampling_config: Optional[SamplingConfig] = None,
+        log_public_keys: Optional[list[str]] = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "Glacis[HostedArtifact]",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        debug: bool = False,
+        timeout: Optional[float] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_BASE_DELAY,
+        max_delay: float = DEFAULT_MAX_DELAY,
+        mode: Literal["hosted"] = ...,
+        signing_seed: Optional[bytes] = None,
+        policy_key: Optional[bytes] = None,
+        db_path: Optional[Path] = None,
+        storage_backend: str = "sqlite",
+        storage_path: Optional[Path] = None,
+        sampling_config: Optional[SamplingConfig] = None,
+        log_public_keys: Optional[list[str]] = None,
+    ) -> None: ...
 
     def __init__(
         self,
@@ -310,7 +368,7 @@ class Glacis:
             log_public_keys = [key_hex] if key_hex else []
         self._log_public_keys = [k.strip().lower() for k in log_public_keys if k.strip()]
 
-    def __enter__(self) -> "Glacis":
+    def __enter__(self) -> "Glacis[R]":
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -333,6 +391,36 @@ class Glacis:
             OperationContext with auto-incrementing sequence
         """
         return OperationContext(operation_id)
+
+    @overload
+    def attest(
+        self: "Glacis[Attestation]",
+        service_id: str,
+        operation_type: str,
+        input: Any,
+        output: Any,
+        metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[Union[ControlPlaneResults, dict[str, Any]]] = None,
+        operation_id: Optional[str] = None,
+        operation_sequence: Optional[int] = None,
+        supersedes: Optional[str] = None,
+        task_class: str = "default",
+    ) -> Attestation: ...
+
+    @overload
+    def attest(
+        self: "Glacis[HostedArtifact]",
+        service_id: str,
+        operation_type: str,
+        input: Any,
+        output: Any,
+        metadata: Optional[dict[str, str]] = None,
+        control_plane_results: Optional[Union[ControlPlaneResults, dict[str, Any]]] = None,
+        operation_id: Optional[str] = None,
+        operation_sequence: Optional[int] = None,
+        supersedes: Optional[str] = None,
+        task_class: str = "default",
+    ) -> HostedArtifact: ...
 
     def attest(
         self,
@@ -647,6 +735,14 @@ class Glacis:
                 f"this SDK sent (sent {request_sha256}, receipt carries "
                 f"{echoed!r}) — the artifact would not bind, so none is issued"
             )
+        echoed_task = receipt.get("task")
+        if echoed_task != task_class:
+            raise GlacisMintError(
+                "the gateway's receipt carries a different task class than "
+                f"this SDK requested (sent {task_class!r}, receipt carries "
+                f"{echoed_task!r}) — the artifact would not bind, so none is "
+                "issued"
+            )
 
         # G-INGEST-LAG: a just-minted receipt may be pending; poll for the
         # anchor within what is left of the deadline.
@@ -657,6 +753,12 @@ class Glacis:
 
         envelope = {"v": 1, "receipt": receipt, "inclusion": inclusion}
         verification = classify_envelope(envelope, self._log_public_keys)
+        # The echo checks above passed or we would have raised. Recorded as a
+        # mint-time fact only — it never upgrades witness_status, because a
+        # holder of the saved artifact cannot re-run it against the gateway.
+        verification = verification.model_copy(
+            update={"commitment_echo_verified_at_mint": True}
+        )
         self._debug(
             f"Hosted mint {receipt.get('receipt_id', '?')[:16]}...: "
             f"{verification.witness_status}"
@@ -805,25 +907,31 @@ class Glacis:
         items: list[dict[str, Any]],
         operation_type: str = "item",
         source_data: Any = None,
-    ) -> list[Attestation]:
+    ) -> list[R]:
         """Decompose a batch attestation into individual item attestations.
 
         All decomposed items share the same operation_id as the parent,
         with incrementing operation_sequence starting after the parent's sequence.
 
+        The parent is always the plain ``Attestation``; on a hosted client,
+        pass ``artifact.attestation`` and each item comes back as its own
+        ``HostedArtifact`` (each one is a separate mint).
+
         Args:
-            attestation: The parent batch attestation
+            attestation: The parent batch attestation (``artifact.attestation``
+                for a hosted parent)
             items: List of individual items to attest (e.g., QA pairs)
             operation_type: Operation type for decomposed items (default: "item")
             source_data: Optional shared input data for all items
 
         Returns:
-            List of Attestation objects, one per item
+            One result per item: Attestation objects on an online/offline
+            client, HostedArtifact objects on a hosted client
         """
         op_id = attestation.operation_id
         base_seq = attestation.operation_sequence + 1
 
-        results: list[Attestation] = []
+        results: list[R] = []
         for i, item in enumerate(items):
             r = self.attest(
                 service_id=attestation.service_id,

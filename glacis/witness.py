@@ -34,10 +34,17 @@ monorepo reference implementation does (mvp-product ``packages/glacis-py``
 
 Label state machine (fail-closed):
 
-* ``WITNESSED`` — the inclusion proof recomputes from this receipt's own leaf
-  to a root that a *configured* log key signed. Nothing less.
+* ``LOG_INCLUSION_VERIFIED`` — the inclusion proof recomputes from this
+  receipt's own leaf to a root that a *configured* log key signed. That is
+  the CEILING for this shape: the leaf commits only to the opaque
+  ``receipt_id``, so the projection fields beside it (``task``, ``outcome``,
+  ``commitments``) are NOT covered by the proof. glacis.io/verify applies
+  the same cap — its verdict for this shape is never green — and this SDK
+  never claims more than that page would for the same bytes.
 * ``LOGGED_UNVERIFIED`` — the mint returned, but the record could not be
   verified here. The reason is always named.
+* ``WITNESSED`` — reserved for shapes carrying a verified signature over
+  their semantic fields; never produced by this module today.
 * ``SELF_SIGNED`` — offline receipts (see ``Attestation.witness_status``);
   never produced by this module.
 """
@@ -251,13 +258,20 @@ def classify_envelope(
 ) -> WitnessVerification:
     """Classify a ``{v, receipt, inclusion}`` envelope, fail-closed.
 
-    ``WITNESSED`` requires ALL of: a projected-witness-shaped receipt with a
-    64-hex ``receipt_id``; an inclusion proof whose recomputed root equals the
-    tree head's root; and that tree head's signature verifying under a key
-    from ``log_public_keys``. Anything less is ``LOGGED_UNVERIFIED`` with the
-    first missing piece named. Semantics ported from the monorepo reference
-    (mvp-product packages/glacis-py: witnessed requires leaf + inclusion +
-    signed STH under a configured log key).
+    ``LOG_INCLUSION_VERIFIED`` requires ALL of: a projected-witness-shaped
+    receipt with a 64-hex ``receipt_id``; an inclusion proof whose recomputed
+    root equals the tree head's root; and that tree head's signature
+    verifying under a key from ``log_public_keys``. Anything less is
+    ``LOGGED_UNVERIFIED`` with the first missing piece named. Semantics
+    ported from the monorepo reference (mvp-product packages/glacis-py:
+    inclusion requires leaf + inclusion + signed STH under a configured log
+    key).
+
+    ``LOG_INCLUSION_VERIFIED`` is also the ceiling: the leaf is the opaque
+    ``receipt_id``, so the projection's ``task``/``outcome``/``commitments``
+    are not covered by the proof, and altering them in a saved envelope does
+    not (cannot) invalidate it. ``WITNESSED`` is never issued for this
+    shape.
     """
     now_ms = (
         checked_at_ms if checked_at_ms is not None else time.time_ns() // 1_000_000
@@ -350,10 +364,18 @@ def classify_envelope(
         )
 
     return WitnessVerification(
-        witness_status="WITNESSED",
+        witness_status="LOG_INCLUSION_VERIFIED",
         inclusion_verified=True,
         sth_signature_verified=True,
         log_public_key_hex=key_hex,
         reason=None,
+        scope=(
+            "proven: receipt_id %s was included in log %r at tree size %s, "
+            "under a log key this client was configured with. NOT proven: "
+            "the task, outcome, or commitments shown beside it — the log "
+            "leaf commits only to the receipt identifier, and the projected "
+            "receipt carries no signature over those fields."
+            % (receipt_id, sth["log_id"], sth["tree_size"])
+        ),
         checked_at_ms=now_ms,
     )

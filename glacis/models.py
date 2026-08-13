@@ -315,13 +315,14 @@ class Attestation(BaseModel):
     def witness_status(self) -> str:
         """``SELF_SIGNED`` for locally signed receipts, else ``LOGGED_UNVERIFIED``.
 
-        ``WITNESSED`` is never derived from a flag on this object. It is
-        issued only by ``glacis.witness.classify_envelope`` after the
-        inclusion proof recomputes to a tree head signed under a *configured*
-        log public key — see ``HostedArtifact.verification``. (0.8.1 returned
-        ``WITNESSED`` for any ``is_offline=False`` object with zero
-        verification; a self-signed or merely-logged receipt must never carry
-        a server-attested label.)
+        A server-attested label is never derived from a flag on this object.
+        The most ``glacis.witness.classify_envelope`` issues is
+        ``LOG_INCLUSION_VERIFIED``, after the inclusion proof recomputes to a
+        tree head signed under a *configured* log public key — see
+        ``HostedArtifact.verification`` and ``WitnessVerification`` for why
+        ``WITNESSED`` is reserved. (0.8.1 returned ``WITNESSED`` for any
+        ``is_offline=False`` object with zero verification; a self-signed or
+        merely-logged receipt must never carry a server-attested label.)
         """
         return "SELF_SIGNED" if self.is_offline else "LOGGED_UNVERIFIED"
 
@@ -359,16 +360,36 @@ class Receipt(BaseModel):
 class WitnessVerification(BaseModel):
     """What the SDK itself verified about a hosted mint, fail-closed.
 
-    ``witness_status`` is ``WITNESSED`` only when ``inclusion_verified`` and
-    ``sth_signature_verified`` are both True under a configured log key.
-    Everything else is ``LOGGED_UNVERIFIED`` with ``reason`` naming the first
-    missing piece. ``contradicted`` marks the one case where a configured key
-    vouched for a root and this receipt's proof does not lead to it.
+    The projected receipt carries no signature of its own, and its log leaf
+    commits only to the opaque ``receipt_id`` — so a passing check proves
+    that IDENTIFIER was in the log, and nothing about the ``task``,
+    ``outcome``, or ``commitments`` printed beside it. The best status this
+    shape can earn is therefore ``LOG_INCLUSION_VERIFIED``, never
+    ``WITNESSED`` — the same cap glacis.io/verify applies ("this shape's
+    verdict is never green"). The SDK must never claim more than that page
+    would for the same bytes.
+
+    * ``LOG_INCLUSION_VERIFIED`` — the inclusion proof recomputed from the
+      receipt's own identifier to a tree head signed under a configured log
+      key. ``scope`` states exactly what that covers.
+    * ``LOGGED_UNVERIFIED`` — anything less; ``reason`` names the first
+      missing piece. ``contradicted`` marks the one case where a configured
+      key vouched for a root and this receipt's proof does not lead to it.
+    * ``WITNESSED`` — reserved for receipt shapes that carry a verified
+      signature over their semantic fields. No hosted-path shape qualifies
+      today; nothing in this SDK currently issues it.
+
+    ``commitment_echo_verified_at_mint`` records that, at mint time, the
+    gateway's echoed ``commitments.request`` and ``task`` matched what this
+    SDK sent. That is a statement about the mint-time session, not about the
+    saved bytes — it does not upgrade the status.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    witness_status: Literal["WITNESSED", "LOGGED_UNVERIFIED"]
+    witness_status: Literal[
+        "WITNESSED", "LOG_INCLUSION_VERIFIED", "LOGGED_UNVERIFIED"
+    ]
     inclusion_verified: bool = Field(default=False)
     sth_signature_verified: bool = Field(default=False)
     log_public_key_hex: Optional[str] = Field(
@@ -376,6 +397,11 @@ class WitnessVerification(BaseModel):
     )
     contradicted: bool = Field(default=False)
     reason: Optional[str] = Field(default=None)
+    scope: Optional[str] = Field(
+        default=None,
+        description="On a pass: exactly what was proven, and what was not",
+    )
+    commitment_echo_verified_at_mint: bool = Field(default=False)
     checked_at_ms: int = Field(default=0)
 
 

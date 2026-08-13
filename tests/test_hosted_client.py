@@ -79,7 +79,7 @@ def _mock_govern_included(httpx_mock, log: ReferenceLog):
 
 
 class TestHostedMint:
-    def test_witnessed_end_to_end(self, httpx_mock, log: ReferenceLog):
+    def test_verified_mint_end_to_end(self, httpx_mock, log: ReferenceLog):
         _mock_govern_included(httpx_mock, log)
         client = _make_client(log_public_keys=[log.public_key_hex])
         artifact = client.attest(
@@ -89,10 +89,13 @@ class TestHostedMint:
             output={"response": "yo"},
         )
         assert isinstance(artifact, HostedArtifact)
-        assert artifact.witness_status == "WITNESSED"
+        assert artifact.witness_status == "LOG_INCLUSION_VERIFIED"
+        assert artifact.witness_status != "WITNESSED"
         assert artifact.verification.inclusion_verified
         assert artifact.verification.sth_signature_verified
         assert artifact.verification.log_public_key_hex == log.public_key_hex
+        # Mint-time fact, recorded but never a status upgrade.
+        assert artifact.verification.commitment_echo_verified_at_mint
 
     def test_binding_preimage_is_the_signed_bytes(self, httpx_mock, log: ReferenceLog):
         """request_sha256 == sha256 of the attestation's exact signed bytes,
@@ -150,6 +153,26 @@ class TestHostedMint:
         httpx_mock.add_callback(respond, url=f"{BASE}/v1/govern?sync_anchor=true")
         client = _make_client(log_public_keys=[log.public_key_hex])
         with pytest.raises(GlacisMintError, match="different request"):
+            client.attest(service_id="s", operation_type="t", input=1, output=2)
+
+    def test_task_class_echo_mismatch_fails_closed(self, httpx_mock, log):
+        """Codex P2: the receipt's task must equal the requested task_class,
+        checked beside the commitment echo — a receipt for a different task
+        class does not bind, so no artifact is issued."""
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            receipt_hash = hashlib.sha256(request.content).hexdigest()
+            idx = log.append(receipt_hash)
+            return httpx.Response(200, json={
+                "receipt": _receipt_for(body["request_sha256"], receipt_hash,
+                                        task="quality-chat"),  # requested "default"
+                "inclusion": log.inclusion(idx),
+            })
+
+        httpx_mock.add_callback(respond, url=f"{BASE}/v1/govern?sync_anchor=true")
+        client = _make_client(log_public_keys=[log.public_key_hex])
+        with pytest.raises(GlacisMintError, match="different task class"):
             client.attest(service_id="s", operation_type="t", input=1, output=2)
 
     def test_401_is_surfaced(self, httpx_mock):
@@ -242,7 +265,7 @@ class TestHostedMint:
         artifact = client.attest(
             service_id="s", operation_type="t", input=1, output=2,
         )
-        assert artifact.witness_status == "WITNESSED"
+        assert artifact.witness_status == "LOG_INCLUSION_VERIFIED"
 
     def test_timeout_after_send_is_not_retried(self, httpx_mock):
         """/v1/govern is not idempotent: a timed-out mint may have minted.
@@ -285,7 +308,7 @@ class TestHostedMint:
             service_id="s", operation_type="t", input=1, output=2,
         )
         assert artifact.inclusion["status"] == "included"
-        assert artifact.witness_status == "WITNESSED"
+        assert artifact.witness_status == "LOG_INCLUSION_VERIFIED"
 
     def test_pending_forever_is_honest(self, httpx_mock, log):
         def govern(request: httpx.Request) -> httpx.Response:
@@ -341,7 +364,7 @@ class TestHostedConfig:
         artifact = client.attest(
             service_id="s", operation_type="t", input=1, output=2,
         )
-        assert artifact.witness_status == "WITNESSED"
+        assert artifact.witness_status == "LOG_INCLUSION_VERIFIED"
 
     def test_unknown_task_class_rejected_before_spending_a_mint(self, httpx_mock):
         client = _make_client()
