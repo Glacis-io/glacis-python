@@ -52,6 +52,8 @@ from glacis.models import (
     Evidence,
     GlacisApiError,
     GlacisConfig,
+    GlacisMintError,
+    HostedArtifact,
     InclusionProof,
     LogEntry,
     LogQueryParams,
@@ -66,6 +68,8 @@ from glacis.models import (
     SamplingDecision,
     SignedTreeHead,
     VerifyResult,
+    WitnessBinding,
+    WitnessVerification,
 )
 from glacis.storage import (
     JsonStorageBackend,
@@ -73,6 +77,7 @@ from glacis.storage import (
     StorageBackend,
     create_storage,
 )
+from glacis.witness import HOSTED_TASK_CLASSES, classify_envelope
 
 # Controls module (optional dependencies for individual controls)
 try:
@@ -105,6 +110,13 @@ __all__ = [
     "OperationContext",
     # Exceptions
     "GlacisApiError",
+    "GlacisMintError",
+    # Hosted (server-attested) mint
+    "HostedArtifact",
+    "WitnessBinding",
+    "WitnessVerification",
+    "HOSTED_TASK_CLASSES",
+    "classify_envelope",
     # Evidence Storage
     "StorageBackend",
     "ReceiptStorage",
