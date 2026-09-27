@@ -1,0 +1,3 @@
+# Crawlers still request /sitemap.xml; Astro emits sitemap-index.xml + sitemap-N.xml.
+# Redirect the legacy URL so it resolves to a real XML sitemap instead of a soft-404 HTML page.
+/sitemap.xml   /sitemap-index.xml   301
