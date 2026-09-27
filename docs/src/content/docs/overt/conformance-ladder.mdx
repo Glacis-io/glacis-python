@@ -1,0 +1,41 @@
+---
+title: The conformance ladder
+description: How OVERT Attestation Assurance Levels (AAL) work — and why a co-resident Notary caps a default Glacis deployment at AAL-3.
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+OVERT separates **conformance maturity** (what evidence posture a deployment
+claims) from any vendor's internal runtime tier names. Do not conflate
+"OVERT Level 1" with "Glacis L1 controls."
+
+## Attestation Assurance Levels (orientation)
+
+| Level | Meaning (orientation — cite overt.is for normative text) |
+| --- | --- |
+| **AAL-1** | Operator self-attestation |
+| **AAL-2** | Active runtime enforcement |
+| **AAL-3** | Machine-generated, signed, **operator-controlled** attestation |
+| **AAL-4** | Independent, third-party, tamper-evident proof |
+
+<Aside type="caution" title="Default Glacis bundle = AAL-3 ceiling">
+  A single operator-controlled Notary (co-resident on the customer's host in the
+  default customer-hosted bundle) **caps the deployment at AAL-3**. AAL-4
+  requires a notary operated outside the operator's trust boundary. Glacis is
+  not independently certified and must not be sold as AAL-4.
+</Aside>
+
+## OVERT Level 1 Core
+
+The approved public claim for the default customer-hosted bundle is an
+**OVERT Level 1 Core** evidence posture — a maturity description for the
+configured runtime boundary, **not** a third-party certification and **not** a
+claim that every OVERT control is active.
+
+## Related
+
+<CardGrid>
+  <LinkCard title="Runtime product" href="/runtime/" />
+  <LinkCard title="OVERT overview" href="/overt/" />
+  <LinkCard title="Normative standard" href="https://overt.is" />
+</CardGrid>

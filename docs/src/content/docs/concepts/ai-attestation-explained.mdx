@@ -1,0 +1,45 @@
+---
+title: AI attestation, explained
+description: What runtime attestation means for AI systems — and how it differs from TEEs, model signing, and audit logs.
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+**Attestation** here means: a signed statement about a covered AI action —
+what was claimed, what control decision was reported, and enough structure for
+someone else to check the signature and hash bindings — without receiving the
+underlying content.
+
+On glacis.io this artifact is called a **record**. OVERT's specification text
+still says *receipt*.
+
+## What it is not
+
+| Nearby idea | Difference |
+| --- | --- |
+| Audit logs | Usually mutable operator-controlled text; not designed for independent crypto verification |
+| TEE / hardware attestation | Attests a hardware/enclave measurement — complementary, not the same artifact |
+| Model signing / SBOMs | Attest build/supply-chain identity of a model artifact, not a runtime decision |
+| "The model is safe" | Attestation records claims about an event; it does not prove safety or correctness |
+
+## What a useful record carries (conceptually)
+
+- Identity of the deployment / workflow (as declared)
+- Content-safe commitments (hashes) instead of raw prompts/outputs
+- Reported control outcomes for covered decisions
+- Signatures (and, at higher assurance, independent witnessing)
+
+Exact fields and verification procedures are defined by [OVERT](https://overt.is)
+and by the concrete profile your deployment uses.
+
+<Aside type="caution">
+  Self-signed offline SDK artifacts (`oatt_…`) are useful for learning and
+  internal integrity checks. They are not automatically conforming OVERT
+  documents. See [OVERT](/overt/).
+</Aside>
+
+<CardGrid>
+  <LinkCard title="Documentation is not evidence" href="/concepts/documentation-is-not-evidence/" />
+  <LinkCard title="Verify" href="/verify/" />
+  <LinkCard title="OVERT 1.1" href="https://overt.is" />
+</CardGrid>

@@ -1,0 +1,49 @@
+---
+title: OVERT-as-Code
+description: Declare AI governance policy as code, validate it in CI, and export machine-readable evidence artifacts. Preview — not generally available.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Status: Preview — not generally available">
+  OVERT-as-Code is **not** a public GA package. These pages describe the intended
+  approach so you can evaluate it. APIs, crate boundaries, and CLI names may
+  change. Early access: [Talk to us](https://www.glacis.io/book/assess/).
+</Aside>
+
+**OVERT-as-Code** is the declarative policy layer for AI governance aligned to
+[OVERT](/overt/). The idea: write rules under version control, validate them
+before production, and keep runtime enforcement + signed records in the
+[runtime product](/runtime/).
+
+```toml
+# Example shape only — Preview; not a published schema contract
+[policy]
+id = "example-ambient-v1"
+name = "Example ambient policy"
+enforcement_mode = "enforce"
+
+[tool.defaults]
+mode = "deny"
+
+[[tool.allow]]
+name = "read_patient_record"
+requires_consent = true
+```
+
+## Open line vs commercial line
+
+| Open / Preview | Commercial runtime |
+| --- | --- |
+| Policy language, validation, export ideas | Live enforcement on governed paths |
+| Standard orientation at overt.is | Signed records, Notary, dashboard |
+
+Declaring a policy is not proving it ran. Proof is a [runtime](/runtime/)
+concern — and even then, a record is not a compliance certificate.
+
+<CardGrid>
+  <LinkCard title="Quickstart" href="/overt-as-code/quickstart/" />
+  <LinkCard title="Policy as code for AI" href="/overt-as-code/policy-as-code-for-ai/" />
+  <LinkCard title="OSCAL export" href="/overt-as-code/oscal-export/" />
+  <LinkCard title="OVERT standard" href="/overt/" />
+</CardGrid>

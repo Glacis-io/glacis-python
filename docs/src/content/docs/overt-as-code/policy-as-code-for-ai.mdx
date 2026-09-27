@@ -1,0 +1,26 @@
+---
+title: Policy as code for AI
+description: How OVERT-as-Code relates to OPA/Rego and other policy engines — Preview positioning, not a feature checklist.
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Preview">
+  Comparative claims below are positioning for evaluation, not a certified
+  benchmark against OPA, Sentinel, or Cedar.
+</Aside>
+
+General-purpose policy engines decide authorization for APIs and infrastructure.
+AI runtime governance adds requirements those engines were not designed to own
+alone:
+
+- **Content-safe evidence** — hashes instead of prompts/outputs.
+- **Mediated-scope honesty** — records silent about un-mediated paths.
+- **Control status vocabulary** — enforced / recorded / declared-not-enforced.
+- **Standard portability** — [OVERT](/overt/) so verifiers are not vendor-captive.
+
+OVERT-as-Code targets that wedge: AI-governance-shaped policy that compiles
+toward runtime enforcement and checkable records. It is not "OPA but for AI" as
+a slogan — and it is not GA.
+
+<LinkCard title="OVERT-as-Code overview" href="/overt-as-code/" />

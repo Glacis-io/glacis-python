@@ -1,6 +1,6 @@
 ---
 title: Verify
-description: Check a receipt in your browser, from a permalink, or in Python — without asking GLACIS anything.
+description: Check a record in your browser, from a permalink, or in Python — without asking GLACIS anything.
 sidebar:
   order: 0
 ---
@@ -8,17 +8,17 @@ sidebar:
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import ReceiptBadge from '../../../components/ReceiptBadge.astro';
 
-A receipt that only GLACIS can check is worth very little. The point of the
+A record that only Glacis can check is worth very little. The point of the
 format is that the person who distrusts you can check it without our
 cooperation, our uptime, or our permission.
 
 ## In a browser
 
-**[glacis.io/verify](https://glacis.io/verify)** — paste a receipt, drop a JSON
+**[glacis.io/verify](https://glacis.io/verify)** — paste a record, drop a JSON
 file on the page, or open a verification link.
 
 Everything runs client-side, using the browser's own WebCrypto Ed25519. The
-receipt is not uploaded, not logged, and not sent anywhere. You can confirm that
+record is not uploaded, not logged, and not sent anywhere. You can confirm that
 by opening the network tab, or by loading the page, going offline, and verifying
 anyway.
 
@@ -28,14 +28,14 @@ verdict:
 | Check | What it establishes |
 | --- | --- |
 | Structural integrity | The required fields are present and well-formed |
-| Signature (Ed25519) | The **signed** fields have not changed since they were signed by the holder of the key the receipt carries |
+| Signature (Ed25519) | The **signed** fields have not changed since they were signed by the holder of the key the record carries |
 | Signed field coverage | Which fields are inside the signature and which ride alongside it — informational, never a pass or a fail |
-| Hash binding | The parts of the receipt are bound together — you cannot swap one out |
-| Merkle inclusion | The record was in the transparency log at the tree head shown — only when the receipt carries a transparency proof |
+| Hash binding | The parts of the record are bound together — you cannot swap one out |
+| Merkle inclusion | The record was in the transparency log at the tree head shown — only when the record carries a transparency proof |
 
 A missing check shows as *skipped*, never as passed.
 
-<Aside type="note" title="Which receipts the browser verifier reads — as of the launch build">
+<Aside type="note" title="Which records the browser verifier reads — as of the launch build">
   As of the launch build of [glacis.io/verify](https://glacis.io/verify), the
   page detects and verifies **both** shapes:
 
@@ -51,7 +51,7 @@ A missing check shows as *skipped*, never as passed.
 
   Earlier builds returned *"Unrecognized receipt format"* for `oatt_…` receipts.
   If the build you hit still does, verify with the ten-line PyNaCl snippet in
-  [Verify a receipt yourself](/verify/cli/#verify-a-receipt-yourself), which
+  [Verify a record yourself](/verify/cli/#verify-a-receipt-yourself), which
   performs the same check locally.
 </Aside>
 
@@ -66,7 +66,7 @@ A missing check shows as *skipped*, never as passed.
 
 ## From a permalink
 
-A verification link carries the receipt in the URL **fragment**:
+A verification link carries the record in the URL **fragment**:
 
 ```
 https://glacis.io/verify#r=<base64url of the receipt JSON>
@@ -78,7 +78,7 @@ request — it stays in the browser. A receipt sent as a query string
 you and the page; a fragment does not. Nothing about your receipt reaches a
 server log by being shared this way.
 
-Opening such a link verifies the receipt on load and shows the same per-check
+Opening such a link verifies the record on load and shows the same per-check
 breakdown.
 
 <Aside type="note">
@@ -86,7 +86,7 @@ breakdown.
   [glacis.io/verify](https://glacis.io/verify), which reads the token, decodes
   it, and verifies on load; the older `?receipt=` query form still opens, for
   links already in circulation. If the build you hit does not pick up a
-  fragment, paste the receipt into the box instead — same verification, same
+  fragment, paste the record into the box instead — same verification, same
   client-side execution.
 </Aside>
 
@@ -98,7 +98,7 @@ python -m glacis verify receipt.json
 
 As of `glacis` 0.8.1 that is a real Ed25519 check on offline receipts, and so
 is `Glacis.verify()` — they run the same function. **0.8.0, the version on
-PyPI, checked only the shape of the receipt** and printed `Signature: PASS`
+PyPI, checked only the shape of the record** and printed `Signature: PASS`
 over a zeroed signature. Read [what the CLI actually checks](/verify/cli/)
 before you rely on the output, and pin `glacis>=0.8.1` if you are gating on it.
 The same page has the verification routine written out longhand, which needs

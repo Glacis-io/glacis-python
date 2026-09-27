@@ -1,6 +1,6 @@
 ---
 title: Start
-description: Go from nothing to a receipt you can verify — in a browser, on a phone, without installing anything.
+description: Go from nothing to a record you can verify — in a browser, on a phone, without installing anything.
 sidebar:
   order: 0
 ---
@@ -8,8 +8,13 @@ sidebar:
 import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
 import ReceiptBadge from '../../../components/ReceiptBadge.astro';
 
-You do not need to install anything to see what a GLACIS receipt is and check
+You do not need to install anything to see what a Glacis **record** is and check
 one for yourself. Three steps, all in a browser, all of it fine on a phone.
+
+<Aside type="note" title="Record vs receipt">
+  Human-facing copy says **record**. The OVERT specification and some SDK field
+  names still say *receipt* — same artifact.
+</Aside>
 
 <Steps>
 
@@ -17,32 +22,31 @@ one for yourself. Three steps, all in a browser, all of it fine on a phone.
    [app.glacis.io](https://app.glacis.io). About a minute, including the
    verification email.
 
-2. **[Look at the sample receipts](/start/sample-workspace/)** — your new workspace
-   is not empty. It comes with synthetic receipts, every one badged
-   <ReceiptBadge kind="sample" />, so you can see the shape of the thing before
-   you produce one.
+2. **[Look at the sample records](/start/sample-workspace/)** — your new workspace
+   is not empty. It comes with synthetic records, every one badged
+   <ReceiptBadge kind="sample" />, so you can see the shape before you produce one.
 
 3. **[Mint a real one](/start/mint-a-receipt/)** — describe an event, get back a
-   receipt bound to your workspace, and check it yourself.
+   record bound to your workspace, and check it yourself.
 
 </Steps>
 
-Then, when you want receipts to come out of your own system instead of a form,
+Then, when you want records to come out of your own system instead of a form,
 [Connect](/connect/) is the ten-minute version: a config block or three lines of
 Python.
 
-## What a receipt is
+## What a record is
 
-A receipt is **cryptographic evidence that the specific claims stated in that
-receipt were generated for a given event**, at a point in time, by the holder of
-a particular key. Those claims are the ones your code passed in: which service,
+A record is **cryptographic evidence that the specific claims stated in it were
+generated for a given event**, at a point in time, by the holder of a particular
+key. Those claims are the ones your code (or the form) passed in: which service,
 which operation, which controls ran and what they returned, and hashes that
 commit to the input and output. It carries the hashes, not the input and output
 — so it can be handed to someone outside your organisation without handing over
 the data.
 
 That is a narrower statement than "it proves what the system did", and the
-difference matters. A receipt is not a compliance certificate, it is not an
+difference matters. A record is not a compliance certificate, it is not an
 audit result, it does not guarantee a control was effective, and it does not say
 the model was right.
 [What a green check does and does not establish](/verify/what-a-check-proves/)
@@ -61,8 +65,8 @@ The tier is what was cryptographically established about the record:
 
 </div>
 
-A self-signed receipt is not a weaker witnessed receipt. It is a different
-claim: *"I say this happened."* A witnessed receipt says *"I say this happened,
+A self-signed record is not a weaker witnessed record. It is a different
+claim: *"I say this happened."* A witnessed record says *"I say this happened,
 and someone who is not me recorded that I said it, at a time I could not choose
 after the fact."* Everything in these docs keeps those two apart.
 
@@ -76,7 +80,7 @@ SAMPLE is a separate axis — it describes the *subject matter*, not the signing
 
 </div>
 
-So a sample receipt is always *also* a tier — <ReceiptBadge kind="self-signed" sample />
+So a sample record is always *also* a tier — <ReceiptBadge kind="self-signed" sample />
 or <ReceiptBadge kind="witnessed" sample />. "Sample" never means "unsigned",
 and a passing signature check on one is not a claim that anything happened.
 
@@ -84,7 +88,8 @@ and a passing signature check on one is not a claim that anything happened.
   These Start pages describe the browser flow at
   [app.glacis.io](https://app.glacis.io). The [Connect](/connect/) path — the
   Python SDK, offline signing, provider wrappers — is published on PyPI as
-  `glacis` 0.8.0 and works today regardless of what the portal is doing.
+  `glacis` and works offline today regardless of what the portal is doing.
+  Online / witnessed mode is not generally available yet.
 </Aside>
 
 <CardGrid>
@@ -99,13 +104,18 @@ and a passing signature check on one is not a claim that anything happened.
     href="/connect/"
   />
   <LinkCard
-    title="Verify a receipt"
+    title="Verify a record"
     description="In your browser, with nothing uploaded anywhere."
     href="/verify/"
   />
   <LinkCard
     title="The OVERT standard"
-    description="The open standard behind the platform receipt format."
+    description="The open standard behind the platform record format."
     href="/overt/"
+  />
+  <LinkCard
+    title="Runtime product"
+    description="What the customer-hosted bundle asserts today."
+    href="/runtime/"
   />
 </CardGrid>

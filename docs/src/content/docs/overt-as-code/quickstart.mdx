@@ -1,0 +1,30 @@
+---
+title: OVERT-as-Code quickstart
+description: Preview walkthrough for declaring and validating an AI governance policy as code.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Preview">
+  No public `pip` / `cargo` install is promised on this page. Treat the commands
+  below as the **intended** developer experience, not a guarantee of today's CLI.
+</Aside>
+
+## Intended flow
+
+1. Author a policy file (TOML) describing tools, data bounds, and enforcement mode.
+2. Validate in CI before merge.
+3. Activate the compiled policy on a [runtime](/runtime/) path that emits signed
+   records for covered decisions.
+4. Verify records with [Verify](/verify/) — knowing what a check does and does not prove.
+
+## What success looks like
+
+- Policy changes are reviewed like code.
+- Invalid policy fails the build.
+- Runtime status distinguishes enforced vs declared-not-enforced.
+- Auditors receive records + exports, not screenshots alone.
+
+When a public package ships, this page will gain exact install commands and
+version pins. Until then, [Talk to us](https://www.glacis.io/book/assess/) for
+Preview access.
