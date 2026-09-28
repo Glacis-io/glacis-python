@@ -1,0 +1,76 @@
+---
+title: The OVERT standard
+description: OVERT is an open, royalty-free standard for signed operational records of covered AI actions. Orientation only — normative text lives at overt.is.
+sidebar:
+  order: 1
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**OVERT** (Observable Verification Evidence for Runtime Trust) is an open,
+royalty-free standard for producing *independently checkable* records that
+declared policies, security controls, and oversight actions executed at runtime —
+including tool calls agents make — **without the underlying content leaving the
+operator's environment**.
+
+Version **1.1** was published 11 June 2026 (`overt.is/1.1`) under a royalty-free
+patent covenant.
+
+**[Read the normative standard at overt.is →](https://overt.is)**
+
+<Aside type="tip" title="Normative text is never republished here">
+  This page is orientation for operators. Cite **[overt.is](https://overt.is)**
+  for conformance language, fascicles, feeds, and IPR. Product docs on
+  docs.glacis.io do not republish the standard.
+</Aside>
+
+## Stewardship
+
+OVERT is moving to **shared stewardship** (see the announcement on
+[glacis.io](https://www.glacis.io)). Glacis remains associated with the
+specification work; the standard is designed so other implementations can exist.
+Marketing pages may mention CHAI / AIGovOps Foundation in the stewardship
+ribbon — treat that as brand news, and always verify current stewardship status
+on overt.is / glacis.io before quoting it in a contract.
+
+## Which artifact on this site is an OVERT document
+
+<Aside type="caution" title="Not every signed blob is OVERT">
+  - **Platform / gateway records** your workspace mints and
+    [glacis.io/verify](https://www.glacis.io/verify) treats as primary — written
+    against OVERT 1.1 concepts / profiles where configured.
+  - **Python SDK offline `oatt_…` artifacts are not claimed as conforming OVERT
+    documents.** They are a flat, SDK-native structure: checkable as SDK
+    records, not as the standard's envelope. See
+    [Connect](/connect/) and [Verify](/verify/).
+</Aside>
+
+## The gap it closes
+
+Governance frameworks say what controls *should* exist. Almost none say how to
+produce tamper-evident proof that a control actually *ran* — on a particular
+interaction, under a particular configuration, at a particular time.
+
+OVERT specifies how to produce records that another tool can check independently.
+The human-facing word on glacis.io is **record**; the specification still uses
+*receipt* for the artifact name.
+
+## What OVERT is not
+
+- Not a compliance certificate, safety guarantee, or certification program.
+- Not EU AI Act / ISO / SOC "done."
+- Not proof that a model was correct or that a control was *effective* — only
+  that stated claims were generated and signed as the standard describes.
+
+Conforming to an open standard is not compliance with any law. What a record is
+worth against a given obligation is the reader's judgement — see
+[what a check proves](/verify/what-a-check-proves/).
+
+## Related
+
+<CardGrid>
+  <LinkCard title="Conformance ladder" description="AAL tiers and what they mean for buyers." href="/overt/conformance-ladder/" />
+  <LinkCard title="Standard (marketing primer)" description="glacis.io/standard — non-normative." href="https://www.glacis.io/standard" />
+  <LinkCard title="Normative text" description="overt.is — cite this." href="https://overt.is" />
+  <LinkCard title="OVERT-as-Code" description="Declare policy as code (Preview)." href="/overt-as-code/" />
+</CardGrid>

@@ -1,5 +1,5 @@
 ---
-title: Mint a receipt
+title: Mint a record
 description: Produce a real receipt from the browser — no terminal, no SDK, no card — and check it yourself.
 sidebar:
   order: 3
@@ -9,12 +9,12 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 import ReceiptBadge from '../../../components/ReceiptBadge.astro';
 import Screenshot from '../../../components/Screenshot.astro';
 
-Sample receipts show you the format. This produces one that is actually yours,
+Sample records show you the format. This produces one that is actually yours,
 still without leaving the browser.
 
 <Steps>
 
-1. **Open *Mint a receipt* in your workspace.**
+1. **Open *Mint a record* in your workspace.**
 
 2. **Describe the event, or paste a payload.**
 
@@ -22,18 +22,18 @@ still without leaving the browser.
    JSON payload with the input and output you want committed to. Both end up in
    the same place: hashed locally, with only the hash leaving the page.
 
-   <Screenshot shape="phone" caption="Mint a receipt — describe an event or paste a payload." />
+   <Screenshot shape="phone" caption="Mint a record — describe an event or paste a payload." />
 
 3. **Mint.**
 
-   The workspace calls the witness on your behalf and returns the receipt bound
+   The workspace calls the witness on your behalf and returns the record bound
    to your workspace.
 
 4. **Check it.**
 
-   Use the verify action on the receipt, or copy its verification permalink and
+   Use the verify action on the record, or copy its verification permalink and
    open it somewhere else entirely — a different browser, a colleague's phone.
-   Verification is client-side; the receipt is checked wherever it is opened.
+   Verification is client-side; the record is checked wherever it is opened.
 
 </Steps>
 

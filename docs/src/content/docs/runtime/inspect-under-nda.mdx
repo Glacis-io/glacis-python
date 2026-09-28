@@ -1,0 +1,35 @@
+---
+title: Inspect the runtime under NDA
+description: Regulated buyers can inspect Glacis runtime source under NDA. The policy language may be open; enforcement and Notary remain commercial.
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Some regulated buyers need to read enforcement code before they will put it on a
+production path. Glacis supports that **under NDA** — without publishing the
+commercial runtime as a public open-source tree.
+
+<Aside type="note">
+  This is an evaluation path, not a download button. It does not change the
+  [assurance claim](/runtime/) (AAL-3 for the default customer-hosted bundle) and
+  it is not a certification.
+</Aside>
+
+## What you can expect
+
+- Access scoped to the components required for your security / architecture review.
+- Clear separation between open standard material ([overt.is](https://overt.is)),
+  Preview policy tooling ([OVERT-as-Code](/overt-as-code/)), and commercial runtime.
+- No implication that inspection equals independent attestation (AAL-4) or any
+  external certification.
+
+## How to request access
+
+Use [Talk to us](https://www.glacis.io/book/assess/) and say you need a
+source-inspection path under NDA. Bring your security questionnaire early so the
+review set matches what you actually need to sign off.
+
+<CardGrid>
+  <LinkCard title="Runtime overview" href="/runtime/" />
+  <LinkCard title="OVERT standard" href="/overt/" />
+</CardGrid>

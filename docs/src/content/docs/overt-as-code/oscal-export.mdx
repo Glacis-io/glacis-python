@@ -1,0 +1,21 @@
+---
+title: OSCAL export
+description: Preview notes on exporting machine-readable assessment artifacts. Not a claim that OSCAL export is GA.
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Preview / do not overclaim">
+  Public docs must not claim that framework/OSCAL exports are a shipped,
+  customer-ready feature unless product confirms it. This page describes the
+  *intent*: map runtime evidence into formats GRC tools already consume.
+</Aside>
+
+## Intent
+
+- Emit machine-readable assessment artifacts from declared policy + runtime
+  evidence.
+- Feed existing GRC workflows rather than replace Vanta/Drata/etc.
+- Keep honesty: an export is not a certification.
+
+<LinkCard title="OVERT-as-Code overview" href="/overt-as-code/" />

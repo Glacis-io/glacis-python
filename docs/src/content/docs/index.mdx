@@ -1,9 +1,9 @@
 ---
-title: GLACIS Documentation
-description: Cryptographic evidence that specific claims about an AI operation were generated at a point in time — checkable by someone who does not trust you, without your data leaving your environment.
+title: Glacis Documentation
+description: Runtime guardrails for AI that leave a record anyone can check. Operator docs for the platform, Python SDK, verifier, and the open OVERT standard.
 template: splash
 hero:
-  tagline: A receipt is cryptographic evidence that the claims stated in it were generated for a given event, at a point in time. Checkable by anyone, produced without your prompts or outputs ever leaving your environment.
+  tagline: Runtime guardrails for AI that leave a record anyone can check — signed operational evidence without your prompts or outputs leaving your environment.
   image:
     file: ../../assets/glacis-hero.svg
   actions:
@@ -20,26 +20,32 @@ hero:
 import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
 import ReceiptBadge from '../../components/ReceiptBadge.astro';
 
+Glacis is **runtime guardrails for AI**. Covered decisions are held to the bounds you set while the action is live, and each covered decision leaves a **signed record** someone else can check — without taking custody of your content. The open format for that record is [OVERT](https://overt.is).
+
+<Aside type="note" title="Record vs receipt">
+  On these docs and on glacis.io, the human-facing word is **record**. The OVERT specification and some SDK field names still say *receipt* — same artifact, different audience.
+</Aside>
+
 ## Two ways in
 
 <CardGrid>
   <Card title="Nothing installed" icon="laptop">
     Create a workspace at [app.glacis.io](https://app.glacis.io), look at
-    receipts that are already there, mint one, and check it. Browser only, fine
-    on a phone, about two minutes. → **[Start](/start/)**
+    sample records that are already there, mint one, and check it. Browser only —
+    about two minutes. → **[Start](/start/)**
   </Card>
   <Card title="Something installed" icon="seti:python">
     ```bash
     pip install glacis
     ```
     Three lines around your provider call, or a `glacis.yaml` and one factory
-    call. About ten minutes. → **[Connect](/connect/)**
+    call. Offline Ed25519 signing works today. → **[Connect](/connect/)**
   </Card>
 </CardGrid>
 
 ## The smallest useful example
 
-Works right now, with no account, no key and no network:
+Works right now, with no account, no key, and no network:
 
 ```python
 import os
@@ -58,6 +64,10 @@ print(receipt.id)              # oatt_...
 print(receipt.witness_status)  # UNVERIFIED
 ```
 
+Offline SDK records are **self-signed** operator statements. They are checkable
+as SDK artifacts; they are **not** claimed as conforming OVERT documents. See
+[OVERT](/overt/) and [offline vs online](/connect/offline-vs-witnessed/).
+
 ## What is transmitted
 
 | | Leaves your environment? |
@@ -68,10 +78,8 @@ print(receipt.witness_status)  # UNVERIFIED
 | `service_id`, `operation_type` | Yes, in online mode |
 | `evidence_hash`, `cpr_hash` | Yes, in online mode |
 
-In offline mode, nothing is transmitted at all. The SDK makes no network calls.
-The exact online request body is listed in
-[offline vs online](/connect/offline-vs-witnessed/#what-is-actually-sent) —
-it does not include a timestamp.
+In offline mode, nothing is transmitted at all. Online / witnessed mode is not
+generally available yet — do not plan production on it.
 
 ## Two signing tiers, never blurred
 
@@ -79,7 +87,7 @@ it does not include a timestamp.
 
 <ReceiptBadge kind="witnessed" gloss />
 
-A self-signed receipt is not a cheaper witnessed receipt — it is a different
+A self-signed record is not a cheaper witnessed record — it is a different
 claim. Read [offline vs online](/connect/offline-vs-witnessed/) before you
 show one to anybody.
 
@@ -88,18 +96,15 @@ show one to anybody.
 <ReceiptBadge kind="sample" gloss />
 
 SAMPLE is about the *subject matter*, not the cryptography: the operation it
-describes never ran. It is not a third tier and it does not mean "unsigned" — a
-sample receipt is really signed and really verifies, so it always carries a tier
-too (<ReceiptBadge kind="self-signed" sample /> or
-<ReceiptBadge kind="witnessed" sample />). A green check on one establishes that
-the bytes are unedited, and nothing at all about an event.
+describes never ran. A green check on a sample establishes that the bytes are
+unedited — nothing about an event.
 
-<Aside type="caution" title="What a receipt is not">
-  A receipt is **cryptographic evidence that the claims stated in it were
+<Aside type="caution" title="What a record is not">
+  A signed record is **cryptographic evidence that the claims stated in it were
   generated** for a given event. It is not a compliance certificate, not an
   audit result, not a guarantee that a control was effective, and not a
   statement that the model was right. Nothing here makes a system compliant,
-  protected or certified.
+  certified, EU AI Act–ready, ISO-certified, or SOC-attested.
   [What a check proves](/verify/what-a-check-proves/) draws the line precisely.
 </Aside>
 
@@ -108,7 +113,7 @@ the bytes are unedited, and nothing at all about an event.
 <CardGrid>
   <LinkCard
     title="Start"
-    description="Workspace, sample receipts, mint one from the browser."
+    description="Workspace, sample records, mint one from the browser."
     href="/start/"
   />
   <LinkCard
@@ -118,13 +123,23 @@ the bytes are unedited, and nothing at all about an event.
   />
   <LinkCard
     title="Verify"
-    description="Check a receipt in a browser or in Python — and know what that establishes."
+    description="Check a record in a browser or in Python — and know what that establishes."
     href="/verify/"
   />
   <LinkCard
+    title="Runtime product"
+    description="What the customer-hosted bundle asserts today — honestly scoped."
+    href="/runtime/"
+  />
+  <LinkCard
     title="OVERT"
-    description="The open standard GLACIS builds its receipt format against — and which artifacts conform."
+    description="The open standard for signed operational records — normative text at overt.is."
     href="/overt/"
+  />
+  <LinkCard
+    title="OVERT-as-Code"
+    description="Declare AI governance as code (Preview)."
+    href="/overt-as-code/"
   />
   <LinkCard
     title="API reference"
@@ -132,14 +147,15 @@ the bytes are unedited, and nothing at all about an event.
     href="/reference/api/"
   />
   <LinkCard
-    title="Controls"
-    description="PII/PHI, jailbreak, topic and word-filter scanning."
-    href="/reference/controls/"
+    title="Concepts"
+    description="Why documentation is not evidence."
+    href="/concepts/documentation-is-not-evidence/"
   />
 </CardGrid>
 
 ## Links
 
-- [PyPI — `glacis` 0.8.0](https://pypi.org/project/glacis/)
+- [glacis.io](https://www.glacis.io) — product and brand
+- [PyPI — `glacis`](https://pypi.org/project/glacis/) — Python SDK
 - [GitHub](https://github.com/Glacis-io/glacis-python)
-- [The OVERT standard](https://overt.is)
+- [OVERT standard](https://overt.is)

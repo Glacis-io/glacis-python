@@ -1,0 +1,43 @@
+---
+title: Documentation is not evidence
+description: Why AI governance built on policies, screenshots, and questionnaires fails when someone needs a checkable record — and what runtime attestation changes.
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Most "AI governance" is documentation: a policy PDF, a control spreadsheet, a
+screenshot, a vendor questionnaire. All of it describes what a system is
+*supposed* to do. **None of it proves what the system actually did** on a given
+request.
+
+## The difference
+
+| Documentation | Evidence |
+| --- | --- |
+| "We filter PII." | "On this covered action, the PII control ran and reported X — here is the signed record." |
+| A policy document | A cryptographic record produced as a byproduct of enforcement |
+| Trust the operator's word | Checkable by someone who does not trust the operator |
+| Can be written after the fact | Bound to signed bytes; tampering is detectable |
+
+## Why it matters
+
+- Audits want proof a control ran on transactions in scope.
+- Incidents need integrity you can defend.
+- Regulators and insurers increasingly want claims that are checkable, not only narrated.
+- Procurement stalls when buyers cannot verify vendor claims independently.
+
+A screenshot can be staged. A policy can be aspirational. A signed record over
+the actual decision cannot be quietly rewritten without detection — **within the
+limits of what was signed and who controlled the keys.** See
+[what a check proves](/verify/what-a-check-proves/).
+
+<Aside type="tip">
+  Test for any AI governance claim: *could a skeptical third party check it
+  without taking your word for it?* If not, it is documentation, not evidence.
+</Aside>
+
+<CardGrid>
+  <LinkCard title="AI attestation, explained" href="/concepts/ai-attestation-explained/" />
+  <LinkCard title="OVERT" href="/overt/" />
+  <LinkCard title="Runtime product" href="/runtime/" />
+</CardGrid>

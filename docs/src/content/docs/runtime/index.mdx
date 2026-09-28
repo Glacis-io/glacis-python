@@ -1,0 +1,64 @@
+---
+title: The Glacis runtime product
+description: Runtime guardrails for AI — policy evaluation on the action path, signed records for covered decisions. Honestly scoped to the approved assurance claim.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+The Glacis **runtime product** sits in front of the actions your AI takes.
+Covered decisions are evaluated while the action is live (allow / constrain /
+hold / deny), and each covered decision can leave a **signed record** someone
+else can check — without Glacis taking custody of prompts or outputs.
+
+This page is operator documentation for buyers and deployers. Marketing
+orientation lives on [glacis.io/platform](https://www.glacis.io/platform).
+
+<Aside type="caution" title="Approved assurance claim (do not exceed)">
+  For the **customer-hosted bundle** (proxy + Notary + dashboard) in its default
+  configuration, Glacis stands behind an **OVERT Level 1 Core** evidence posture
+  at **Attestation Assurance Level AAL-3**. A single operator-controlled,
+  co-resident Notary caps the deployment at AAL-3. Glacis is **not** independently
+  certified and must **not** be represented as AAL-4, "evidence-grade," EU AI Act
+  certified, ISO certified, or SOC attested. See the internal `CLAIM.md` in labs
+  (`mvp-product/CLAIM.md`) — public docs paraphrase it; they do not expand it.
+</Aside>
+
+## What it does today
+
+- **Hold actions to bounds** — policy evaluation on the request path for governed
+  traffic (mediated scope). Records attest what was governed and are silent about
+  un-mediated paths.
+- **Emit signed records** — Ed25519 over canonical bytes for covered decisions;
+  verification can run in the customer environment.
+- **Distinguish status honestly** — enforced, recorded, declared-not-enforced, or
+  not-present. Absence of a detector is reported; it is not sold as protection.
+- **Zero content egress by construction** — records carry hashes and metadata,
+  not raw prompts or responses. Provider keys stay with the customer.
+
+## Mediated scope (canonical coverage claim)
+
+> For governed paths, Glacis produces independently verifiable evidence of policy
+> execution. Records attest what was governed and are silent about un-mediated paths.
+
+Glacis governs AI **transactions** in a mediated scope — it is not a universal
+packet-capture layer for all AI traffic. Streaming is observe/truncate, never
+"prevention" of already-emitted tokens. Provider breadth for drop-in ingress is
+**OpenAI-compatible governed paths** unless a contract expands it.
+
+## What this product is not
+
+- Not a compliance certificate, safety guarantee, or "Utah-certified" anything.
+- Not a replacement for your GRC platform, SIEM, or identity stack.
+- Not EU AI Act / ISO 42001 / SOC 2 "done" by installing the bundle.
+- Not open-source enforcement IP — the policy language may be open; the
+  commercial runtime is not. Regulated buyers can [inspect under NDA](/runtime/inspect-under-nda/).
+
+## Related
+
+<CardGrid>
+  <LinkCard title="Inspect under NDA" description="Source-available path for regulated buyers." href="/runtime/inspect-under-nda/" />
+  <LinkCard title="Verify a record" description="What a green check does and does not establish." href="/verify/" />
+  <LinkCard title="OVERT standard" description="Orientation; normative text at overt.is." href="/overt/" />
+  <LinkCard title="Platform (marketing)" description="How the platform is described on glacis.io." href="https://www.glacis.io/platform" />
+  <LinkCard title="Talk to us" description="Book a 30-minute assessment." href="https://www.glacis.io/book/assess/" />
+</CardGrid>

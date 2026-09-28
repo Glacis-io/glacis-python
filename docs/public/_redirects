@@ -1,0 +1,3 @@
+# Crawlers still request /sitemap.xml; Astro emits sitemap-index.xml + sitemap-N.xml.
+# Same rule as fix/docs-sitemap-xml (PR #11) — keep identical to avoid conflict.
+/sitemap.xml   /sitemap-index.xml   301

@@ -1,19 +1,24 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import sitemap from '@astrojs/sitemap';
 
-// The information architecture follows the activation ladder:
-//   Start   — no-code, phone-legible, browser only
-//   Connect — the SDK, once receipts should come from your own system
-//   Verify  — what anyone can check, and what a check does not establish
-//   OVERT   — the open standard underneath the format
-//   Reference — the full SDK surface
+// docs.glacis.io — company docs aligned to labs product + glacis-web-prod brand.
 //
-// The old /sdk/python/* URLs are redirected below rather than dropped: they are
-// linked from PyPI and from the package metadata.
+// IA choice (2026-09-27): keep the Start → Connect activation ladder from
+// origin/main (honest SDK + portal onboarding), and add company-wide sections
+// that labs + brand require: Runtime, OVERT (orientation only; normative text
+// stays at overt.is), OVERT-as-Code (Preview), and Concepts.
+// Rejected pure /sdk-only and pure /start+/connect-only trees — both leave the
+// runtime product and standard under-documented relative to glacis.io.
+//
+// Vocabulary: marketing-facing copy prefers "record"; "receipt" reserved for
+// OVERT/spec field names and SDK wire types (matches glacis-web-prod).
+
 export default defineConfig({
   site: 'https://docs.glacis.io',
   trailingSlash: 'always',
   redirects: {
+    // Legacy SDK paths (PyPI / older docs) → Connect
     '/sdk/python/': '/connect/',
     '/sdk/python/installation/': '/connect/install/',
     '/sdk/python/quickstart/': '/connect/quickstart/',
@@ -36,9 +41,20 @@ export default defineConfig({
     starlight({
       title: 'GLACIS',
       logo: {
-        src: './src/assets/glacis-logo.png',
-        alt: 'GLACIS Logo',
+        light: './src/assets/glacis-wordmark.svg',
+        dark: './src/assets/glacis-wordmark-dark.svg',
+        replacesTitle: true,
+        alt: 'GLACIS',
       },
+      favicon: '/favicon.ico',
+      head: [
+        { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/favicons/apple-touch-icon.png' } },
+        { tag: 'link', attrs: { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicons/favicon-32.png' } },
+        { tag: 'meta', attrs: { name: 'theme-color', content: '#18141F' } },
+        { tag: 'meta', attrs: { property: 'og:image', content: 'https://docs.glacis.io/og-default.png' } },
+        { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: 'https://docs.glacis.io/og-default.png' } },
+      ],
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/Glacis-io/glacis-python' },
       ],
@@ -60,9 +76,34 @@ export default defineConfig({
           autogenerate: { directory: 'verify' },
         },
         {
-          label: 'OVERT standard',
+          label: 'Runtime product',
           items: [
-            { label: 'OVERT', link: '/overt/' },
+            { label: 'Overview', link: '/runtime/' },
+            { label: 'Inspect under NDA', link: '/runtime/inspect-under-nda/' },
+          ],
+        },
+        {
+          label: 'OVERT — the standard',
+          items: [
+            { label: 'Overview', link: '/overt/' },
+            { label: 'Conformance ladder', link: '/overt/conformance-ladder/' },
+          ],
+        },
+        {
+          label: 'OVERT-as-Code',
+          badge: { text: 'Preview', variant: 'caution' },
+          items: [
+            { label: 'Overview', link: '/overt-as-code/' },
+            { label: 'Quickstart', link: '/overt-as-code/quickstart/' },
+            { label: 'Policy as code for AI', link: '/overt-as-code/policy-as-code-for-ai/' },
+            { label: 'OSCAL export', link: '/overt-as-code/oscal-export/' },
+          ],
+        },
+        {
+          label: 'Concepts',
+          items: [
+            { label: 'Documentation is not evidence', link: '/concepts/documentation-is-not-evidence/' },
+            { label: 'AI attestation, explained', link: '/concepts/ai-attestation-explained/' },
           ],
         },
         {
@@ -78,5 +119,6 @@ export default defineConfig({
         },
       ],
     }),
+    sitemap(),
   ],
 });
