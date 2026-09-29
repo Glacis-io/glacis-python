@@ -123,7 +123,7 @@ def verify_offline(receipt: Attestation) -> OfflineVerifyResult:
     def failed(reason: str) -> OfflineVerifyResult:
         return OfflineVerifyResult(
             valid=False,
-            witness_status="UNVERIFIED",
+            witness_status="SELF_SIGNED",
             signature_valid=False,
             attestation=receipt,
             error=reason,
@@ -170,7 +170,7 @@ def verify_offline(receipt: Attestation) -> OfflineVerifyResult:
 
     return OfflineVerifyResult(
         valid=True,
-        witness_status="UNVERIFIED",
+        witness_status="SELF_SIGNED",
         signature_valid=True,
         attestation=receipt,
         error=degradation,

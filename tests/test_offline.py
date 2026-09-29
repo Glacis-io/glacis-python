@@ -46,7 +46,7 @@ class TestOfflineMode:
 
             # Check receipt properties
             assert receipt.id.startswith("oatt_")
-            assert receipt.witness_status == "UNVERIFIED"
+            assert receipt.witness_status == "SELF_SIGNED"
             assert receipt.service_id == "test-service"
             assert receipt.operation_type == "inference"
             assert len(receipt.evidence_hash) == 64  # SHA-256 hex
@@ -105,7 +105,7 @@ class TestOfflineMode:
             glacis.close()
 
     def test_offline_verify_returns_unverified(self):
-        """Verify returns witness_status=UNVERIFIED for offline receipts."""
+        """Verify returns witness_status=SELF_SIGNED for offline receipts."""
         from glacis import Glacis
 
         seed = os.urandom(32)
@@ -123,7 +123,7 @@ class TestOfflineMode:
             result = glacis.verify(receipt)
 
             assert result.valid is True
-            assert result.witness_status == "UNVERIFIED"
+            assert result.witness_status == "SELF_SIGNED"
             assert result.signature_valid is True
 
             glacis.close()

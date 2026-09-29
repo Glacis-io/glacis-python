@@ -45,16 +45,21 @@ class TestAttestation:
         assert att.signature == "c" * 128
         assert att.timestamp == 1704110400000
 
-    def test_witness_status_online(self, sample_attestation_data: dict[str, Any]):
-        """Online attestation has WITNESSED status."""
+    def test_witness_status_online_never_witnessed_without_verification(
+        self, sample_attestation_data: dict[str, Any]
+    ):
+        """Overclaim regression (0.8.1): an is_offline=False object with zero
+        verification must NOT be labeled WITNESSED — that label is issued only
+        by glacis.witness.classify_envelope after inclusion + STH checks."""
         att = Attestation.model_validate(sample_attestation_data)
-        assert att.witness_status == "WITNESSED"
+        assert att.witness_status == "LOGGED_UNVERIFIED"
+        assert att.witness_status != "WITNESSED"
 
     def test_witness_status_offline(self, sample_offline_attestation_data: dict[str, Any]):
-        """Offline attestation has UNVERIFIED status."""
+        """Offline attestation is SELF_SIGNED."""
         att = Attestation.model_validate(sample_offline_attestation_data)
         assert att.is_offline is True
-        assert att.witness_status == "UNVERIFIED"
+        assert att.witness_status == "SELF_SIGNED"
 
     def test_operation_fields(self):
         """Operation ID and sequence are tracked."""
@@ -157,13 +162,13 @@ class TestOfflineVerifyResult:
         """Parse offline verification result."""
         data = {
             "valid": True,
-            "witness_status": "UNVERIFIED",
+            "witness_status": "SELF_SIGNED",
             "signature_valid": True,
         }
         result = OfflineVerifyResult.model_validate(data)
 
         assert result.valid is True
-        assert result.witness_status == "UNVERIFIED"
+        assert result.witness_status == "SELF_SIGNED"
         assert result.signature_valid is True
 
 
