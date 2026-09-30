@@ -266,7 +266,7 @@ This is the decision that changes what your receipts are worth to somebody else.
 | Needs | A 32-byte signing seed you keep | A workspace key (`glsk_…`) |
 | Network | None. Nothing leaves the process. | Hash + metadata to `api.glacis.io` |
 | Signed by | You | The GLACIS service, with its key |
-| `witness_status` on the returned object | `"UNVERIFIED"` | `"WITNESSED"` — a **mode label**, not a proof |
+| `witness_status` on the returned object | `"UNVERIFIED"` | `"UNVERIFIED"` (0.8.2+) |
 | Second signature or inclusion proof | None | Not exposed on the returned object |
 | Worth to a third party | It is your diary | A record signed by someone other than you |
 

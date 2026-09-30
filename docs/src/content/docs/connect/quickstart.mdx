@@ -107,16 +107,15 @@ to a party that is not you — which is a step, not the whole distance.
 | `signature` | `str` | Ed25519 signature, hex (128 chars) |
 | `timestamp` | `int \| None` | Unix milliseconds |
 | `is_offline` | `bool` | Whether this was signed locally |
-| `witness_status` | `str` | Computed from `is_offline` alone: `"UNVERIFIED"` or `"WITNESSED"`. A **mode label**, not a verification result. |
+| `witness_status` | `str` | Always `"UNVERIFIED"` on a raw attestation. Read `glacis.verify(receipt).witness_status` for the verdict-derived label (0.8.2+). |
 
 <Aside type="note">
-  `witness_status` is a **computed property** whose only input is
-  `is_offline` — it never inspects a countersignature or an inclusion proof. It
-  is not a field, so it does not appear in `receipt.model_dump()`; a serialised
-  receipt carries `is_offline` instead. Anything reading receipts off disk
-  should look at `is_offline`, and anything rendering a badge should look at
-  what it actually verified. See
-  [offline vs online](/connect/offline-vs-witnessed/).
+  In 0.8.2+, raw attestations remain `UNVERIFIED` in either mode. Call
+  `glacis.verify(receipt)` and read the result's `witness_status`. An online
+  result reports `WITNESSED` only when the overall verdict, signature check,
+  and proof check all pass. Offline signature verification remains
+  `UNVERIFIED`. These properties do not appear in `model_dump()`.
+  See [offline vs online](/connect/offline-vs-witnessed/).
 </Aside>
 
 ## The canonicalisation actually used
@@ -221,7 +220,7 @@ What changes:
 | --- | --- | --- |
 | Who signs | You | The GLACIS service |
 | `id` prefix | `oatt_` | Server-assigned |
-| `witness_status` | `"UNVERIFIED"` | `"WITNESSED"` — a mode label, [not a proof](/connect/offline-vs-witnessed/) |
+| `witness_status` | `"UNVERIFIED"` | `"UNVERIFIED"` until verification; read the verification result |
 | Written to the local receipt store | **Yes**, automatically | **No.** `_attest_online` never calls `store_receipt()` |
 | `get_last_receipt()` on the client | Returns the last stored receipt | Raises `RuntimeError` — it is offline-only |
 | `verify(id)` | Local Ed25519 check over the signed payload, no network (0.8.1; 0.8.0 checked only the receipt's shape) | `GET /v1/verify/{id}` — the server answering about its own record |
