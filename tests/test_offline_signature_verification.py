@@ -596,6 +596,7 @@ class TestIsOfflineCannotBypassTheSignatureCheck:
 
         assert isinstance(result, VerifyResult)
         assert result.valid is True
+        assert result.witness_status == "WITNESSED"
         assert (result.error or "").startswith("bound: ")
         # And it says what the entry cannot vouch for.
         assert "control_plane_results" in (result.error or "")
@@ -621,6 +622,7 @@ class TestIsOfflineCannotBypassTheSignatureCheck:
         result = g.verify(flipped)
 
         assert result.valid is False
+        assert result.witness_status == "UNVERIFIED"
         assert "revoked" in (result.error or "")
 
     def test_a_bound_object_whose_own_check_failed_is_invalid(self, honest):
@@ -649,6 +651,7 @@ class TestIsOfflineCannotBypassTheSignatureCheck:
         assert isinstance(result, OfflineVerifyResult)
         assert result.valid is False
         assert "signature_invalid" in (result.error or "")
+        assert result.witness_status == "UNVERIFIED"
         assert "bound-but-unverified: " in (result.error or "")
         # Nothing of the server's answer is laundered onto the failed bytes.
         assert not (result.error or "").startswith("bound: ")
@@ -676,6 +679,7 @@ class TestIsOfflineCannotBypassTheSignatureCheck:
         assert isinstance(result, OfflineVerifyResult)
         assert result.valid is False
         assert (result.error or "").startswith("structural: ")
+        assert result.witness_status == "UNVERIFIED"
         assert "bound-but-unverified: " in (result.error or "")
 
     def test_flipping_is_offline_to_true_never_reaches_the_network(self, honest):

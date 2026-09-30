@@ -504,7 +504,7 @@ class Attestation(BaseModel):
     cpr_recovery_error: Optional[str]   # 0.8.1, unpublished
 
     @property
-    def witness_status(self) -> str: ...  # "WITNESSED" or "UNVERIFIED"
+    def witness_status(self) -> str: ...  # Always "UNVERIFIED" on raw attestations
 ```
 
 | Field | Type | Description |
@@ -526,7 +526,7 @@ class Attestation(BaseModel):
 | `is_offline` | `bool` | Whether this is an offline attestation |
 | `timestamp` | `Optional[int]` | Unix timestamp in milliseconds |
 | `cpr_recovery_error` | `Optional[str]` | 0.8.1 (unpublished). Set only by storage reconstruction, when a stored receipt carries a `cpr_hash` but the signed `control_plane_results` could not be returned. The signed payload cannot be rebuilt, so `verify()` fails closed with this string as its `error`. Never signed, never transmitted |
-| `witness_status` | `str` (property) | `"WITNESSED"` if online, `"UNVERIFIED"` if offline |
+| `witness_status` | `str` (property) | Always `"UNVERIFIED"`; use the verification result for a verdict-derived label (0.8.2+) |
 
 ---
 
@@ -582,11 +582,15 @@ class VerifyResult(BaseModel):
     proof: Optional[InclusionProof]
     tree_head: Optional[SignedTreeHead]
     error: Optional[str]
+
+    @property
+    def witness_status(self) -> str: ...
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `valid` | `bool` | Overall validity of the attestation |
+| `witness_status` | `str` (property) | `"WITNESSED"` only if `valid`, `verification.signature_valid`, and `verification.proof_valid` all pass; otherwise `"UNVERIFIED"`. Reflects the server verdict, not independent local witness verification. |
 | `attestation` | `Optional[AttestationEntry]` | The attestation entry from the log |
 | `org` | `Optional[OrgInfo]` | Organization information |
 | `verification` | `Optional[Verification]` | Verification details (contains `signature_valid`, `proof_valid`) |

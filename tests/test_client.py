@@ -245,6 +245,8 @@ class TestGlacisSync:
         with Glacis(api_key="test") as glacis:
             result = glacis.verify("att_test123")
 
+        assert result.witness_status == "WITNESSED"
+
         request = httpx_mock.get_request()
         assert request is not None
         # Verify endpoint should NOT have auth header

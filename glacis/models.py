@@ -313,7 +313,8 @@ class Attestation(BaseModel):
 
     @property
     def witness_status(self) -> str:
-        return "UNVERIFIED" if self.is_offline else "WITNESSED"
+        """A raw attestation has no witness verification verdict."""
+        return "UNVERIFIED"
 
 
 # ==============================================================================
@@ -469,6 +470,18 @@ class VerifyResult(BaseModel):
         alias="treeHead", default=None,
     )
     error: Optional[str] = Field(default=None)
+
+    @property
+    def witness_status(self) -> str:
+        """Derive the label from the server verification verdict, not receipt metadata."""
+        if (
+            self.valid
+            and self.verification is not None
+            and self.verification.signature_valid
+            and self.verification.proof_valid
+        ):
+            return "WITNESSED"
+        return "UNVERIFIED"
 
 
 class TreeHeadResponse(BaseModel):

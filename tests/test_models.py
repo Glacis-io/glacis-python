@@ -46,9 +46,9 @@ class TestAttestation:
         assert att.timestamp == 1704110400000
 
     def test_witness_status_online(self, sample_attestation_data: dict[str, Any]):
-        """Online attestation has WITNESSED status."""
+        """Online mode alone does not establish a verified witness."""
         att = Attestation.model_validate(sample_attestation_data)
-        assert att.witness_status == "WITNESSED"
+        assert att.witness_status == "UNVERIFIED"
 
     def test_witness_status_offline(self, sample_offline_attestation_data: dict[str, Any]):
         """Offline attestation has UNVERIFIED status."""
@@ -140,6 +140,7 @@ class TestVerifyResult:
         assert result.verification.proof_valid is True
         assert result.proof is not None
         assert result.tree_head is not None
+        assert result.witness_status == "WITNESSED"
 
     def test_parse_invalid_result(self):
         """Parse invalid verification result."""
@@ -148,6 +149,40 @@ class TestVerifyResult:
 
         assert result.valid is False
         assert result.error == "Attestation not found"
+
+    @pytest.mark.parametrize("valid", [False, True])
+    @pytest.mark.parametrize("signature_valid", [False, True])
+    @pytest.mark.parametrize("proof_valid", [False, True])
+    def test_witness_status_requires_full_verdict(
+        self, valid: bool, signature_valid: bool, proof_valid: bool
+    ):
+        result = VerifyResult.model_validate({
+            "valid": valid,
+            "verification": {
+                "signatureValid": signature_valid,
+                "proofValid": proof_valid,
+            },
+            # An input label is not an authority.
+            "witness_status": "WITNESSED",
+        })
+        expected = "WITNESSED" if valid and signature_valid and proof_valid else "UNVERIFIED"
+        assert result.witness_status == expected
+
+    @pytest.mark.parametrize("verification", [None, {}, {"signatureValid": True}])
+    def test_missing_verification_never_witnessed(self, verification: Any):
+        result = VerifyResult.model_validate({"valid": True, "verification": verification})
+        assert result.witness_status == "UNVERIFIED"
+
+    @pytest.mark.parametrize("is_offline", [False, True])
+    def test_raw_attestation_never_witnessed(self, is_offline: bool):
+        att = Attestation.model_validate({
+            "id": "att_unverified",
+            "is_offline": is_offline,
+            "witness_status": "WITNESSED",
+            "witness": {"verified": True},
+        })
+        assert att.witness_status == "UNVERIFIED"
+        assert Attestation.model_validate_json(att.model_dump_json()).witness_status == "UNVERIFIED"
 
 
 class TestOfflineVerifyResult:
@@ -417,3 +452,15 @@ class TestMerkleProofs:
         sth = SignedTreeHead.model_validate(data)
 
         assert sth.public_key == "d" * 64
+
+
+def test_release_versions_match():
+    import re
+    from pathlib import Path
+
+    from glacis import __version__
+
+    metadata = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    match = re.search(r'^version = "([^"]+)"', metadata, re.MULTILINE)
+    assert match is not None
+    assert __version__ == match.group(1)

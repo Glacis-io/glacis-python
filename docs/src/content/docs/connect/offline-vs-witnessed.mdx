@@ -63,34 +63,27 @@ glacis = Glacis(api_key=os.environ["GLACIS_API_KEY"])
 - Sends the **hash and metadata** to `api.glacis.io` — never the payload.
 - The server signs and returns an attestation; the SDK returns whatever the
   server sent, with `is_offline=False`.
-- `attestation.witness_status == "WITNESSED"`.
+- `attestation.witness_status == "UNVERIFIED"` (0.8.2+).
 
-<Aside type="caution" title="witness_status = WITNESSED is a mode label, not a proof">
-  In `glacis` 0.8.0 `witness_status` is a **computed property with one input**:
+<Aside type="caution" title="Read the verification result for the witness label">
+  Before 0.8.2, `Attestation.witness_status` returned `WITNESSED` from
+  `is_offline=False` alone, without verifying a witness. In 0.8.2+, raw
+  attestations always report `UNVERIFIED`.
 
-  ```python
-  # glacis/models.py
-  @property
-  def witness_status(self) -> str:
-      return "UNVERIFIED" if self.is_offline else "WITNESSED"
-  ```
+  Call `result = glacis.verify(attestation)` and read `result.witness_status`.
+  An online `VerifyResult` reports `WITNESSED` only when `valid`,
+  `verification.signature_valid`, and `verification.proof_valid` all pass.
+  Missing or failed checks remain `UNVERIFIED`. A valid offline signature
+  also remains `UNVERIFIED`.
 
-  It reports which *mode* produced the object. It does not look at a
-  countersignature, an inclusion proof, a tree head or a second key, because
-  the returned `Attestation` has nowhere to put one: the model carries exactly
-  one `public_key` and one `signature`. The SDK's response normaliser
-  (`_normalize_server_response`) keeps a fixed list of fields and drops
-  everything else, so even a server response containing a transparency proof
-  would not survive into the object you get back.
-
-  Reading `"WITNESSED"` off an SDK object therefore tells you *this went through
-  the online path*. On its own it is not grounds for showing anyone a
-  <ReceiptBadge kind="witnessed" /> badge.
+  This reflects the existing server verification verdict. The SDK does not
+  independently verify a log witness locally in this patch release, and the
+  label does not establish a second independent countersigner.
 </Aside>
 
 ## What online mode actually returns today
 
-Verified against `glacis` 0.8.0 in this repository:
+Raw attestation behavior in `glacis` 0.8.2:
 
 | | Offline `attest()` | Online `attest()` |
 | --- | --- | --- |
@@ -98,10 +91,10 @@ Verified against `glacis` 0.8.0 in this repository:
 | Keys on the returned object | One (yours) | One (the server's) |
 | Countersignature by a second party | None | Not exposed on the returned object |
 | Inclusion proof / tree head | None | Not exposed on the returned object |
-| `witness_status` | `"UNVERIFIED"` | `"WITNESSED"` (mode label) |
+| `witness_status` | `"UNVERIFIED"` | `"UNVERIFIED"` |
 | Independently checkable timestamp | No | Not from this object alone |
 
-So the honest reading of an online attestation at 0.8.0 is: **a record signed by
+So the honest reading of an online attestation at 0.8.2 is: **a record signed by
 a party other than you** — the GLACIS service — rather than a record you signed
 yourself. That is a real step up from a diary, because the signer is not the
 author. It is not yet the full witnessed artifact, because the object does not
@@ -142,9 +135,8 @@ Two caveats worth carrying:
 <Aside type="caution" title="Do not upgrade a badge on your own say-so">
   If you are building a UI over SDK output: render <ReceiptBadge kind="self-signed" />
   for offline attestations, and for online ones render what you actually
-  verified. `witness_status == "WITNESSED"` is not that verification. Showing a
-  green witnessed badge because a string said `WITNESSED` is exactly the
-  conflation these docs exist to prevent.
+  verified. Use the verification result's `witness_status`, never the raw
+  attestation's mode or a label supplied in receipt JSON.
 </Aside>
 
 <Aside type="caution" title="Neither mode makes anything compliant">
